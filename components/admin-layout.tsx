@@ -30,6 +30,26 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  // Derivamos iniciales a partir del email
+  const initials =
+    user?.email
+      ?.split("@")[0]
+      .split(/[.\s_]/)
+      .filter(Boolean)
+      .map((n) => n[0]?.toUpperCase())
+      .join("") || "U"
+
+  const displayName = user?.email || "User"
+
+  const roleLabel =
+    user?.role === "admin"
+      ? "Administrator"
+      : user?.role === "user"
+        ? "Office user"
+        : user?.role === "worker"
+          ? "Site worker"
+          : ""
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Mobile sidebar backdrop */}
@@ -85,16 +105,11 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           <div className="p-4 border-t border-slate-200">
             <div className="flex items-center gap-3 px-3 py-2">
               <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
-                <span className="text-sm font-semibold text-blue-600">
-                  {user?.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")}
-                </span>
+                <span className="text-sm font-semibold text-blue-600">{initials}</span>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{user?.name}</p>
-                <p className="text-xs text-slate-500 truncate">Administrator</p>
+                <p className="text-sm font-medium text-slate-900 truncate">{displayName}</p>
+                <p className="text-xs text-slate-500 truncate">{roleLabel}</p>
               </div>
             </div>
           </div>
@@ -127,7 +142,9 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                   <div className="space-y-2 p-2">
                     <div className="p-3 rounded-lg bg-blue-50 border border-blue-100">
                       <p className="text-sm font-medium text-slate-900">New document uploaded</p>
-                      <p className="text-xs text-slate-600 mt-1">Building Plans Q4.pdf was uploaded by Sarah Johnson</p>
+                      <p className="text-xs text-slate-600 mt-1">
+                        Building Plans Q4.pdf was uploaded by Sarah Johnson
+                      </p>
                     </div>
                     <div className="p-3 rounded-lg hover:bg-slate-50">
                       <p className="text-sm font-medium text-slate-900">Project status updated</p>
@@ -142,14 +159,9 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" className="gap-2">
                     <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
-                      <span className="text-sm font-semibold text-blue-600">
-                        {user?.name
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")}
-                      </span>
+                      <span className="text-sm font-semibold text-blue-600">{initials}</span>
                     </div>
-                    <span className="hidden md:inline text-sm font-medium">{user?.name}</span>
+                    <span className="hidden md:inline text-sm font-medium">{displayName}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">

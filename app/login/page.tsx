@@ -3,18 +3,22 @@
 import type React from "react"
 
 import { useState } from "react"
-import { useAuth } from "@/lib/auth-context"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Building2, Mail } from "lucide-react"
+import { Building2, Mail, Lock } from "lucide-react"
+import { supabase } from "@/lib/supabaseClient"
+
+type UserRole = "admin" | "user" | "worker"
 
 export default function LoginPage() {
   const [email, setEmail] = useState("")
+  const [password, setPassword] = useState("")
   const [error, setError] = useState("")
   const [isLoading, setIsLoading] = useState(false)
-  const { login } = useAuth()
+  const router = useRouter()
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -22,9 +26,51 @@ export default function LoginPage() {
     setIsLoading(true)
 
     try {
-      await login(email)
+      // 1) Login contra Supabase Auth
+      const { data, error: signError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (signError) {
+        setError(signError.message || "Error al iniciar sesión")
+        return
+      }
+
+      const authUser = data.user
+      if (!authUser) {
+        setError("No se pudo obtener el usuario autenticado")
+        return
+      }
+
+      // 2) Leer el rol desde tu tabla interna (app_users)
+      const { data: profile, error: profileError } = await supabase
+        .from("app_users") // cambia si tu tabla tiene otro nombre
+        .select("role")
+        .eq("id", authUser.id)
+        .single()
+
+      if (profileError || !profile) {
+        setError("Tu cuenta no tiene un rol asignado. Contacta al administrador.")
+        return
+      }
+
+      const role = profile.role as UserRole
+
+      // 3) Redirigir según el rol
+      if (role === "admin") {
+        router.push("/admin")
+      } else if (role === "user") {
+        router.push("/employee")
+      } else if (role === "worker") {
+        router.push("/obras")
+      } else {
+        // fallback por si acaso
+        router.push("/dashboard")
+      }
     } catch (err) {
-      setError("Invalid email address. Please try again.")
+      console.error(err)
+      setError("Error al conectar con el servidor. Intenta de nuevo.")
     } finally {
       setIsLoading(false)
     }
@@ -39,7 +85,9 @@ export default function LoginPage() {
           </div>
           <div>
             <CardTitle className="text-2xl">Construction Manager</CardTitle>
-            <CardDescription className="text-base mt-2">Sign in to access your dashboard</CardDescription>
+            <CardDescription className="text-base mt-2">
+              Sign in to access your dashboard
+            </CardDescription>
           </div>
         </CardHeader>
         <CardContent>
@@ -60,12 +108,30 @@ export default function LoginPage() {
               </div>
             </div>
 
+            <div className="space-y-2">
+              <Label htmlFor="password">Password</Label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                <Input
+                  id="password"
+                  type="password"
+                  placeholder="Your password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="pl-10"
+                  required
+                />
+              </div>
+            </div>
+
             {error && (
-              <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md p-3">{error}</div>
+              <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md p-3">
+                {error}
+              </div>
             )}
 
             <Button type="submit" className="w-full" disabled={isLoading}>
-              {isLoading ? "Sending code..." : "Continue with Email"}
+              {isLoading ? "Signing in..." : "Sign in"}
             </Button>
 
             <div className="text-xs text-center text-slate-500 space-y-1">

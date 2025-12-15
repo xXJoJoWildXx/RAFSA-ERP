@@ -4,6 +4,7 @@ import { useAuth } from "@/lib/auth-context"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Building2, Users, FileText, Activity, TrendingUp, TrendingDown } from "lucide-react"
 import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
 
 export default function AdminDashboard() {
   const { user } = useAuth()
@@ -79,76 +80,78 @@ export default function AdminDashboard() {
   ]
 
   return (
-    <AdminLayout>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-3xl font-bold text-slate-900">Welcome back, {user?.name}</h1>
-          <p className="text-slate-600 mt-1">Here's what's happening with your projects today.</p>
-        </div>
+    <RoleGuard allowed={["admin"]}>
+      <AdminLayout>
+        <div className="space-y-6">
+          <div>
+            <h1 className="text-3xl font-bold text-slate-900">Welcome back, {user?.email}</h1>
+            <p className="text-slate-600 mt-1">Here's what's happening with your projects today.</p>
+          </div>
 
-        {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {stats.map((stat) => {
-            const Icon = stat.icon
-            const TrendIcon = stat.trend === "up" ? TrendingUp : TrendingDown
+          {/* Stats Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {stats.map((stat) => {
+              const Icon = stat.icon
+              const TrendIcon = stat.trend === "up" ? TrendingUp : TrendingDown
 
-            return (
-              <Card key={stat.title}>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-slate-600">{stat.title}</p>
-                      <p className="text-3xl font-bold text-slate-900 mt-2">{stat.value}</p>
-                      <div className="flex items-center gap-1 mt-2">
-                        <TrendIcon className={`w-4 h-4 ${stat.trend === "up" ? "text-green-600" : "text-red-600"}`} />
-                        <span
-                          className={`text-sm font-medium ${stat.trend === "up" ? "text-green-600" : "text-red-600"}`}
-                        >
-                          {stat.change}
-                        </span>
-                        <span className="text-sm text-slate-500">vs last month</span>
+              return (
+                <Card key={stat.title}>
+                  <CardContent className="p-6">
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-slate-600">{stat.title}</p>
+                        <p className="text-3xl font-bold text-slate-900 mt-2">{stat.value}</p>
+                        <div className="flex items-center gap-1 mt-2">
+                          <TrendIcon className={`w-4 h-4 ${stat.trend === "up" ? "text-green-600" : "text-red-600"}`} />
+                          <span
+                            className={`text-sm font-medium ${stat.trend === "up" ? "text-green-600" : "text-red-600"}`}
+                          >
+                            {stat.change}
+                          </span>
+                          <span className="text-sm text-slate-500">vs last month</span>
+                        </div>
+                      </div>
+                      <div className={`${stat.bgColor} ${stat.color} p-3 rounded-lg`}>
+                        <Icon className="w-6 h-6" />
                       </div>
                     </div>
-                    <div className={`${stat.bgColor} ${stat.color} p-3 rounded-lg`}>
-                      <Icon className="w-6 h-6" />
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+
+          {/* Recent Activities */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Recent Activities</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {recentActivities.map((activity) => (
+                  <div key={activity.id} className="flex items-start gap-4 pb-4 border-b last:border-0 last:pb-0">
+                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
+                      <span className="text-sm font-semibold text-blue-600">
+                        {activity.user
+                          .split(" ")
+                          .map((n) => n[0])
+                          .join("")}
+                      </span>
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm text-slate-900">
+                        <span className="font-semibold">{activity.user}</span> {activity.action}{" "}
+                        <span className="font-semibold">{activity.target}</span>
+                      </p>
+                      <p className="text-xs text-slate-500 mt-1">{activity.time}</p>
                     </div>
                   </div>
-                </CardContent>
-              </Card>
-            )
-          })}
+                ))}
+              </div>
+            </CardContent>
+          </Card>
         </div>
-
-        {/* Recent Activities */}
-        <Card>
-          <CardHeader>
-            <CardTitle>Recent Activities</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {recentActivities.map((activity) => (
-                <div key={activity.id} className="flex items-start gap-4 pb-4 border-b last:border-0 last:pb-0">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                    <span className="text-sm font-semibold text-blue-600">
-                      {activity.user
-                        .split(" ")
-                        .map((n) => n[0])
-                        .join("")}
-                    </span>
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-sm text-slate-900">
-                      <span className="font-semibold">{activity.user}</span> {activity.action}{" "}
-                      <span className="font-semibold">{activity.target}</span>
-                    </p>
-                    <p className="text-xs text-slate-500 mt-1">{activity.time}</p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    </AdminLayout>
+      </AdminLayout>
+    </RoleGuard>
   )
 }

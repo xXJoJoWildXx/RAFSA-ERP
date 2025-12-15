@@ -29,6 +29,18 @@ export function EmployeeLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
+  // Nombre a mostrar: si algún día agregas name en el contexto, se usará primero.
+  const displayName = (user as any)?.name ?? user?.email ?? "User"
+
+  // Iniciales seguras a partir del displayName
+  const initials =
+    displayName
+      .split("@")[0] // si es email, quita el dominio
+      .split(/[.\s_]/)
+      .filter(Boolean)
+      .map((n) => n[0]?.toUpperCase())
+      .join("") || "U"
+
   return (
     <div className="min-h-screen bg-slate-50">
       {/* Mobile sidebar backdrop */}
@@ -85,14 +97,11 @@ export function EmployeeLayout({ children }: { children: React.ReactNode }) {
             <div className="flex items-center gap-3 px-3 py-2">
               <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
                 <span className="text-sm font-semibold text-blue-600">
-                  {user?.name
-                    .split(" ")
-                    .map((n) => n[0])
-                    .join("")}
+                  {initials}
                 </span>
               </div>
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 truncate">{user?.name}</p>
+                <p className="text-sm font-medium text-slate-900 truncate">{displayName}</p>
                 <p className="text-xs text-slate-500 truncate">Employee</p>
               </div>
             </div>
@@ -126,7 +135,9 @@ export function EmployeeLayout({ children }: { children: React.ReactNode }) {
                   <div className="space-y-2 p-2">
                     <div className="p-3 rounded-lg bg-blue-50 border border-blue-100">
                       <p className="text-sm font-medium text-slate-900">New task assigned</p>
-                      <p className="text-xs text-slate-600 mt-1">You have been assigned to Downtown Plaza inspection</p>
+                      <p className="text-xs text-slate-600 mt-1">
+                        You have been assigned to Downtown Plaza inspection
+                      </p>
                     </div>
                     <div className="p-3 rounded-lg hover:bg-slate-50">
                       <p className="text-sm font-medium text-slate-900">Document approved</p>
@@ -142,13 +153,10 @@ export function EmployeeLayout({ children }: { children: React.ReactNode }) {
                   <Button variant="ghost" className="gap-2">
                     <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center">
                       <span className="text-sm font-semibold text-blue-600">
-                        {user?.name
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")}
+                        {initials}
                       </span>
                     </div>
-                    <span className="hidden md:inline text-sm font-medium">{user?.name}</span>
+                    <span className="hidden md:inline text-sm font-medium">{displayName}</span>
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end">

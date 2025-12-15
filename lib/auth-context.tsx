@@ -1,112 +1,105 @@
 "use client"
 
 import type React from "react"
-
 import { createContext, useContext, useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
+import { supabase } from "@/lib/supabaseClient"
 
-type UserRole = "admin" | "employee"
+type UserRole = "admin" | "user" | "worker"
 
 interface User {
   id: string
   email: string
-  name: string
   role: UserRole
-  avatar?: string
+  // puedes agregar name/avatar si los sacas de otra tabla
 }
 
 interface AuthContextType {
   user: User | null
-  login: (email: string) => Promise<void>
-  verifyCode: (code: string) => Promise<boolean>
-  logout: () => void
   isLoading: boolean
+  logout: () => Promise<void>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
-// Mock user database
-const MOCK_USERS: Record<string, User> = {
-  "admin@construction.com": {
-    id: "1",
-    email: "admin@construction.com",
-    name: "John Smith",
-    role: "admin",
-    avatar: "/professional-male-avatar.png",
-  },
-  "employee@construction.com": {
-    id: "2",
-    email: "employee@construction.com",
-    name: "Sarah Johnson",
-    role: "employee",
-    avatar: "/professional-female-avatar.png",
-  },
-}
-
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
-  const [pendingEmail, setPendingEmail] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
 
-  useEffect(() => {
-    // Check for stored session
-    const storedUser = localStorage.getItem("user")
-    if (storedUser) {
-      setUser(JSON.parse(storedUser))
+  const loadUser = async () => {
+    setIsLoading(true)
+
+    // 1) obtener usuario de Supabase Auth
+    const {
+      data: { user: authUser },
+    } = await supabase.auth.getUser()
+
+    if (!authUser) {
+      setUser(null)
+      setIsLoading(false)
+      return
     }
+
+    // 2) obtener rol desde tu tabla de perfiles/roles
+    const { data: profile, error } = await supabase
+      .from("app_users") // CAMBIA si tu tabla tiene otro nombre
+      .select("role")
+      .eq("id", authUser.id)
+      .single()
+
+    if (error || !profile) {
+      // sin rol asignado
+      setUser(null)
+      setIsLoading(false)
+      return
+    }
+
+    const mappedUser: User = {
+      id: authUser.id,
+      email: authUser.email ?? "",
+      role: profile.role as UserRole,
+    }
+
+    setUser(mappedUser)
     setIsLoading(false)
+  }
+
+  useEffect(() => {
+    // cargar sesión al inicio
+    loadUser()
+
+    // opcional: escuchar cambios de sesión (login/logout)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, _session) => {
+      // cuando cambie la sesión, recargamos el user/role
+      loadUser()
+    })
+
+    return () => {
+      subscription.unsubscribe()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const login = async (email: string) => {
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    if (MOCK_USERS[email]) {
-      setPendingEmail(email)
-      router.push("/verify")
-    } else {
-      throw new Error("User not found")
-    }
-  }
-
-  const verifyCode = async (code: string): Promise<boolean> => {
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 500))
-
-    // Mock: accept code "123456" for demo
-    if (code === "123456" && pendingEmail && MOCK_USERS[pendingEmail]) {
-      const userData = MOCK_USERS[pendingEmail]
-      setUser(userData)
-      localStorage.setItem("user", JSON.stringify(userData))
-      setPendingEmail(null)
-
-      // Redirect based on role
-      if (userData.role === "admin") {
-        router.push("/admin")
-      } else {
-        router.push("/employee")
-      }
-
-      return true
-    }
-
-    return false
-  }
-
-  const logout = () => {
+  const logout = async () => {
+    await supabase.auth.signOut()
     setUser(null)
-    localStorage.removeItem("user")
     router.push("/login")
   }
 
-  return <AuthContext.Provider value={{ user, login, verifyCode, logout, isLoading }}>{children}</AuthContext.Provider>
+  return (
+    <AuthContext.Provider value={{ user, isLoading, logout }}>
+      {children}
+    </AuthContext.Provider>
+  )
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext)
-  if (context === undefined) {
+  const ctx = useContext(AuthContext)
+  if (!ctx) {
     throw new Error("useAuth must be used within an AuthProvider")
   }
-  return context
+  return ctx
 }
