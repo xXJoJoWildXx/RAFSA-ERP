@@ -11,6 +11,7 @@ interface User {
   id: string
   email: string
   role: UserRole
+  display_name: string
   // puedes agregar name/avatar si los sacas de otra tabla
 }
 
@@ -44,7 +45,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // 2) obtener rol desde tu tabla de perfiles/roles
     const { data: profile, error } = await supabase
       .from("app_users") // CAMBIA si tu tabla tiene otro nombre
-      .select("role")
+      .select("role, display_name")
       .eq("id", authUser.id)
       .single()
 
@@ -59,6 +60,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       id: authUser.id,
       email: authUser.email ?? "",
       role: profile.role as UserRole,
+      display_name: profile.display_name,
     }
 
     setUser(mappedUser)
