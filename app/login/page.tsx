@@ -84,7 +84,7 @@ export default function LoginPage() {
             <Building2 className="w-6 h-6 text-white" />
           </div>
           <div>
-            <CardTitle className="text-2xl">Construction Manager</CardTitle>
+            <CardTitle className="text-2xl">RAFSA</CardTitle>
             <CardDescription className="text-base mt-2">
               Sign in to access your dashboard
             </CardDescription>
@@ -135,9 +135,6 @@ export default function LoginPage() {
             </Button>
 
             <div className="text-xs text-center text-slate-500 space-y-1">
-              <p>Demo accounts:</p>
-              <p className="font-mono">admin@construction.com</p>
-              <p className="font-mono">employee@construction.com</p>
             </div>
           </form>
         </CardContent>
