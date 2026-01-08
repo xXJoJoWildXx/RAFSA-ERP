@@ -1,7 +1,7 @@
 "use client"
 
 import { useParams, useRouter } from "next/navigation"
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { AdminLayout } from "@/components/admin-layout"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -16,7 +16,6 @@ import {
   ArrowLeft,
   Edit,
   CheckCircle2,
-  AlertCircle,
   Upload,
   FileText,
   FileCheck2,
@@ -88,10 +87,15 @@ type ObraAssignmentRow = {
   employees: { full_name: string } | { full_name: string }[] | null
 }
 
-// ---------- Documentos UI (por ahora solo UI; luego lo conectamos a obra_documents + storage) ----------
+// ---------- Documentos (conectado a obra_documents + storage) ----------
 
 type DocStatus = "missing" | "uploaded" | "processing" | "approved" | "rejected"
-type DocType = "contract" | "quote" | "annex"
+
+// DB enum: public.obra_document_type ('contract','quote','other')
+type DocType = "contract" | "quote" | "other"
+
+// DB enum: public.ai_status ('pending','processing','done','error','disabled')
+type AiStatus = "pending" | "processing" | "done" | "error" | "disabled"
 
 type UiObraDocument = {
   id: string
@@ -105,10 +109,15 @@ type UiObraDocument = {
   status: DocStatus
   created_at: string
   notes?: string | null
-  // futuros:
-  ai_confidence?: number | null
-  ai_summary?: string | null
+
+  bucket: string
+  object_path: string
+  is_current: boolean
+  ai_status: AiStatus
+  uploaded_at: string
 }
+
+const DOCS_BUCKET = "obra-docs"
 
 // ---------- Helpers de mapping / formatos ----------
 
@@ -168,7 +177,7 @@ function statusBadge(status: DocStatus) {
 function docTypeLabel(t: DocType) {
   if (t === "contract") return "Contrato"
   if (t === "quote") return "Cotización"
-  return "Anexo"
+  return "Anexo" // other
 }
 
 function docTypeIcon(t: DocType) {
@@ -249,7 +258,12 @@ export default function ProjectDetailPage() {
   // ------------------ Documentos: UI + Modal (Opción B) ------------------
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
-  const [docs, setDocs] = useState<UiObraDocument[]>([]) // luego: cargar desde public.obra_documents
+
+  const [docs, setDocs] = useState<UiObraDocument[]>([])
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docsError, setDocsError] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+
   const [docSearch, setDocSearch] = useState("")
   const [docTypeFilter, setDocTypeFilter] = useState<"all" | DocType>("all")
   const [docStatusFilter, setDocStatusFilter] = useState<"all" | Exclude<DocStatus, "missing">>("all")
@@ -312,20 +326,163 @@ export default function ProjectDetailPage() {
     }))
   }
 
-  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+  function handleDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault()
     e.stopPropagation()
     const file = e.dataTransfer.files?.[0]
     setFile(file ?? null)
   }
 
-  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
     e.preventDefault()
     e.stopPropagation()
   }
 
+  function mapAiToDocStatus(ai: AiStatus): Exclude<DocStatus, "missing"> {
+    if (ai === "processing") return "processing"
+    if (ai === "done") return "approved"
+    if (ai === "error") return "rejected"
+    return "uploaded" // pending/disabled
+  }
+
+  async function loadIsAdmin() {
+    const { data: authData } = await supabase.auth.getUser()
+    const uid = authData?.user?.id
+    if (!uid) {
+      setIsAdmin(false)
+      return
+    }
+
+    const { data, error } = await supabase.from("app_users").select("role").eq("id", uid).single()
+    if (error) {
+      console.error("loadIsAdmin error:", error)
+      setIsAdmin(false)
+      return
+    }
+
+    setIsAdmin(String(data?.role || "").toLowerCase() === "admin")
+  }
+
+  async function fetchDocuments(obraId: string) {
+    setDocsLoading(true)
+    setDocsError(null)
+
+    const { data, error } = await supabase
+      .from("obra_documents")
+      .select(
+        `
+        id, obra_id, doc_type, title,
+        bucket, object_path,
+        file_name, mime_type, size_bytes,
+        version, is_current,
+        ai_status,
+        uploaded_at,
+        created_at
+      `,
+      )
+      .eq("obra_id", obraId)
+      .order("uploaded_at", { ascending: false })
+
+    if (error) {
+      console.error("fetchDocuments error:", error)
+      setDocsError("No se pudieron cargar los documentos.")
+      setDocs([])
+      setDocsLoading(false)
+      return
+    }
+
+    const uiDocs: UiObraDocument[] = (data || []).map((d: any) => ({
+      id: d.id,
+      obra_id: d.obra_id,
+      doc_type: d.doc_type as DocType,
+      title: d.title || d.file_name || "Documento",
+      file_name: d.file_name || "archivo",
+      mime_type: d.mime_type || "application/octet-stream",
+      size_bytes: Number(d.size_bytes || 0),
+      version: Number(d.version || 1),
+      status: mapAiToDocStatus(d.ai_status as AiStatus),
+      created_at: d.created_at,
+      notes: null,
+
+      bucket: d.bucket || DOCS_BUCKET,
+      object_path: d.object_path,
+      is_current: Boolean(d.is_current),
+      ai_status: d.ai_status as AiStatus,
+      uploaded_at: d.uploaded_at,
+    }))
+
+    setDocs(uiDocs)
+    setDocsLoading(false)
+  }
+
+  async function getSignedUrl(bucket: string, objectPath: string, expiresInSeconds = 180) {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(objectPath, expiresInSeconds)
+    if (error || !data?.signedUrl) {
+      console.error("createSignedUrl error:", error)
+      throw new Error("No se pudo generar el link del archivo.")
+    }
+    return data.signedUrl
+  }
+
+  async function handlePreview(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      window.open(url, "_blank", "noopener,noreferrer")
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "No se pudo abrir el archivo.")
+    }
+  }
+
+  async function handleDownload(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = doc.file_name || "documento"
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } catch {
+      alert("No se pudo descargar el archivo.")
+    }
+  }
+
+  async function handleCopyLink(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      await navigator.clipboard.writeText(url)
+      alert("Link copiado (temporal).")
+    } catch {
+      alert("No se pudo copiar el link.")
+    }
+  }
+
+  async function handleDeleteDoc(doc: UiObraDocument) {
+    if (!isAdmin) {
+      alert("Solo un admin puede eliminar documentos.")
+      return
+    }
+
+    const ok = window.confirm("¿Eliminar este documento? Se borrará también del Storage.")
+    if (!ok) return
+
+    const { error: storageError } = await supabase.storage.from(doc.bucket).remove([doc.object_path])
+    if (storageError) {
+      console.error("storage remove error:", storageError)
+      alert("No se pudo borrar el archivo del bucket.")
+      return
+    }
+
+    const { error: rowError } = await supabase.from("obra_documents").delete().eq("id", doc.id)
+    if (rowError) {
+      console.error("row delete error:", rowError)
+      alert("Se borró el archivo, pero no se pudo borrar el registro en DB.")
+    }
+
+    if (obra) await fetchDocuments(obra.id)
+  }
+
   async function handleUploadDocument() {
-    // UI only: aún no sube a bucket. Dejamos “simulación” para que pruebes la UX.
     if (!obra) return
     setUploadError(null)
 
@@ -348,27 +505,81 @@ export default function ProjectDetailPage() {
     setUploadSaving(true)
 
     try {
-      // 🔧 SIMULACIÓN: insert local
-      const newDoc: UiObraDocument = {
-        id: crypto.randomUUID(),
-        obra_id: obra.id,
-        doc_type: uploadForm.doc_type,
-        title: uploadForm.title.trim(),
-        file_name: selectedFile.name,
-        mime_type: selectedFile.type || "application/octet-stream",
-        size_bytes: selectedFile.size,
-        version: v,
-        status: "uploaded",
-        created_at: new Date().toISOString(),
-        notes: uploadForm.notes?.trim() ? uploadForm.notes.trim() : null,
+      const { data: authData, error: authErr } = await supabase.auth.getUser()
+      if (authErr || !authData?.user) {
+        setUploadError("Sesión inválida. Vuelve a iniciar sesión.")
+        setUploadSaving(false)
+        return
       }
 
-      setDocs((prev) => {
-        const next = [newDoc, ...prev]
-        // orden “reciente primero”
-        next.sort((a, b) => (a.created_at > b.created_at ? -1 : 1))
-        return next
+      const safeName = selectedFile.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+
+      const uuid = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Date.now())
+      const folder = uploadForm.doc_type === "contract" ? "contracts" : uploadForm.doc_type === "quote" ? "quotes" : "other"
+      const objectPath = `obras/${obra.id}/${folder}/${uuid}_${safeName}`
+
+      // Versionado "current" solo para contract/quote (conservador)
+      if (uploadForm.doc_type !== "other") {
+        const { error: updErr } = await supabase
+          .from("obra_documents")
+          .update({ is_current: false })
+          .eq("obra_id", obra.id)
+          .eq("doc_type", uploadForm.doc_type)
+          .eq("is_current", true)
+
+        if (updErr) {
+          console.error("update is_current error:", updErr)
+          setUploadError("No se pudo preparar versionado (is_current).")
+          setUploadSaving(false)
+          return
+        }
+      }
+
+      // 1) upload a Storage
+      const { error: upErr } = await supabase.storage.from(DOCS_BUCKET).upload(objectPath, selectedFile, {
+        contentType: selectedFile.type || "application/octet-stream",
+        upsert: false,
       })
+
+      if (upErr) {
+        console.error("upload error:", upErr)
+        setUploadError("No se pudo subir el archivo (Storage). Revisa policies.")
+        setUploadSaving(false)
+        return
+      }
+
+      // 2) insert en obra_documents
+      const payload = {
+        obra_id: obra.id,
+        doc_type: uploadForm.doc_type, // contract | quote | other
+        title: uploadForm.title.trim(),
+        bucket: DOCS_BUCKET,
+        object_path: objectPath,
+        file_name: selectedFile.name,
+        mime_type: selectedFile.type || null,
+        size_bytes: selectedFile.size,
+        uploaded_by: authData.user.id,
+        version: v,
+        is_current: uploadForm.doc_type === "other" ? false : true,
+        ai_status: "pending" as AiStatus,
+        ai_model: null,
+        ai_extracted_json: null,
+        ai_error: null,
+      }
+
+      const { error: insErr } = await supabase.from("obra_documents").insert(payload)
+
+      if (insErr) {
+        console.error("insert obra_documents error:", insErr)
+        await supabase.storage.from(DOCS_BUCKET).remove([objectPath]) // rollback
+        setUploadError("No se pudo registrar el documento (DB).")
+        setUploadSaving(false)
+        return
+      }
 
       setUploadOpen(false)
       setSelectedFile(null)
@@ -378,6 +589,8 @@ export default function ProjectDetailPage() {
         version: "1",
         notes: "",
       })
+
+      await fetchDocuments(obra.id)
     } catch (e) {
       console.error(e)
       setUploadError("No se pudo registrar el documento. Intenta de nuevo.")
@@ -396,8 +609,7 @@ export default function ProjectDetailPage() {
         docTypeLabel(d.doc_type).toLowerCase().includes(q)
 
       const matchesType = docTypeFilter === "all" || d.doc_type === docTypeFilter
-      const matchesStatus =
-        docStatusFilter === "all" || d.status === docStatusFilter
+      const matchesStatus = docStatusFilter === "all" || d.status === docStatusFilter
 
       return matchesSearch && matchesType && matchesStatus
     })
@@ -406,7 +618,6 @@ export default function ProjectDetailPage() {
   const contractStatus: DocStatus = useMemo(() => {
     const contractDocs = docs.filter((d) => d.doc_type === "contract")
     if (contractDocs.length === 0) return "missing"
-    // si alguno está processing/rejected/etc podrías priorizar; por ahora el último manda
     return contractDocs[0].status
   }, [docs])
 
@@ -570,6 +781,8 @@ export default function ProjectDetailPage() {
       try {
         const obraId = params.id as string
 
+        await loadIsAdmin()
+
         const { data: obraData, error: obraError } = await supabase
           .from("obras")
           .select(
@@ -676,6 +889,8 @@ export default function ProjectDetailPage() {
         }
 
         setManagerName(foundManagerName)
+
+        await fetchDocuments(obraId)
       } catch (e) {
         console.error(e)
         setError("Error inesperado al cargar la obra.")
@@ -931,13 +1146,11 @@ export default function ProjectDetailPage() {
             <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
               <div>
                 <h2 className="text-xl font-bold text-slate-900">Documentos de la obra</h2>
-                <p className="text-sm text-slate-600">
-                  Administra el contrato, la cotización y anexos. (Luego conectamos Supabase Storage + tabla obra_documents.)
-                </p>
+                <p className="text-sm text-slate-600">Administra el contrato, la cotización y anexos.</p>
               </div>
 
               <div className="flex gap-2">
-                <Button variant="outline" onClick={() => openUploadModal("annex")}>
+                <Button variant="outline" onClick={() => openUploadModal("other")}>
                   <Plus className="w-4 h-4 mr-2" />
                   Subir anexo
                 </Button>
@@ -1033,7 +1246,7 @@ export default function ProjectDetailPage() {
                       <SelectItem value="all">Todos</SelectItem>
                       <SelectItem value="contract">Contrato</SelectItem>
                       <SelectItem value="quote">Cotización</SelectItem>
-                      <SelectItem value="annex">Anexo</SelectItem>
+                      <SelectItem value="other">Anexo</SelectItem>
                     </SelectContent>
                   </Select>
 
@@ -1053,7 +1266,15 @@ export default function ProjectDetailPage() {
               </CardHeader>
 
               <CardContent>
-                {filteredDocs.length === 0 ? (
+                {docsError && (
+                  <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                    {docsError}
+                  </div>
+                )}
+
+                {docsLoading ? (
+                  <div className="py-10 text-center text-slate-500 text-sm">Cargando documentos...</div>
+                ) : filteredDocs.length === 0 ? (
                   <div className="py-10 text-center text-slate-500 text-sm">
                     Aún no hay documentos registrados para esta obra.
                     <div className="mt-2 text-slate-600">
@@ -1113,26 +1334,21 @@ export default function ProjectDetailPage() {
 
                               <TableCell className="text-right">
                                 <div className="inline-flex gap-2">
-                                  <Button variant="outline" size="icon" onClick={() => alert("Preview (próximo)")}>
+                                  <Button variant="outline" size="icon" onClick={() => handlePreview(d)}>
                                     <Eye className="w-4 h-4" />
                                   </Button>
-                                  <Button variant="outline" size="icon" onClick={() => alert("Download (próximo)")}>
+                                  <Button variant="outline" size="icon" onClick={() => handleDownload(d)}>
                                     <Download className="w-4 h-4" />
                                   </Button>
-                                  <Button variant="outline" size="icon" onClick={() => alert("Copiar link (próximo)")}>
+                                  <Button variant="outline" size="icon" onClick={() => handleCopyLink(d)}>
                                     <Link2 className="w-4 h-4" />
                                   </Button>
-                                  <Button
-                                    variant="destructive"
-                                    size="icon"
-                                    onClick={() => {
-                                      const ok = window.confirm("¿Eliminar este documento? (UI)")
-                                      if (!ok) return
-                                      setDocs((prev) => prev.filter((x) => x.id !== d.id))
-                                    }}
-                                  >
-                                    <Trash2 className="w-4 h-4" />
-                                  </Button>
+
+                                  {isAdmin && (
+                                    <Button variant="destructive" size="icon" onClick={() => handleDeleteDoc(d)}>
+                                      <Trash2 className="w-4 h-4" />
+                                    </Button>
+                                  )}
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -1161,12 +1377,7 @@ export default function ProjectDetailPage() {
             </Card>
 
             {/* Input file oculto */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-            />
+            <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
 
             {/* Modal (Opción B) */}
             <Dialog open={uploadOpen} onOpenChange={(v) => (uploadSaving ? null : setUploadOpen(v))}>
@@ -1205,13 +1416,7 @@ export default function ProjectDetailPage() {
                                 </p>
                               </div>
 
-                              <Button
-                                type="button"
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setSelectedFile(null)}
-                                disabled={uploadSaving}
-                              >
+                              <Button type="button" variant="outline" size="sm" onClick={() => setSelectedFile(null)} disabled={uploadSaving}>
                                 Quitar
                               </Button>
                             </div>
@@ -1225,17 +1430,14 @@ export default function ProjectDetailPage() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div className="flex flex-col gap-1.5">
                       <label className="text-xs font-medium text-slate-600">Tipo de documento *</label>
-                      <Select
-                        value={uploadForm.doc_type}
-                        onValueChange={(v) => setUploadForm((f) => ({ ...f, doc_type: v as DocType }))}
-                      >
+                      <Select value={uploadForm.doc_type} onValueChange={(v) => setUploadForm((f) => ({ ...f, doc_type: v as DocType }))}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="contract">Contrato</SelectItem>
                           <SelectItem value="quote">Cotización</SelectItem>
-                          <SelectItem value="annex">Anexo</SelectItem>
+                          <SelectItem value="other">Anexo</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -1259,9 +1461,7 @@ export default function ProjectDetailPage() {
                         onChange={(e) => setUploadForm((f) => ({ ...f, title: e.target.value }))}
                         placeholder="Ej. Contrato firmado – Cliente X"
                       />
-                      <p className="text-[11px] text-slate-500">
-                        Tip: usa un nombre claro (cliente / fecha / versión).
-                      </p>
+                      <p className="text-[11px] text-slate-500">Tip: usa un nombre claro (cliente / fecha / versión).</p>
                     </div>
 
                     <div className="flex flex-col gap-1.5 md:col-span-2">
@@ -1276,9 +1476,7 @@ export default function ProjectDetailPage() {
                   </div>
 
                   {uploadError && (
-                    <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                      {uploadError}
-                    </div>
+                    <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{uploadError}</div>
                   )}
 
                   <div className="flex justify-end gap-2 pt-2">
@@ -1288,11 +1486,6 @@ export default function ProjectDetailPage() {
                     <Button onClick={handleUploadDocument} disabled={uploadSaving}>
                       {uploadSaving ? "Guardando..." : "Subir documento"}
                     </Button>
-                  </div>
-
-                  <div className="text-xs text-slate-500 pt-2 border-t">
-                    Nota: esta versión es <b>solo UI</b>. En el siguiente paso conectamos:{" "}
-                    <span className="font-mono">supabase.storage</span> + tabla <span className="font-mono">obra_documents</span>.
                   </div>
                 </div>
               </DialogContent>
@@ -1372,9 +1565,7 @@ export default function ProjectDetailPage() {
                               </TableCell>
                               <TableCell>{m.bank_ref || "-"}</TableCell>
                               <TableCell className="max-w-xs truncate">{m.note || "-"}</TableCell>
-                              <TableCell className="text-right font-medium">
-                                {formatCurrency(Number(amountNumber || 0), budgetCurrency)}
-                              </TableCell>
+                              <TableCell className="text-right font-medium">{formatCurrency(Number(amountNumber || 0), budgetCurrency)}</TableCell>
                             </TableRow>
                           )
                         })}
@@ -1395,10 +1586,7 @@ export default function ProjectDetailPage() {
               <CardContent>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {teamMembers.map((member) => (
-                    <div
-                      key={member.id}
-                      className="flex items-center gap-3 p-4 border border-slate-200 rounded-lg"
-                    >
+                    <div key={member.id} className="flex items-center gap-3 p-4 border border-slate-200 rounded-lg">
                       <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
                         <span className="text-sm font-bold text-blue-600">{member.avatar}</span>
                       </div>
@@ -1453,26 +1641,17 @@ export default function ProjectDetailPage() {
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Client Name</label>
-              <Input
-                value={editForm.client_name}
-                onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))}
-              />
+              <Input value={editForm.client_name} onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))} />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Location</label>
-              <Input
-                value={editForm.location_text}
-                onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))}
-              />
+              <Input value={editForm.location_text} onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))} />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Status</label>
-              <Select
-                value={editForm.status}
-                onValueChange={(v) => setEditForm((f) => ({ ...f, status: v as DbObraStatus }))}
-              >
+              <Select value={editForm.status} onValueChange={(v) => setEditForm((f) => ({ ...f, status: v as DbObraStatus }))}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -1488,19 +1667,11 @@ export default function ProjectDetailPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-600">Planned Start</label>
-                <Input
-                  type="date"
-                  value={editForm.start_date_planned || ""}
-                  onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))}
-                />
+                <Input type="date" value={editForm.start_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))} />
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-600">Planned End</label>
-                <Input
-                  type="date"
-                  value={editForm.end_date_planned || ""}
-                  onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))}
-                />
+                <Input type="date" value={editForm.end_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))} />
               </div>
             </div>
 
@@ -1532,10 +1703,7 @@ export default function ProjectDetailPage() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-600">Concepto</label>
-                <Select
-                  value={newPaymentForm.concept}
-                  onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, concept: v as ObraStateAccountRow["concept"] }))}
-                >
+                <Select value={newPaymentForm.concept} onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, concept: v as ObraStateAccountRow["concept"] }))}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -1562,10 +1730,7 @@ export default function ProjectDetailPage() {
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-600">Método de pago</label>
-                <Select
-                  value={newPaymentForm.method || "transfer"}
-                  onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, method: v as ObraStateAccountRow["method"] }))}
-                >
+                <Select value={newPaymentForm.method || "transfer"} onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, method: v as ObraStateAccountRow["method"] }))}>
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -1586,21 +1751,12 @@ export default function ProjectDetailPage() {
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Referencia bancaria</label>
-              <Input
-                value={newPaymentForm.bank_ref}
-                onChange={(e) => setNewPaymentForm((f) => ({ ...f, bank_ref: e.target.value }))}
-                placeholder="Referencia / folio / recibo"
-              />
+              <Input value={newPaymentForm.bank_ref} onChange={(e) => setNewPaymentForm((f) => ({ ...f, bank_ref: e.target.value }))} placeholder="Referencia / folio / recibo" />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Nota</label>
-              <Textarea
-                rows={3}
-                value={newPaymentForm.note}
-                onChange={(e) => setNewPaymentForm((f) => ({ ...f, note: e.target.value }))}
-                placeholder="Comentario adicional sobre este movimiento"
-              />
+              <Textarea rows={3} value={newPaymentForm.note} onChange={(e) => setNewPaymentForm((f) => ({ ...f, note: e.target.value }))} placeholder="Comentario adicional sobre este movimiento" />
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
