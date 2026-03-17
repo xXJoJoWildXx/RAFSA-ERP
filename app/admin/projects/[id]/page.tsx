@@ -36,6 +36,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
+import { ProjectTeamTab } from "@/components/projectTeamTab"
 
 // ---------- Tipos DB básicos ----------
 
@@ -117,6 +118,7 @@ type UiObraDocument = {
   ai_status: AiStatus
   uploaded_at: string
 }
+
 
 const DOCS_BUCKET = "obra-docs"
 
@@ -1142,7 +1144,7 @@ export default function ProjectDetailPage() {
           </TabsContent>
 
           {/* MILESTONES => Documentos (Opción B con modal) */}
-          <TabsContent value="milestones" className="space-y-6">
+          <TabsContent value="milestones" forceMount className="space-y-6">
             {/* Header */}
             <ProjectDocumentsTab obraId={obra.id}/>
           </TabsContent>
@@ -1232,28 +1234,9 @@ export default function ProjectDetailPage() {
             </Card>
           </TabsContent>
 
-          {/* TEAM (mock) */}
-          <TabsContent value="team">
-            <Card>
-              <CardHeader>
-                <CardTitle>Team Members</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {teamMembers.map((member) => (
-                    <div key={member.id} className="flex items-center gap-3 p-4 border border-slate-200 rounded-lg">
-                      <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
-                        <span className="text-sm font-bold text-blue-600">{member.avatar}</span>
-                      </div>
-                      <div>
-                        <p className="font-medium text-slate-900">{member.name}</p>
-                        <p className="text-sm text-slate-600">{member.role}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+          {/* TEAM  */}
+          <TabsContent value="team" forceMount className="space-y-6">
+            <ProjectTeamTab obraId={obra.id} allowManage />
           </TabsContent>
 
           {/* ACTIVITY (mock) */}
