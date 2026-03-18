@@ -416,7 +416,7 @@ async function fetchEmployeeSalaryHistory(employeeId: string) {
   if (!res.ok) {
     console.error("Salary history API error:", json)
     throw new Error(
-      json?.details || json?.error || "No se pudo cargar el historial salarial."
+      json?.details || json?.error || "No se pudo cargar el historial salarial.",
     )
   }
 
@@ -454,6 +454,23 @@ async function updateEmployeeSalaryHistory(args: {
     updated: boolean
     message?: string
     employee?: EmployeeRow
+  }
+}
+
+async function deleteEmployeeCascade(employeeId: string) {
+  const res = await fetch(`/api/employees/${employeeId}`, {
+    method: "DELETE",
+  })
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudo eliminar el empleado.")
+  }
+
+  return json as {
+    ok: boolean
+    deleted: boolean
   }
 }
 
@@ -500,6 +517,11 @@ export default function EmployeeDetailPage() {
   const [salaryHistoryError, setSalaryHistoryError] = useState<string | null>(null)
   const [salaryHistoryRows, setSalaryHistoryRows] = useState<EmployeeSalaryHistoryRow[]>([])
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string | null>(null)
+
+  // Delete empleado
+  const [deleteOpen, setDeleteOpen] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
 
   // Popup documentos
   const [docsDialogOpen, setDocsDialogOpen] = useState(false)
@@ -719,7 +741,6 @@ export default function EmployeeDetailPage() {
     }
   }
 
-
   useEffect(() => {
     const loadCurrentUser = async () => {
       const { data, error } = await supabase.auth.getUser()
@@ -936,6 +957,27 @@ export default function EmployeeDetailPage() {
       alert(e?.message || "No se pudieron guardar los salarios.")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleDeleteEmployee = async () => {
+    if (!id || !employee) return
+
+    if (deleteConfirmText.trim().toUpperCase() !== "ELIMINAR") {
+      alert('Para confirmar, escribe "ELIMINAR".')
+      return
+    }
+
+    try {
+      setDeleting(true)
+      await deleteEmployeeCascade(id)
+      setDeleteOpen(false)
+      router.push("/admin/employees")
+    } catch (e: any) {
+      console.error(e)
+      alert(e?.message || "No se pudo eliminar el empleado.")
+    } finally {
+      setDeleting(false)
     }
   }
 
@@ -1233,121 +1275,189 @@ export default function EmployeeDetailPage() {
             </div>
           </div>
 
-          <Dialog open={editOpen} onOpenChange={handleOpenChange}>
-            <DialogTrigger asChild>
-              <Button>
-                <Edit className="w-4 h-4 mr-2" />
-                Editar perfil
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-3xl">
-              <DialogHeader>
-                <DialogTitle>Editar empleado</DialogTitle>
-                <DialogDescription>
-                  Actualiza la información general del empleado.
-                </DialogDescription>
-              </DialogHeader>
+          <div className="flex items-center gap-2">
+            <Dialog open={editOpen} onOpenChange={handleOpenChange}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Edit className="w-4 h-4 mr-2" />
+                  Editar perfil
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-3xl">
+                <DialogHeader>
+                  <DialogTitle>Editar empleado</DialogTitle>
+                  <DialogDescription>
+                    Actualiza la información general del empleado.
+                  </DialogDescription>
+                </DialogHeader>
 
-              {editForm && (
-                <div className="space-y-6 py-2">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="full_name">Nombre completo</Label>
-                      <Input
-                        id="full_name"
-                        value={editForm.full_name}
-                        onChange={(e) =>
-                          handleEditChange("full_name", e.target.value)
-                        }
-                      />
-                    </div>
+                {editForm && (
+                  <div className="space-y-6 py-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="full_name">Nombre completo</Label>
+                        <Input
+                          id="full_name"
+                          value={editForm.full_name}
+                          onChange={(e) =>
+                            handleEditChange("full_name", e.target.value)
+                          }
+                        />
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="email">Correo</Label>
-                      <Input
-                        id="email"
-                        type="email"
-                        value={editForm.email}
-                        onChange={(e) =>
-                          handleEditChange("email", e.target.value)
-                        }
-                      />
-                    </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="email">Correo</Label>
+                        <Input
+                          id="email"
+                          type="email"
+                          value={editForm.email}
+                          onChange={(e) =>
+                            handleEditChange("email", e.target.value)
+                          }
+                        />
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="phone">Teléfono</Label>
-                      <Input
-                        id="phone"
-                        value={editForm.phone}
-                        onChange={(e) =>
-                          handleEditChange("phone", e.target.value)
-                        }
-                      />
-                    </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="phone">Teléfono</Label>
+                        <Input
+                          id="phone"
+                          value={editForm.phone}
+                          onChange={(e) =>
+                            handleEditChange("phone", e.target.value)
+                          }
+                        />
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="hire_date">Fecha de contratación</Label>
-                      <Input
-                        id="hire_date"
-                        type="date"
-                        value={editForm.hire_date ?? ""}
-                        onChange={(e) =>
-                          handleEditChange("hire_date", e.target.value)
-                        }
-                      />
-                    </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="hire_date">Fecha de contratación</Label>
+                        <Input
+                          id="hire_date"
+                          type="date"
+                          value={editForm.hire_date ?? ""}
+                          onChange={(e) =>
+                            handleEditChange("hire_date", e.target.value)
+                          }
+                        />
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label>Estatus</Label>
-                      <Select
-                        value={editForm.status}
-                        onValueChange={(value) =>
-                          handleEditChange(
-                            "status",
-                            value as EditEmployeeForm["status"],
-                          )
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Selecciona un estatus" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="active">Activo</SelectItem>
-                          <SelectItem value="inactive">Inactivo</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
+                      <div className="space-y-2">
+                        <Label>Estatus</Label>
+                        <Select
+                          value={editForm.status}
+                          onValueChange={(value) =>
+                            handleEditChange(
+                              "status",
+                              value as EditEmployeeForm["status"],
+                            )
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Selecciona un estatus" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="active">Activo</SelectItem>
+                            <SelectItem value="inactive">Inactivo</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="birth_date">Fecha de nacimiento</Label>
-                      <Input
-                        id="birth_date"
-                        type="date"
-                        value={editForm.birth_date ?? ""}
-                        onChange={(e) =>
-                          handleEditChange("birth_date", e.target.value)
-                        }
-                      />
+                      <div className="space-y-2">
+                        <Label htmlFor="birth_date">Fecha de nacimiento</Label>
+                        <Input
+                          id="birth_date"
+                          type="date"
+                          value={editForm.birth_date ?? ""}
+                          onChange={(e) =>
+                            handleEditChange("birth_date", e.target.value)
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setEditOpen(false)}
-                  disabled={saving}
-                >
-                  Cancelar
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setEditOpen(false)}
+                    disabled={saving}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button type="button" onClick={handleSave} disabled={saving}>
+                    {saving ? "Guardando..." : "Guardar cambios"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog
+              open={deleteOpen}
+              onOpenChange={(open) => {
+                setDeleteOpen(open)
+                if (!open) setDeleteConfirmText("")
+              }}
+            >
+              <DialogTrigger asChild>
+                <Button variant="destructive">
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Eliminar
                 </Button>
-                <Button type="button" onClick={handleSave} disabled={saving}>
-                  {saving ? "Guardando..." : "Guardar cambios"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
+              </DialogTrigger>
+              <DialogContent className="max-w-xl">
+                <DialogHeader>
+                  <DialogTitle>Eliminar empleado</DialogTitle>
+                  <DialogDescription>
+                    Esta acción eliminará a <span className="font-semibold">{employee.name}</span> y
+                    todos los registros relacionados que dependan de este empleado.
+                    Esta acción no se puede deshacer.
+                  </DialogDescription>
+                </DialogHeader>
+
+                <div className="space-y-4 py-2">
+                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                    ¿Estás seguro de que deseas eliminar permanentemente a este empleado?
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="delete-confirm-input">
+                      Para confirmar, escribe <span className="font-semibold">ELIMINAR</span>
+                    </Label>
+                    <Input
+                      id="delete-confirm-input"
+                      value={deleteConfirmText}
+                      onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      placeholder='Escribe "ELIMINAR"'
+                      autoComplete="off"
+                    />
+                  </div>
+                </div>
+
+                <DialogFooter>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setDeleteOpen(false)
+                      setDeleteConfirmText("")
+                    }}
+                    disabled={deleting}
+                  >
+                    Cancelar
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={handleDeleteEmployee}
+                    disabled={deleting || deleteConfirmText.trim().toUpperCase() !== "ELIMINAR"}
+                  >
+                    {deleting ? "Eliminando..." : "Sí, eliminar empleado"}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
         </div>
 
         <Dialog open={rolesDialogOpen} onOpenChange={setRolesDialogOpen}>
