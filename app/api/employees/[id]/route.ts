@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
+//Endpoint: DELETE /api/employees/[id] (eliminar un empleado y todos sus documentos relacionados, incluyendo foto de perfil)
+
 export const runtime = "nodejs"
 
 const supabase = createClient(

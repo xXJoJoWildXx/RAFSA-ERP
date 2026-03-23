@@ -474,6 +474,65 @@ async function deleteEmployeeCascade(employeeId: string) {
   }
 }
 
+// ------------------ Helpers para la Bucket ------------------
+const BUCKET_EMPLOYEE_DOCS = "employee-documents"
+
+function safeFileExt(fileName: string) {
+  const parts = fileName.split(".")
+  if (parts.length <= 1) return ""
+  const ext = parts[parts.length - 1]
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+  return ext ? `.${ext}` : ""
+}
+
+function sanitizeFileBaseName(fileName: string) {
+  const base = fileName.replace(/\.[^/.]+$/, "")
+  return (
+    base
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-_]/g, "")
+      .slice(0, 60) || "archivo"
+  )
+}
+
+function buildEmployeeDocPath(employeeId: string, docType: EmployeeDocType, file: File) {
+  const ts = Date.now()
+  const ext = safeFileExt(file.name)
+  const base = sanitizeFileBaseName(file.name)
+  return `employees/${employeeId}/${docType}/${ts}-${base}${ext}`
+}
+
+async function uploadEmployeeDocDirect(args: {
+  employeeId: string
+  docType: EmployeeDocType
+  file: File
+}) {
+  const { employeeId, docType, file } = args
+  const path = buildEmployeeDocPath(employeeId, docType, file)
+
+  const { error } = await supabase.storage
+    .from(BUCKET_EMPLOYEE_DOCS)
+    .upload(path, file, {
+      upsert: false,
+      contentType: file.type || "application/octet-stream",
+    })
+
+  if (error) {
+    throw error
+  }
+
+  return {
+    storage_bucket: BUCKET_EMPLOYEE_DOCS,
+    storage_path: path,
+    file_name: file.name || null,
+    mime_type: file.type || null,
+    file_size: file.size ?? null,
+  }
+}
+
 // -------------------- Page --------------------
 
 export default function EmployeeDetailPage() {
@@ -988,22 +1047,49 @@ export default function EmployeeDetailPage() {
   }
 
   async function uploadOrReplaceDoc(docType: EmployeeDocType, file: File) {
-    if (!id) return
-    const fd = new FormData()
-    fd.append("employeeId", id)
-    fd.append("docType", docType)
-    fd.append("file", file)
+  if (!id) return
 
-    const res = await fetch("/api/employee-docs", {
-      method: "POST",
-      body: fd,
-    })
+  const existing = docsMap.get(docType)
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "")
-      throw new Error(text || `No se pudo subir ${DOC_LABELS[docType]}.`)
+  if (existing) {
+    await deleteDoc(docType)
+  }
+
+  const uploaded = await uploadEmployeeDocDirect({
+    employeeId: id,
+    docType,
+    file,
+  })
+
+  const payload = {
+    employee_id: id,
+    doc_type: docType,
+    storage_bucket: uploaded.storage_bucket,
+    storage_path: uploaded.storage_path,
+    file_name: uploaded.file_name,
+    mime_type: uploaded.mime_type,
+    file_size: uploaded.file_size,
+  }
+
+  const { error: upsertErr } = await supabase
+    .from("employee_documents")
+    .upsert(payload, { onConflict: "employee_id,doc_type" })
+
+  if (upsertErr) {
+    throw upsertErr
+  }
+
+  if (docType === "profile_photo") {
+    const { error: photoErr } = await supabase
+      .from("employees")
+      .update({ photo_url: uploaded.storage_path })
+      .eq("id", id)
+
+    if (photoErr) {
+      throw photoErr
     }
   }
+}
 
   async function deleteDoc(docType: EmployeeDocType) {
     if (!id) return
@@ -1030,6 +1116,15 @@ export default function EmployeeDetailPage() {
       const selected = entries.filter(([, f]) => !!f) as Array<
         [EmployeeDocType, File]
       >
+
+      for (const [, file] of selected) {
+        const maxMb = 25
+        if (file.size > maxMb * 1024 * 1024) {
+          throw new Error(
+            `El archivo "${file.name}" excede el límite de ${maxMb} MB.`,
+          )
+        }
+      }
 
       for (const [docType, file] of selected) {
         await uploadOrReplaceDoc(docType, file)

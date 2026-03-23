@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
+//Endpoint: GET /api/employee-photo?path=...&expiresIn=... (obtener URL temporal de la foto del empleado)
+
 export const runtime = "nodejs"
 
 const supabase = createClient(

@@ -1,6 +1,8 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
+//Endpoint: GET /api/employee-salary-history?employeeId=... (obtener historial salarial de un empleado)
+
 export const runtime = "nodejs"
 
 const supabase = createClient(
