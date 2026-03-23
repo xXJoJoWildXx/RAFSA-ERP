@@ -1,5 +1,7 @@
 "use client"
 
+// Página de detalle de empleado, con tabs para perfil, documentos, DC3, historial salarial, etc.
+
 import { useEffect, useMemo, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
 import Link from "next/link"
@@ -471,6 +473,31 @@ async function deleteEmployeeCascade(employeeId: string) {
   return json as {
     ok: boolean
     deleted: boolean
+  }
+}
+// ------------------ Helpers para DC3 ------------------
+
+async function createDc3SignedUpload(args: {
+  employeeId: string
+  fileName: string
+}) {
+  const res = await fetch("/api/employee-dc3-upload-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudo preparar la subida del archivo.")
+  }
+
+  return json as {
+    bucket: string
+    path: string
+    token: string
+    signedUrl?: string | null
   }
 }
 
@@ -1161,18 +1188,43 @@ export default function EmployeeDetailPage() {
   const uploadDc3File = async (file: File) => {
     if (!id) return
 
-    const fd = new FormData()
-    fd.append("employeeId", id)
-    fd.append("file", file)
+    const maxMb = 25
+    if (file.size > maxMb * 1024 * 1024) {
+      throw new Error(`"${file.name}" excede el límite de ${maxMb} MB.`)
+    }
 
-    const res = await fetch("/api/employee-dc3-folder", {
-      method: "POST",
-      body: fd,
+    // 1) Pedir URL/token firmado
+    const prep = await createDc3SignedUpload({
+      employeeId: id,
+      fileName: file.name,
     })
 
-    if (!res.ok) {
-      const text = await res.text().catch(() => "")
-      throw new Error(text || `No se pudo subir "${file.name}".`)
+    // 2) Subir directo a Supabase Storage
+    const { error: uploadError } = await supabase.storage
+      .from(prep.bucket)
+      .uploadToSignedUrl(prep.path, prep.token, file)
+
+    if (uploadError) {
+      throw uploadError
+    }
+
+    // 3) Guardar metadata en DB
+    const saveRes = await fetch("/api/employee-dc3-folder", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        employeeId: id,
+        storagePath: prep.path,
+        fileName: file.name,
+        mimeType: file.type || null,
+        fileSize: file.size ?? null,
+      }),
+    })
+
+    const saveJson = await saveRes.json().catch(() => null)
+
+    if (!saveRes.ok) {
+      throw new Error(saveJson?.error || `No se pudo registrar "${file.name}".`)
     }
   }
 

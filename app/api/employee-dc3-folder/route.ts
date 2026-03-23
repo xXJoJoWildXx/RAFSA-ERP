@@ -3,13 +3,14 @@ import { createClient } from "@supabase/supabase-js"
 
 export const runtime = "nodejs"
 
+// Este endpoint maneja la carpeta DC3 de cada empleado, listando documentos, generando URLs firmadas para descarga y eliminando documentos.
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 )
 
 const BUCKET_DC3 = "employee-documents"
-const DC3_FOLDER_PREFIX = "dc3"
 
 type Dc3DocumentRow = {
   id: string
@@ -21,34 +22,6 @@ type Dc3DocumentRow = {
   file_size: number | null
   created_at?: string
   updated_at?: string
-}
-
-function safeFileExt(fileName: string) {
-  const parts = fileName.split(".")
-  if (parts.length <= 1) return ""
-  const ext = parts[parts.length - 1]
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, "")
-  return ext ? `.${ext}` : ""
-}
-
-function sanitizeFileBaseName(fileName: string) {
-  const base = fileName.replace(/\.[^/.]+$/, "")
-  return (
-    base
-      .toLowerCase()
-      .trim()
-      .replace(/\s+/g, "-")
-      .replace(/[^a-z0-9-_]/g, "")
-      .slice(0, 80) || "archivo"
-  )
-}
-
-function buildDc3Path(employeeId: string, fileName: string) {
-  const ts = Date.now()
-  const ext = safeFileExt(fileName)
-  const base = sanitizeFileBaseName(fileName)
-  return `employees/${employeeId}/${DC3_FOLDER_PREFIX}/${ts}-${base}${ext}`
 }
 
 async function createSignedUrl(path: string, expiresInSeconds = 60 * 30) {
@@ -136,60 +109,35 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: Request) {
   try {
-    const formData = await req.formData()
+    const body = await req.json()
 
-    const employeeId = formData.get("employeeId") as string | null
-    const file = formData.get("file") as File | null
+    const employeeId = body?.employeeId as string | undefined
+    const storagePath = body?.storagePath as string | undefined
+    const fileName = body?.fileName as string | undefined
+    const mimeType = body?.mimeType as string | undefined
+    const fileSize = body?.fileSize as number | undefined
 
-    if (!employeeId || !file) {
+    if (!employeeId || !storagePath || !fileName) {
       return NextResponse.json(
-        { error: "Faltan datos requeridos (employeeId, file)." },
+        {
+          error: "Faltan employeeId, storagePath y/o fileName.",
+        },
         { status: 400 },
       )
     }
 
-    const maxMb = 25
-    if ((file.size ?? 0) > maxMb * 1024 * 1024) {
-      return NextResponse.json(
-        { error: `El archivo excede el límite de ${maxMb} MB.` },
-        { status: 413 },
-      )
-    }
-
-    const path = buildDc3Path(employeeId, file.name)
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-
-    const { error: uploadError } = await supabase.storage
-      .from(BUCKET_DC3)
-      .upload(path, buffer, {
-        contentType: file.type || "application/octet-stream",
-        upsert: false,
-      })
-
-    if (uploadError) {
-      console.error("DC3 storage upload error:", uploadError)
-      return NextResponse.json(
-        {
-          error: "Error subiendo archivo a Storage",
-          details: uploadError.message,
-        },
-        { status: 500 },
-      )
-    }
-
-    const insertPayload = {
+    const payload = {
       employee_id: employeeId,
       storage_bucket: BUCKET_DC3,
-      storage_path: path,
-      file_name: file.name || null,
-      mime_type: file.type || null,
-      file_size: file.size ?? null,
+      storage_path: storagePath,
+      file_name: fileName,
+      mime_type: mimeType || null,
+      file_size: fileSize ?? null,
     }
 
-    const { data: inserted, error: insertError } = await supabase
+    const { data, error } = await supabase
       .from("employee_dc3_documents")
-      .insert(insertPayload)
+      .insert(payload)
       .select(
         `
         id,
@@ -205,19 +153,12 @@ export async function POST(req: Request) {
       )
       .single()
 
-    if (insertError) {
-      console.error("DC3 DB insert error:", insertError)
-
-      try {
-        await removeStorageObject(path)
-      } catch (rollbackErr) {
-        console.error("DC3 rollback storage remove error:", rollbackErr)
-      }
-
+    if (error) {
+      console.error("POST employee_dc3_documents insert error:", error)
       return NextResponse.json(
         {
-          error: "Error guardando metadata del archivo",
-          details: insertError.message,
+          error: "No se pudo guardar la metadata del documento.",
+          details: error.message,
         },
         { status: 500 },
       )
@@ -225,13 +166,13 @@ export async function POST(req: Request) {
 
     return NextResponse.json({
       ok: true,
-      document: inserted,
+      document: data,
     })
   } catch (err: any) {
     console.error("POST /api/employee-dc3-folder unexpected error:", err)
     return NextResponse.json(
       {
-        error: "Error inesperado subiendo archivo a carpeta DC3",
+        error: "Error inesperado guardando metadata DC3",
         message: err?.message,
       },
       { status: 500 },
