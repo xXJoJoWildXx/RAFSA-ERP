@@ -62,10 +62,10 @@ type EmployeeRow = {
   imss_number: string | null
   rfc: string | null
   birth_date: string | null
-  base_salary: number | string
   real_salary: number | string
   bonus_amount: number | string
   overtime_hour_cost: number | string
+  viatics_amount: number | string
   emergency_contact: string | null
   created_at: string
 }
@@ -121,10 +121,10 @@ type EmployeeDetail = {
   imss_number: string | null
   rfc: string | null
   birth_date: string | null
-  base_salary: number
   real_salary: number
   bonus_amount: number
   overtime_hour_cost: number
+  viatics_amount: number
   emergency_contact: string | null
   created_at: string
   photo_url: string | null
@@ -141,10 +141,10 @@ type EditEmployeeForm = {
   imss_number: string
   rfc: string
   emergency_contact: string
-  payroll_salary: string
   real_salary: string
   bonus_amount: string
   overtime_hour_cost: string
+  viatics_amount: string
 }
 
 // -------------------- Historial salarial --------------------
@@ -152,10 +152,10 @@ type EditEmployeeForm = {
 type EmployeeSalaryHistoryRow = {
   id: string
   employee_id: string
-  real_salary: number
-  payroll_salary: number
-  bonus_amount: number
-  overtime_hour_cost: number
+  real_salary: number | null
+  bonus_amount: number | null
+  overtime_hour_cost: number | null
+  viatics_amount: number | null
   valid_from: string
   valid_to: string | null
   changed_by: string | null
@@ -295,8 +295,13 @@ function formatDateTime(dateString: string | null) {
   })
 }
 
-function formatMoneyMXN(value: number) {
-  return `$${value.toLocaleString("es-MX", {
+function formatMoneyMXN(value: number | string | null | undefined) {
+  const safeValue =
+    value === null || value === undefined || Number.isNaN(Number(value))
+      ? 0
+      : Number(value)
+
+  return `$${safeValue.toLocaleString("es-MX", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} MXN`
@@ -304,10 +309,6 @@ function formatMoneyMXN(value: number) {
 
 function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
   const statusUi = mapDbStatusToUi(row.status)
-  const payrollSalary =
-    row.base_salary !== null && row.base_salary !== undefined
-      ? Number(row.base_salary)
-      : 0
   const realSalary =
     row.real_salary !== null && row.real_salary !== undefined
       ? Number(row.real_salary)
@@ -319,6 +320,10 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
   const overtime =
     row.overtime_hour_cost !== null && row.overtime_hour_cost !== undefined
       ? Number(row.overtime_hour_cost)
+      : 0
+  const viatics =
+    row.viatics_amount !== null && row.viatics_amount !== undefined
+      ? Number(row.viatics_amount)
       : 0
 
   return {
@@ -333,10 +338,10 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     imss_number: row.imss_number,
     rfc: row.rfc,
     birth_date: row.birth_date,
-    base_salary: payrollSalary,
     real_salary: realSalary,
     bonus_amount: bonusAmount,
     overtime_hour_cost: overtime,
+    viatics_amount: viatics,
     emergency_contact: row.emergency_contact,
     created_at: row.created_at,
     photo_url: row.photo_url ?? null,
@@ -431,9 +436,9 @@ async function fetchEmployeeSalaryHistory(employeeId: string) {
 async function updateEmployeeSalaryHistory(args: {
   employeeId: string
   real_salary: number
-  payroll_salary: number
   bonus_amount: number
   overtime_hour_cost: number
+  viatics_amount: number
   authUserId?: string | null
   change_reason?: string | null
 }) {
@@ -475,6 +480,7 @@ async function deleteEmployeeCascade(employeeId: string) {
     deleted: boolean
   }
 }
+
 // ------------------ Helpers para DC3 ------------------
 
 async function createDc3SignedUpload(args: {
@@ -502,6 +508,7 @@ async function createDc3SignedUpload(args: {
 }
 
 // ------------------ Helpers para la Bucket ------------------
+
 const BUCKET_EMPLOYEE_DOCS = "employee-documents"
 
 function safeFileExt(fileName: string) {
@@ -574,12 +581,10 @@ export default function EmployeeDetailPage() {
 
   const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null)
 
-  // Documentos base
   const [documents, setDocuments] = useState<EmployeeDocumentRow[]>([])
   const [docsLoading, setDocsLoading] = useState(false)
   const [docsError, setDocsError] = useState<string | null>(null)
 
-  // Carpeta DC3
   const [dc3Documents, setDc3Documents] = useState<Dc3DocumentRow[]>([])
   const [dc3SignedUrls, setDc3SignedUrls] = useState<Record<string, string>>({})
   const [dc3Loading, setDc3Loading] = useState(false)
@@ -588,28 +593,23 @@ export default function EmployeeDetailPage() {
   const [dc3Saving, setDc3Saving] = useState(false)
   const [dc3Files, setDc3Files] = useState<File[]>([])
 
-  // Edit perfil general
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   const [editForm, setEditForm] = useState<EditEmployeeForm | null>(null)
 
-  // Popups individuales de overview
   const [laborOpen, setLaborOpen] = useState(false)
   const [payrollOpen, setPayrollOpen] = useState(false)
 
-  // Historial salarios
   const [salaryHistoryOpen, setSalaryHistoryOpen] = useState(false)
   const [salaryHistoryLoading, setSalaryHistoryLoading] = useState(false)
   const [salaryHistoryError, setSalaryHistoryError] = useState<string | null>(null)
   const [salaryHistoryRows, setSalaryHistoryRows] = useState<EmployeeSalaryHistoryRow[]>([])
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string | null>(null)
 
-  // Delete empleado
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
 
-  // Popup documentos
   const [docsDialogOpen, setDocsDialogOpen] = useState(false)
   const [docsSaving, setDocsSaving] = useState(false)
   const [docFiles, setDocFiles] = useState<
@@ -628,7 +628,6 @@ export default function EmployeeDetailPage() {
     Partial<Record<EmployeeDocType, string>>
   >({})
 
-  // Roles
   const [rolesCatalog, setRolesCatalog] = useState<RoleCatalogRow[]>([])
   const [rolesDialogOpen, setRolesDialogOpen] = useState(false)
   const [rolesSaving, setRolesSaving] = useState(false)
@@ -636,7 +635,6 @@ export default function EmployeeDetailPage() {
   const [editRoleIds, setEditRoleIds] = useState<string[]>([])
   const [rolePickerValue, setRolePickerValue] = useState<string>("")
 
-  // -------- Cargar catálogo roles --------
   useEffect(() => {
     const fetchRolesCatalog = async () => {
       const { data, error } = await supabase
@@ -656,7 +654,6 @@ export default function EmployeeDetailPage() {
     fetchRolesCatalog()
   }, [])
 
-  // -------- Carga inicial: empleado + obras + roles --------
   useEffect(() => {
     if (!id) return
 
@@ -679,10 +676,10 @@ export default function EmployeeDetailPage() {
             imss_number,
             rfc,
             birth_date,
-            base_salary,
             real_salary,
             bonus_amount,
             overtime_hour_cost,
+            viatics_amount,
             emergency_contact,
             created_at
           `,
@@ -791,7 +788,6 @@ export default function EmployeeDetailPage() {
     fetchData()
   }, [id])
 
-  // -------- Carga de documentos base --------
   const fetchDocuments = async () => {
     if (!id) return
     setDocsLoading(true)
@@ -843,7 +839,6 @@ export default function EmployeeDetailPage() {
     loadCurrentUser()
   }, [])
 
-  // -------- Carga de carpeta DC3 --------
   const fetchDc3Documents = async () => {
     if (!id) return
     setDc3Loading(true)
@@ -897,7 +892,6 @@ export default function EmployeeDetailPage() {
     if (!id) return
     fetchDocuments()
     fetchDc3Documents()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id])
 
   const docsMap = useMemo(() => {
@@ -906,7 +900,6 @@ export default function EmployeeDetailPage() {
     return map
   }, [documents])
 
-  // -------- Edit empleado (perfil) --------
   const initEditFormFromEmployee = () => {
     if (!employee) return
 
@@ -920,10 +913,10 @@ export default function EmployeeDetailPage() {
       imss_number: employee.imss_number ?? "",
       rfc: employee.rfc ?? "",
       emergency_contact: employee.emergency_contact ?? "",
-      payroll_salary: employee.base_salary?.toString() ?? "0",
       real_salary: employee.real_salary?.toString() ?? "0",
       bonus_amount: employee.bonus_amount?.toString() ?? "0",
       overtime_hour_cost: employee.overtime_hour_cost?.toString() ?? "0",
+      viatics_amount: employee.viatics_amount?.toString() ?? "0",
     })
   }
 
@@ -957,10 +950,6 @@ export default function EmployeeDetailPage() {
       imss_number: editForm.imss_number.trim() || null,
       rfc: editForm.rfc.trim() || null,
       emergency_contact: editForm.emergency_contact.trim() || null,
-      base_salary: Number(editForm.payroll_salary) || 0,
-      real_salary: Number(editForm.real_salary) || 0,
-      bonus_amount: Number(editForm.bonus_amount) || 0,
-      overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
     }
 
     try {
@@ -980,10 +969,10 @@ export default function EmployeeDetailPage() {
           imss_number,
           rfc,
           birth_date,
-          base_salary,
           real_salary,
           bonus_amount,
           overtime_hour_cost,
+          viatics_amount,
           emergency_contact,
           created_at
         `,
@@ -1020,9 +1009,9 @@ export default function EmployeeDetailPage() {
       const result = await updateEmployeeSalaryHistory({
         employeeId: id,
         real_salary: Number(editForm.real_salary) || 0,
-        payroll_salary: Number(editForm.payroll_salary) || 0,
         bonus_amount: Number(editForm.bonus_amount) || 0,
         overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
+        viatics_amount: Number(editForm.viatics_amount) || 0,
         authUserId: currentAuthUserId,
         change_reason: null,
       })
@@ -1067,56 +1056,54 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  // -------- Documentos base --------
-
   const handleChangeDocFile = (docType: EmployeeDocType, file: File | null) => {
     setDocFiles((prev) => ({ ...prev, [docType]: file }))
   }
 
   async function uploadOrReplaceDoc(docType: EmployeeDocType, file: File) {
-  if (!id) return
+    if (!id) return
 
-  const existing = docsMap.get(docType)
+    const existing = docsMap.get(docType)
 
-  if (existing) {
-    await deleteDoc(docType)
-  }
+    if (existing) {
+      await deleteDoc(docType)
+    }
 
-  const uploaded = await uploadEmployeeDocDirect({
-    employeeId: id,
-    docType,
-    file,
-  })
+    const uploaded = await uploadEmployeeDocDirect({
+      employeeId: id,
+      docType,
+      file,
+    })
 
-  const payload = {
-    employee_id: id,
-    doc_type: docType,
-    storage_bucket: uploaded.storage_bucket,
-    storage_path: uploaded.storage_path,
-    file_name: uploaded.file_name,
-    mime_type: uploaded.mime_type,
-    file_size: uploaded.file_size,
-  }
+    const payload = {
+      employee_id: id,
+      doc_type: docType,
+      storage_bucket: uploaded.storage_bucket,
+      storage_path: uploaded.storage_path,
+      file_name: uploaded.file_name,
+      mime_type: uploaded.mime_type,
+      file_size: uploaded.file_size,
+    }
 
-  const { error: upsertErr } = await supabase
-    .from("employee_documents")
-    .upsert(payload, { onConflict: "employee_id,doc_type" })
+    const { error: upsertErr } = await supabase
+      .from("employee_documents")
+      .upsert(payload, { onConflict: "employee_id,doc_type" })
 
-  if (upsertErr) {
-    throw upsertErr
-  }
+    if (upsertErr) {
+      throw upsertErr
+    }
 
-  if (docType === "profile_photo") {
-    const { error: photoErr } = await supabase
-      .from("employees")
-      .update({ photo_url: uploaded.storage_path })
-      .eq("id", id)
+    if (docType === "profile_photo") {
+      const { error: photoErr } = await supabase
+        .from("employees")
+        .update({ photo_url: uploaded.storage_path })
+        .eq("id", id)
 
-    if (photoErr) {
-      throw photoErr
+      if (photoErr) {
+        throw photoErr
+      }
     }
   }
-}
 
   async function deleteDoc(docType: EmployeeDocType) {
     if (!id) return
@@ -1178,8 +1165,6 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  // -------- Carpeta DC3 --------
-
   const handleChangeDc3Files = (files: FileList | null) => {
     if (!files) return
     setDc3Files(Array.from(files))
@@ -1193,13 +1178,11 @@ export default function EmployeeDetailPage() {
       throw new Error(`"${file.name}" excede el límite de ${maxMb} MB.`)
     }
 
-    // 1) Pedir URL/token firmado
     const prep = await createDc3SignedUpload({
       employeeId: id,
       fileName: file.name,
     })
 
-    // 2) Subir directo a Supabase Storage
     const { error: uploadError } = await supabase.storage
       .from(prep.bucket)
       .uploadToSignedUrl(prep.path, prep.token, file)
@@ -1208,7 +1191,6 @@ export default function EmployeeDetailPage() {
       throw uploadError
     }
 
-    // 3) Guardar metadata en DB
     const saveRes = await fetch("/api/employee-dc3-folder", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1269,8 +1251,6 @@ export default function EmployeeDetailPage() {
       setDc3Saving(false)
     }
   }
-
-  // -------- Roles --------
 
   const openRolesDialog = () => {
     if (!employee) return
@@ -1352,8 +1332,6 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  // -------------------- UI states --------------------
-
   if (!id) {
     return (
       <AdminLayout>
@@ -1401,7 +1379,6 @@ export default function EmployeeDetailPage() {
 
   const sortedRoles = sortRolesWithPriority(employee.roles)
   const primaryRoleLabel = getPrimaryRoleLabelFromSorted(sortedRoles)
-  const salaryDifference = employee.real_salary - employee.base_salary
 
   return (
     <AdminLayout>
@@ -1701,7 +1678,7 @@ export default function EmployeeDetailPage() {
                 <DialogHeader>
                   <DialogTitle>Historial salarial</DialogTitle>
                   <DialogDescription>
-                    Consulta los cambios históricos de sueldos, bonificación y hora extra.
+                    Consulta los cambios históricos de sueldo real, bonificación, hora extra y viáticos.
                   </DialogDescription>
                 </DialogHeader>
               </div>
@@ -1717,52 +1694,44 @@ export default function EmployeeDetailPage() {
                   </p>
                 ) : (
                   <div className="overflow-x-auto">
-                    <table className="w-full min-w-[1100px] text-sm">
+                    <table className="w-full min-w-[1000px] text-sm">
                       <thead>
                         <tr className="border-b border-slate-200 text-left">
                           <th className="py-3 pr-4 font-semibold text-slate-700">Vigencia</th>
                           <th className="py-3 pr-4 font-semibold text-slate-700">Sueldo real</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Sueldo en nómina</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Diferencia</th>
                           <th className="py-3 pr-4 font-semibold text-slate-700">Bonificación</th>
                           <th className="py-3 pr-4 font-semibold text-slate-700">Hora extra</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-700">Viáticos</th>
                           <th className="py-3 pr-4 font-semibold text-slate-700">Modificado por</th>
                           <th className="py-3 pr-0 font-semibold text-slate-700">Motivo</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {salaryHistoryRows.map((row) => {
-                          const diff = row.real_salary - row.payroll_salary
-
-                          return (
-                            <tr key={row.id} className="border-b border-slate-100 align-top">
-                              <td className="py-3 pr-4 text-slate-700">
-                                {formatHistoryRange(row.valid_from, row.valid_to)}
-                              </td>
-                              <td className="py-3 pr-4 font-medium text-slate-900">
-                                {formatMoneyMXN(row.real_salary)}
-                              </td>
-                              <td className="py-3 pr-4 font-medium text-slate-900">
-                                {formatMoneyMXN(row.payroll_salary)}
-                              </td>
-                              <td className="py-3 pr-4 font-medium text-slate-900">
-                                {formatMoneyMXN(diff)}
-                              </td>
-                              <td className="py-3 pr-4 font-medium text-slate-900">
-                                {formatMoneyMXN(row.bonus_amount)}
-                              </td>
-                              <td className="py-3 pr-4 font-medium text-slate-900">
-                                {formatMoneyMXN(row.overtime_hour_cost)}
-                              </td>
-                              <td className="py-3 pr-4 text-slate-700">
-                                {row.changed_by_name || "No registrado"}
-                              </td>
-                              <td className="py-3 pr-0 text-slate-700">
-                                {row.change_reason || "Sin motivo"}
-                              </td>
-                            </tr>
-                          )
-                        })}
+                        {salaryHistoryRows.map((row) => (
+                          <tr key={row.id} className="border-b border-slate-100 align-top">
+                            <td className="py-3 pr-4 text-slate-700">
+                              {formatHistoryRange(row.valid_from, row.valid_to)}
+                            </td>
+                            <td className="py-3 pr-4 font-medium text-slate-900">
+                              {formatMoneyMXN(row.real_salary)}
+                            </td>
+                            <td className="py-3 pr-4 font-medium text-slate-900">
+                              {formatMoneyMXN(row.bonus_amount)}
+                            </td>
+                            <td className="py-3 pr-4 font-medium text-slate-900">
+                              {formatMoneyMXN(row.overtime_hour_cost)}
+                            </td>
+                            <td className="py-3 pr-4 font-medium text-slate-900">
+                              {formatMoneyMXN(row.viatics_amount)}
+                            </td>
+                            <td className="py-3 pr-4 text-slate-700">
+                              {row.changed_by_name || "No registrado"}
+                            </td>
+                            <td className="py-3 pr-0 text-slate-700">
+                              {row.change_reason || "Sin motivo"}
+                            </td>
+                          </tr>
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1935,7 +1904,7 @@ export default function EmployeeDetailPage() {
                             <DialogHeader>
                               <DialogTitle>Editar salarios</DialogTitle>
                               <DialogDescription>
-                                Actualiza la información salarial del empleado.
+                                Actualiza sueldo real, bonificación, hora extra y viáticos.
                               </DialogDescription>
                             </DialogHeader>
 
@@ -1957,21 +1926,6 @@ export default function EmployeeDetailPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                  <Label htmlFor="payroll_salary">
-                                    Sueldo en nómina (MXN)
-                                  </Label>
-                                  <Input
-                                    id="payroll_salary"
-                                    type="number"
-                                    step="0.01"
-                                    value={editForm.payroll_salary}
-                                    onChange={(e) =>
-                                      handleEditChange("payroll_salary", e.target.value)
-                                    }
-                                  />
-                                </div>
-
-                                <div className="space-y-2">
                                   <Label htmlFor="bonus_amount">
                                     Bonificación (MXN)
                                   </Label>
@@ -1988,7 +1942,7 @@ export default function EmployeeDetailPage() {
 
                                 <div className="space-y-2">
                                   <Label htmlFor="overtime_hour_cost">
-                                    Costo hora extra (MXN)
+                                    Hora extra (MXN)
                                   </Label>
                                   <Input
                                     id="overtime_hour_cost"
@@ -2000,6 +1954,21 @@ export default function EmployeeDetailPage() {
                                         "overtime_hour_cost",
                                         e.target.value,
                                       )
+                                    }
+                                  />
+                                </div>
+
+                                <div className="space-y-2">
+                                  <Label htmlFor="viatics_amount">
+                                    Viáticos (MXN)
+                                  </Label>
+                                  <Input
+                                    id="viatics_amount"
+                                    type="number"
+                                    step="0.01"
+                                    value={editForm.viatics_amount}
+                                    onChange={(e) =>
+                                      handleEditChange("viatics_amount", e.target.value)
                                     }
                                   />
                                 </div>
@@ -2038,20 +2007,6 @@ export default function EmployeeDetailPage() {
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Sueldo en nómina</p>
-                          <p className="font-medium text-slate-900 text-xl">
-                            {formatMoneyMXN(employee.base_salary)}
-                          </p>
-                        </div>
-
-                        <div className="space-y-1">
-                          <p className="text-slate-500">Diferencia de salarios</p>
-                          <p className="font-medium text-slate-900 text-xl">
-                            {formatMoneyMXN(salaryDifference)}
-                          </p>
-                        </div>
-
-                        <div className="space-y-1">
                           <p className="text-slate-500">Bonificación</p>
                           <p className="font-medium text-slate-900 text-xl">
                             {formatMoneyMXN(employee.bonus_amount)}
@@ -2059,9 +2014,16 @@ export default function EmployeeDetailPage() {
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Costo hora extra</p>
+                          <p className="text-slate-500">Hora extra</p>
                           <p className="font-medium text-slate-900 text-xl">
                             {formatMoneyMXN(employee.overtime_hour_cost)}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-slate-500">Viáticos</p>
+                          <p className="font-medium text-slate-900 text-xl">
+                            {formatMoneyMXN(employee.viatics_amount)}
                           </p>
                         </div>
                       </div>
@@ -2090,8 +2052,7 @@ export default function EmployeeDetailPage() {
                           <DialogHeader>
                             <DialogTitle>Editar información laboral</DialogTitle>
                             <DialogDescription>
-                              Actualiza los datos laborales y de contacto del
-                              empleado.
+                              Actualiza los datos laborales y de contacto del empleado.
                             </DialogDescription>
                           </DialogHeader>
 

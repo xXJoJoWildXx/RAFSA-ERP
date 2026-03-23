@@ -1,8 +1,6 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
-//Endpoint: GET /api/employee-salary-history?employeeId=... (obtener historial salarial de un empleado)
-
 export const runtime = "nodejs"
 
 const supabase = createClient(
@@ -13,9 +11,9 @@ const supabase = createClient(
 type SalaryHistoryPostBody = {
   employeeId?: string
   real_salary?: number
-  payroll_salary?: number
   bonus_amount?: number
   overtime_hour_cost?: number
+  viatics_amount?: number
   authUserId?: string | null
   change_reason?: string | null
 }
@@ -39,9 +37,9 @@ export async function GET(req: Request) {
         id,
         employee_id,
         real_salary,
-        payroll_salary,
         bonus_amount,
         overtime_hour_cost,
+        viatics_amount,
         valid_from,
         valid_to,
         changed_by,
@@ -72,10 +70,10 @@ export async function GET(req: Request) {
       (data || []).map((row: any) => ({
         id: row.id,
         employee_id: row.employee_id,
-        real_salary: Number(row.real_salary || 0),
-        payroll_salary: Number(row.payroll_salary || 0),
-        bonus_amount: Number(row.bonus_amount || 0),
-        overtime_hour_cost: Number(row.overtime_hour_cost || 0),
+        real_salary: Number(row.real_salary ?? 0),
+        bonus_amount: Number(row.bonus_amount ?? 0),
+        overtime_hour_cost: Number(row.overtime_hour_cost ?? 0),
+        viatics_amount: Number(row.viatics_amount ?? 0),
         valid_from: row.valid_from,
         valid_to: row.valid_to,
         changed_by: row.changed_by,
@@ -109,9 +107,9 @@ export async function POST(req: Request) {
 
     const employeeId = body.employeeId
     const realSalary = Number(body.real_salary ?? 0)
-    const payrollSalary = Number(body.payroll_salary ?? 0)
     const bonusAmount = Number(body.bonus_amount ?? 0)
     const overtimeHourCost = Number(body.overtime_hour_cost ?? 0)
+    const viaticsAmount = Number(body.viatics_amount ?? 0)
     const changeReason = body.change_reason ?? null
 
     if (!employeeId) {
@@ -121,7 +119,6 @@ export async function POST(req: Request) {
       )
     }
 
-    // app_users.id = auth.users.id en tu esquema
     const changedByAppUserId = body.authUserId ?? null
 
     const { data: employee, error: employeeError } = await supabase
@@ -138,10 +135,10 @@ export async function POST(req: Request) {
         imss_number,
         rfc,
         birth_date,
-        base_salary,
         real_salary,
         bonus_amount,
         overtime_hour_cost,
+        viatics_amount,
         emergency_contact,
         created_at
       `,
@@ -158,15 +155,15 @@ export async function POST(req: Request) {
     }
 
     const currentRealSalary = Number(employee.real_salary ?? 0)
-    const currentPayrollSalary = Number(employee.base_salary ?? 0)
     const currentBonusAmount = Number(employee.bonus_amount ?? 0)
     const currentOvertimeHourCost = Number(employee.overtime_hour_cost ?? 0)
+    const currentViaticsAmount = Number(employee.viatics_amount ?? 0)
 
     const nothingChanged =
       currentRealSalary === realSalary &&
-      currentPayrollSalary === payrollSalary &&
       currentBonusAmount === bonusAmount &&
-      currentOvertimeHourCost === overtimeHourCost
+      currentOvertimeHourCost === overtimeHourCost &&
+      currentViaticsAmount === viaticsAmount
 
     if (nothingChanged) {
       return NextResponse.json({
@@ -198,9 +195,9 @@ export async function POST(req: Request) {
       .insert({
         employee_id: employeeId,
         real_salary: realSalary,
-        payroll_salary: payrollSalary,
         bonus_amount: bonusAmount,
         overtime_hour_cost: overtimeHourCost,
+        viatics_amount: viaticsAmount,
         valid_from: nowIso,
         valid_to: null,
         changed_by: changedByAppUserId,
@@ -222,9 +219,9 @@ export async function POST(req: Request) {
       .from("employees")
       .update({
         real_salary: realSalary,
-        base_salary: payrollSalary,
         bonus_amount: bonusAmount,
         overtime_hour_cost: overtimeHourCost,
+        viatics_amount: viaticsAmount,
       })
       .eq("id", employeeId)
       .select(
@@ -239,10 +236,10 @@ export async function POST(req: Request) {
         imss_number,
         rfc,
         birth_date,
-        base_salary,
         real_salary,
         bonus_amount,
         overtime_hour_cost,
+        viatics_amount,
         emergency_contact,
         created_at
       `,
