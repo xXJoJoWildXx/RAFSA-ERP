@@ -3,6 +3,8 @@ import { createClient } from "@supabase/supabase-js"
 
 export const runtime = "nodejs"
 
+// Endpoint para axeder y manejar el historial salarial de los empleados. Permite obtener el historial completo (GET) y agregar un nuevo registro de salario (POST).
+
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
