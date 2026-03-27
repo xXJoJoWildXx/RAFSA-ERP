@@ -152,10 +152,10 @@ type EditEmployeeForm = {
 type EmployeeSalaryHistoryRow = {
   id: string
   employee_id: string
-  real_salary: number | null
-  bonus_amount: number | null
-  overtime_hour_cost: number | null
-  viatics_amount: number | null
+  real_salary: number
+  bonus_amount: number
+  overtime_hour_cost: number
+  viatics_amount: number
   valid_from: string
   valid_to: string | null
   changed_by: string | null
@@ -215,11 +215,14 @@ type EmployeeDocumentsApiResponse = {
   profile_photo_url?: string | null
 }
 
-// -------------------- Carpeta DC3 --------------------
+// -------------------- Documentos de Obra --------------------
 
-type Dc3DocumentRow = {
+type WorkFolderType = "dc3" | "medical_reports"
+
+type WorkDocumentRow = {
   id: string
   employee_id: string
+  folder_type: WorkFolderType
   storage_bucket: string
   storage_path: string
   file_name: string | null
@@ -229,8 +232,8 @@ type Dc3DocumentRow = {
   updated_at?: string
 }
 
-type EmployeeDc3ApiResponse = {
-  documents: Dc3DocumentRow[]
+type EmployeeWorkDocumentsApiResponse = {
+  documents: WorkDocumentRow[]
   signed_urls?: Record<string, string>
 }
 
@@ -295,13 +298,8 @@ function formatDateTime(dateString: string | null) {
   })
 }
 
-function formatMoneyMXN(value: number | string | null | undefined) {
-  const safeValue =
-    value === null || value === undefined || Number.isNaN(Number(value))
-      ? 0
-      : Number(value)
-
-  return `$${safeValue.toLocaleString("es-MX", {
+function formatMoneyMXN(value: number) {
+  return `$${value.toLocaleString("es-MX", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })} MXN`
@@ -481,13 +479,14 @@ async function deleteEmployeeCascade(employeeId: string) {
   }
 }
 
-// ------------------ Helpers para DC3 ------------------
+// ------------------ Helpers para Documentos de Obra ------------------
 
-async function createDc3SignedUpload(args: {
+async function createWorkDocumentSignedUpload(args: {
   employeeId: string
   fileName: string
+  folderType: WorkFolderType
 }) {
-  const res = await fetch("/api/employee-dc3-upload-url", {
+  const res = await fetch("/api/employee-work-documents-upload-url", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(args),
@@ -504,7 +503,47 @@ async function createDc3SignedUpload(args: {
     path: string
     token: string
     signedUrl?: string | null
+    folderType: WorkFolderType
   }
+}
+
+async function saveWorkDocumentMetadata(args: {
+  employeeId: string
+  folderType: WorkFolderType
+  storagePath: string
+  fileName: string
+  mimeType: string | null
+  fileSize: number | null
+}) {
+  const res = await fetch("/api/employee-work-documents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudo guardar la metadata del archivo.")
+  }
+
+  return json
+}
+
+async function deleteWorkDocumentApi(documentId: string) {
+  const res = await fetch("/api/employee-work-documents", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ documentId }),
+  })
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudo eliminar el archivo.")
+  }
+
+  return json
 }
 
 // ------------------ Helpers para la Bucket ------------------
@@ -585,13 +624,21 @@ export default function EmployeeDetailPage() {
   const [docsLoading, setDocsLoading] = useState(false)
   const [docsError, setDocsError] = useState<string | null>(null)
 
-  const [dc3Documents, setDc3Documents] = useState<Dc3DocumentRow[]>([])
+  const [dc3Documents, setDc3Documents] = useState<WorkDocumentRow[]>([])
   const [dc3SignedUrls, setDc3SignedUrls] = useState<Record<string, string>>({})
   const [dc3Loading, setDc3Loading] = useState(false)
   const [dc3Error, setDc3Error] = useState<string | null>(null)
   const [dc3DialogOpen, setDc3DialogOpen] = useState(false)
   const [dc3Saving, setDc3Saving] = useState(false)
   const [dc3Files, setDc3Files] = useState<File[]>([])
+
+  const [medicalDocuments, setMedicalDocuments] = useState<WorkDocumentRow[]>([])
+  const [medicalSignedUrls, setMedicalSignedUrls] = useState<Record<string, string>>({})
+  const [medicalLoading, setMedicalLoading] = useState(false)
+  const [medicalError, setMedicalError] = useState<string | null>(null)
+  const [medicalDialogOpen, setMedicalDialogOpen] = useState(false)
+  const [medicalSaving, setMedicalSaving] = useState(false)
+  const [medicalFiles, setMedicalFiles] = useState<File[]>([])
 
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -839,14 +886,24 @@ export default function EmployeeDetailPage() {
     loadCurrentUser()
   }, [])
 
-  const fetchDc3Documents = async () => {
+  const fetchWorkDocuments = async (folderType: WorkFolderType) => {
     if (!id) return
-    setDc3Loading(true)
-    setDc3Error(null)
+
+    const setLoadingByFolder =
+      folderType === "dc3" ? setDc3Loading : setMedicalLoading
+    const setErrorByFolder =
+      folderType === "dc3" ? setDc3Error : setMedicalError
+    const setDocsByFolder =
+      folderType === "dc3" ? setDc3Documents : setMedicalDocuments
+    const setUrlsByFolder =
+      folderType === "dc3" ? setDc3SignedUrls : setMedicalSignedUrls
+
+    setLoadingByFolder(true)
+    setErrorByFolder(null)
 
     try {
       const res = await fetch(
-        `/api/employee-dc3-folder?employeeId=${encodeURIComponent(id)}`,
+        `/api/employee-work-documents?employeeId=${encodeURIComponent(id)}&folderType=${folderType}`,
         {
           method: "GET",
           headers: { "Content-Type": "application/json" },
@@ -855,19 +912,29 @@ export default function EmployeeDetailPage() {
 
       if (!res.ok) {
         const text = await res.text().catch(() => "")
-        throw new Error(text || "No se pudo cargar la carpeta DC3.")
+        throw new Error(
+          text ||
+            (folderType === "dc3"
+              ? "No se pudo cargar la carpeta DC3."
+              : "No se pudo cargar la carpeta de reportes médicos."),
+        )
       }
 
-      const json = (await res.json()) as EmployeeDc3ApiResponse
-      setDc3Documents(json.documents || [])
-      setDc3SignedUrls(json.signed_urls || {})
+      const json = (await res.json()) as EmployeeWorkDocumentsApiResponse
+      setDocsByFolder(json.documents || [])
+      setUrlsByFolder(json.signed_urls || {})
     } catch (e: any) {
       console.error(e)
-      setDc3Error(e?.message || "No se pudo cargar la carpeta DC3.")
-      setDc3Documents([])
-      setDc3SignedUrls({})
+      setErrorByFolder(
+        e?.message ||
+          (folderType === "dc3"
+            ? "No se pudo cargar la carpeta DC3."
+            : "No se pudo cargar la carpeta de reportes médicos."),
+      )
+      setDocsByFolder([])
+      setUrlsByFolder({})
     } finally {
-      setDc3Loading(false)
+      setLoadingByFolder(false)
     }
   }
 
@@ -891,7 +958,8 @@ export default function EmployeeDetailPage() {
   useEffect(() => {
     if (!id) return
     fetchDocuments()
-    fetchDc3Documents()
+    fetchWorkDocuments("dc3")
+    fetchWorkDocuments("medical_reports")
   }, [id])
 
   const docsMap = useMemo(() => {
@@ -1165,12 +1233,26 @@ export default function EmployeeDetailPage() {
     }
   }
 
-  const handleChangeDc3Files = (files: FileList | null) => {
+  const handleChangeWorkFiles = (
+    folderType: WorkFolderType,
+    files: FileList | null,
+  ) => {
     if (!files) return
-    setDc3Files(Array.from(files))
+
+    const selected = Array.from(files)
+
+    if (folderType === "dc3") {
+      setDc3Files(selected)
+      return
+    }
+
+    setMedicalFiles(selected)
   }
 
-  const uploadDc3File = async (file: File) => {
+  const uploadWorkFile = async (
+    folderType: WorkFolderType,
+    file: File,
+  ) => {
     if (!id) return
 
     const maxMb = 25
@@ -1178,9 +1260,10 @@ export default function EmployeeDetailPage() {
       throw new Error(`"${file.name}" excede el límite de ${maxMb} MB.`)
     }
 
-    const prep = await createDc3SignedUpload({
+    const prep = await createWorkDocumentSignedUpload({
       employeeId: id,
       fileName: file.name,
+      folderType,
     })
 
     const { error: uploadError } = await supabase.storage
@@ -1191,64 +1274,59 @@ export default function EmployeeDetailPage() {
       throw uploadError
     }
 
-    const saveRes = await fetch("/api/employee-dc3-folder", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        employeeId: id,
-        storagePath: prep.path,
-        fileName: file.name,
-        mimeType: file.type || null,
-        fileSize: file.size ?? null,
-      }),
+    await saveWorkDocumentMetadata({
+      employeeId: id,
+      folderType,
+      storagePath: prep.path,
+      fileName: file.name,
+      mimeType: file.type || null,
+      fileSize: file.size ?? null,
     })
-
-    const saveJson = await saveRes.json().catch(() => null)
-
-    if (!saveRes.ok) {
-      throw new Error(saveJson?.error || `No se pudo registrar "${file.name}".`)
-    }
   }
 
-  const deleteDc3File = async (documentId: string) => {
-    const res = await fetch("/api/employee-dc3-folder", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ documentId }),
-    })
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "")
-      throw new Error(
-        text || "No se pudo eliminar el documento de la carpeta DC3.",
-      )
-    }
+  const deleteWorkDocumentByFolder = async (
+    folderType: WorkFolderType,
+    documentId: string,
+  ) => {
+    await deleteWorkDocumentApi(documentId)
+    await fetchWorkDocuments(folderType)
   }
 
-  const handleSaveDc3Documents = async () => {
+  const handleSaveWorkDocuments = async (folderType: WorkFolderType) => {
     if (!id) return
-    if (dc3Files.length === 0) {
-      setDc3DialogOpen(false)
+
+    const selectedFiles = folderType === "dc3" ? dc3Files : medicalFiles
+    const setSavingByFolder = folderType === "dc3" ? setDc3Saving : setMedicalSaving
+    const setDialogOpenByFolder =
+      folderType === "dc3" ? setDc3DialogOpen : setMedicalDialogOpen
+    const clearFilesByFolder =
+      folderType === "dc3" ? () => setDc3Files([]) : () => setMedicalFiles([])
+
+    if (selectedFiles.length === 0) {
+      setDialogOpenByFolder(false)
       return
     }
 
-    setDc3Saving(true)
+    setSavingByFolder(true)
 
     try {
-      for (const file of dc3Files) {
-        await uploadDc3File(file)
+      for (const file of selectedFiles) {
+        await uploadWorkFile(folderType, file)
       }
 
-      await fetchDc3Documents()
-      setDc3Files([])
-      setDc3DialogOpen(false)
+      await fetchWorkDocuments(folderType)
+      clearFilesByFolder()
+      setDialogOpenByFolder(false)
     } catch (e: any) {
       console.error(e)
       alert(
-        e?.message || "Hubo un error guardando los documentos de la carpeta DC3.",
+        e?.message ||
+          (folderType === "dc3"
+            ? "Hubo un error guardando los documentos de la carpeta DC3."
+            : "Hubo un error guardando los documentos de la carpeta de reportes médicos."),
       )
     } finally {
-      setDc3Saving(false)
+      setSavingByFolder(false)
     }
   }
 
@@ -1862,7 +1940,7 @@ export default function EmployeeDetailPage() {
               <TabsList>
                 <TabsTrigger value="overview">Resumen</TabsTrigger>
                 <TabsTrigger value="documents">Documentos</TabsTrigger>
-                <TabsTrigger value="dc3">Carpeta DC3</TabsTrigger>
+                <TabsTrigger value="dc3">Documentos de Obra</TabsTrigger>
                 <TabsTrigger value="projects">Obras</TabsTrigger>
               </TabsList>
 
@@ -2475,206 +2553,409 @@ export default function EmployeeDetailPage() {
               </TabsContent>
 
               <TabsContent value="dc3">
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FolderOpen className="w-5 h-5 text-slate-700" />
-                      <CardTitle>Carpeta DC3</CardTitle>
-                    </div>
+                <div className="grid grid-cols-1 gap-6">
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <FolderOpen className="w-5 h-5 text-slate-700" />
+                        <CardTitle>Carpeta DC3</CardTitle>
+                      </div>
 
-                    <Dialog open={dc3DialogOpen} onOpenChange={setDc3DialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button variant="outline">
-                          <Plus className="w-4 h-4 mr-2" />
-                          Agregar archivos
-                        </Button>
-                      </DialogTrigger>
+                      <Dialog open={dc3DialogOpen} onOpenChange={setDc3DialogOpen}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">
+                            <Plus className="w-4 h-4 mr-2" />
+                            Agregar archivos
+                          </Button>
+                        </DialogTrigger>
 
-                      <DialogContent className="max-w-2xl">
-                        <DialogHeader>
-                          <DialogTitle>
-                            Agregar documentos a Carpeta DC3
-                          </DialogTitle>
-                          <DialogDescription>
-                            Sube permisos, licencias u otros documentos
-                            adicionales del empleado.
-                          </DialogDescription>
-                        </DialogHeader>
+                        <DialogContent className="max-w-2xl">
+                          <DialogHeader>
+                            <DialogTitle>
+                              Agregar documentos a Carpeta DC3
+                            </DialogTitle>
+                            <DialogDescription>
+                              Sube permisos, licencias u otros documentos adicionales del empleado.
+                            </DialogDescription>
+                          </DialogHeader>
 
-                        <div className="space-y-4 py-2">
-                          <div className="space-y-2">
-                            <Label>Seleccionar archivos</Label>
-                            <Input
-                              type="file"
-                              multiple
-                              accept=".pdf,image/*"
-                              onChange={(e) =>
-                                handleChangeDc3Files(e.target.files)
-                              }
-                            />
-                          </div>
-
-                          {dc3Files.length > 0 ? (
+                          <div className="space-y-4 py-2">
                             <div className="space-y-2">
-                              <p className="text-sm font-medium text-slate-900">
-                                Archivos seleccionados
-                              </p>
-                              <div className="space-y-2 max-h-48 overflow-y-auto border rounded-md p-3">
-                                {dc3Files.map((file, index) => (
-                                  <div
-                                    key={`${file.name}-${index}`}
-                                    className="flex items-center justify-between text-sm text-slate-700"
-                                  >
-                                    <span className="truncate">{file.name}</span>
-                                    <span className="text-xs text-slate-400 ml-3">
-                                      {Math.round(file.size / 1024)} KB
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
+                              <Label>Seleccionar archivos</Label>
+                              <Input
+                                type="file"
+                                multiple
+                                accept=".pdf,image/*"
+                                onChange={(e) =>
+                                  handleChangeWorkFiles("dc3", e.target.files)
+                                }
+                              />
                             </div>
-                          ) : (
-                            <p className="text-sm text-slate-500">
-                              No hay archivos seleccionados.
-                            </p>
-                          )}
-                        </div>
 
-                        <DialogFooter>
-                          <Button
-                            type="button"
-                            variant="outline"
-                            onClick={() => setDc3DialogOpen(false)}
-                            disabled={dc3Saving}
-                          >
-                            Cancelar
-                          </Button>
-                          <Button
-                            type="button"
-                            onClick={handleSaveDc3Documents}
-                            disabled={dc3Saving}
-                          >
-                            {dc3Saving ? "Guardando..." : "Guardar archivos"}
-                          </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
-                  </CardHeader>
-
-                  <CardContent>
-                    {dc3Loading ? (
-                      <p className="text-sm text-slate-600">
-                        Cargando carpeta DC3...
-                      </p>
-                    ) : dc3Error ? (
-                      <p className="text-sm text-red-500">{dc3Error}</p>
-                    ) : dc3Documents.length === 0 ? (
-                      <p className="text-sm text-slate-600">
-                        Esta carpeta aún no tiene documentos cargados.
-                      </p>
-                    ) : (
-                      <div className="space-y-4">
-                        {dc3Documents.map((doc) => {
-                          const signedUrl = dc3SignedUrls[doc.id]
-                          const isPdf = normalizeMimeIsPdf(doc.mime_type)
-
-                          return (
-                            <div
-                              key={doc.id}
-                              className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
-                            >
-                              <div className="flex items-start gap-3 flex-1">
-                                <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
-                                <div className="flex-1">
-                                  <h4 className="font-medium text-slate-900">
-                                    {doc.file_name ?? "Archivo sin nombre"}
-                                  </h4>
-
-                                  <p className="text-xs text-slate-500 mt-1">
-                                    {doc.file_size ? (
-                                      <span>
-                                        {Math.round(doc.file_size / 1024)} KB
+                            {dc3Files.length > 0 ? (
+                              <div className="space-y-2">
+                                <p className="text-sm font-medium text-slate-900">
+                                  Archivos seleccionados
+                                </p>
+                                <div className="space-y-2 max-h-48 overflow-y-auto border rounded-md p-3">
+                                  {dc3Files.map((file, index) => (
+                                    <div
+                                      key={`${file.name}-${index}`}
+                                      className="flex items-center justify-between text-sm text-slate-700"
+                                    >
+                                      <span className="truncate">{file.name}</span>
+                                      <span className="text-xs text-slate-400 ml-3">
+                                        {Math.round(file.size / 1024)} KB
                                       </span>
-                                    ) : (
-                                      <span>Tamaño no disponible</span>
-                                    )}
-                                    {doc.created_at ? (
-                                      <span className="ml-2">
-                                        • {formatDate(doc.created_at)}
-                                      </span>
-                                    ) : null}
-                                  </p>
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
+                            ) : (
+                              <p className="text-sm text-slate-500">
+                                No hay archivos seleccionados.
+                              </p>
+                            )}
+                          </div>
 
-                              <div className="flex items-center gap-2">
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  disabled={!signedUrl}
-                                  onClick={() => {
-                                    if (!signedUrl) return
-                                    window.open(
-                                      signedUrl,
-                                      "_blank",
-                                      "noopener,noreferrer",
-                                    )
-                                  }}
-                                >
-                                  <Eye className="w-4 h-4 mr-2" />
-                                  {isPdf ? "Ver" : "Abrir"}
-                                </Button>
+                          <DialogFooter>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setDc3DialogOpen(false)}
+                              disabled={dc3Saving}
+                            >
+                              Cancelar
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={() => handleSaveWorkDocuments("dc3")}
+                              disabled={dc3Saving}
+                            >
+                              {dc3Saving ? "Guardando..." : "Guardar archivos"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </CardHeader>
 
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  disabled={!signedUrl}
-                                  onClick={() => {
-                                    if (!signedUrl) return
-                                    const a = document.createElement("a")
-                                    a.href = signedUrl
-                                    a.download = doc.file_name || "documento-dc3"
-                                    document.body.appendChild(a)
-                                    a.click()
-                                    a.remove()
-                                  }}
-                                >
-                                  <Download className="w-4 h-4 mr-2" />
-                                  Descargar
-                                </Button>
+                    <CardContent>
+                      {dc3Loading ? (
+                        <p className="text-sm text-slate-600">
+                          Cargando carpeta DC3...
+                        </p>
+                      ) : dc3Error ? (
+                        <p className="text-sm text-red-500">{dc3Error}</p>
+                      ) : dc3Documents.length === 0 ? (
+                        <p className="text-sm text-slate-600">
+                          Esta carpeta aún no tiene documentos cargados.
+                        </p>
+                      ) : (
+                        <div className="space-y-4">
+                          {dc3Documents.map((doc) => {
+                            const signedUrl = dc3SignedUrls[doc.id]
+                            const isPdf = normalizeMimeIsPdf(doc.mime_type)
 
-                                <Button
-                                  type="button"
-                                  variant="destructive"
-                                  onClick={async () => {
-                                    const ok = confirm(
-                                      `¿Eliminar "${doc.file_name ?? "este archivo"}"?`,
-                                    )
-                                    if (!ok) return
+                            return (
+                              <div
+                                key={doc.id}
+                                className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
+                              >
+                                <div className="flex items-start gap-3 flex-1">
+                                  <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
+                                  <div className="flex-1">
+                                    <h4 className="font-medium text-slate-900">
+                                      {doc.file_name ?? "Archivo sin nombre"}
+                                    </h4>
 
-                                    try {
-                                      await deleteDc3File(doc.id)
-                                      await fetchDc3Documents()
-                                    } catch (e: any) {
-                                      console.error(e)
-                                      alert(
-                                        e?.message ||
-                                          "No se pudo eliminar el archivo.",
+                                    <p className="text-xs text-slate-500 mt-1">
+                                      {doc.file_size ? (
+                                        <span>
+                                          {Math.round(doc.file_size / 1024)} KB
+                                        </span>
+                                      ) : (
+                                        <span>Tamaño no disponible</span>
+                                      )}
+                                      {doc.created_at ? (
+                                        <span className="ml-2">
+                                          • {formatDate(doc.created_at)}
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!signedUrl}
+                                    onClick={() => {
+                                      if (!signedUrl) return
+                                      window.open(
+                                        signedUrl,
+                                        "_blank",
+                                        "noopener,noreferrer",
                                       )
-                                    }
-                                  }}
-                                >
-                                  <Trash2 className="w-4 h-4 mr-2" />
-                                  Eliminar
-                                </Button>
+                                    }}
+                                  >
+                                    <Eye className="w-4 h-4 mr-2" />
+                                    {isPdf ? "Ver" : "Abrir"}
+                                  </Button>
+
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!signedUrl}
+                                    onClick={() => {
+                                      if (!signedUrl) return
+                                      const a = document.createElement("a")
+                                      a.href = signedUrl
+                                      a.download = doc.file_name || "documento-dc3"
+                                      document.body.appendChild(a)
+                                      a.click()
+                                      a.remove()
+                                    }}
+                                  >
+                                    <Download className="w-4 h-4 mr-2" />
+                                    Descargar
+                                  </Button>
+
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    onClick={async () => {
+                                      const ok = confirm(
+                                        `¿Eliminar "${doc.file_name ?? "este archivo"}"?`,
+                                      )
+                                      if (!ok) return
+
+                                      try {
+                                        await deleteWorkDocumentByFolder("dc3", doc.id)
+                                      } catch (e: any) {
+                                        console.error(e)
+                                        alert(
+                                          e?.message ||
+                                            "No se pudo eliminar el archivo.",
+                                        )
+                                      }
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4 mr-2" />
+                                    Eliminar
+                                  </Button>
+                                </div>
                               </div>
-                            </div>
-                          )
-                        })}
+                            )
+                          })}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader className="flex flex-row items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <FolderOpen className="w-5 h-5 text-slate-700" />
+                        <CardTitle>Carpeta de Reportes Médicos</CardTitle>
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
+
+                      <Dialog open={medicalDialogOpen} onOpenChange={setMedicalDialogOpen}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline">
+                            <Plus className="w-4 h-4 mr-2" />
+                            Agregar archivos
+                          </Button>
+                        </DialogTrigger>
+
+                        <DialogContent className="max-w-2xl">
+                          <DialogHeader>
+                            <DialogTitle>
+                              Agregar documentos a Carpeta de Reportes Médicos
+                            </DialogTitle>
+                            <DialogDescription>
+                              Sube incapacidades, estudios, reportes u otros documentos médicos del empleado.
+                            </DialogDescription>
+                          </DialogHeader>
+
+                          <div className="space-y-4 py-2">
+                            <div className="space-y-2">
+                              <Label>Seleccionar archivos</Label>
+                              <Input
+                                type="file"
+                                multiple
+                                accept=".pdf,image/*"
+                                onChange={(e) =>
+                                  handleChangeWorkFiles("medical_reports", e.target.files)
+                                }
+                              />
+                            </div>
+
+                            {medicalFiles.length > 0 ? (
+                              <div className="space-y-2">
+                                <p className="text-sm font-medium text-slate-900">
+                                  Archivos seleccionados
+                                </p>
+                                <div className="space-y-2 max-h-48 overflow-y-auto border rounded-md p-3">
+                                  {medicalFiles.map((file, index) => (
+                                    <div
+                                      key={`${file.name}-${index}`}
+                                      className="flex items-center justify-between text-sm text-slate-700"
+                                    >
+                                      <span className="truncate">{file.name}</span>
+                                      <span className="text-xs text-slate-400 ml-3">
+                                        {Math.round(file.size / 1024)} KB
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-500">
+                                No hay archivos seleccionados.
+                              </p>
+                            )}
+                          </div>
+
+                          <DialogFooter>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              onClick={() => setMedicalDialogOpen(false)}
+                              disabled={medicalSaving}
+                            >
+                              Cancelar
+                            </Button>
+                            <Button
+                              type="button"
+                              onClick={() => handleSaveWorkDocuments("medical_reports")}
+                              disabled={medicalSaving}
+                            >
+                              {medicalSaving ? "Guardando..." : "Guardar archivos"}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    </CardHeader>
+
+                    <CardContent>
+                      {medicalLoading ? (
+                        <p className="text-sm text-slate-600">
+                          Cargando carpeta de reportes médicos...
+                        </p>
+                      ) : medicalError ? (
+                        <p className="text-sm text-red-500">{medicalError}</p>
+                      ) : medicalDocuments.length === 0 ? (
+                        <p className="text-sm text-slate-600">
+                          Esta carpeta aún no tiene documentos cargados.
+                        </p>
+                      ) : (
+                        <div className="space-y-4">
+                          {medicalDocuments.map((doc) => {
+                            const signedUrl = medicalSignedUrls[doc.id]
+                            const isPdf = normalizeMimeIsPdf(doc.mime_type)
+
+                            return (
+                              <div
+                                key={doc.id}
+                                className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
+                              >
+                                <div className="flex items-start gap-3 flex-1">
+                                  <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
+                                  <div className="flex-1">
+                                    <h4 className="font-medium text-slate-900">
+                                      {doc.file_name ?? "Archivo sin nombre"}
+                                    </h4>
+
+                                    <p className="text-xs text-slate-500 mt-1">
+                                      {doc.file_size ? (
+                                        <span>
+                                          {Math.round(doc.file_size / 1024)} KB
+                                        </span>
+                                      ) : (
+                                        <span>Tamaño no disponible</span>
+                                      )}
+                                      {doc.created_at ? (
+                                        <span className="ml-2">
+                                          • {formatDate(doc.created_at)}
+                                        </span>
+                                      ) : null}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!signedUrl}
+                                    onClick={() => {
+                                      if (!signedUrl) return
+                                      window.open(
+                                        signedUrl,
+                                        "_blank",
+                                        "noopener,noreferrer",
+                                      )
+                                    }}
+                                  >
+                                    <Eye className="w-4 h-4 mr-2" />
+                                    {isPdf ? "Ver" : "Abrir"}
+                                  </Button>
+
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!signedUrl}
+                                    onClick={() => {
+                                      if (!signedUrl) return
+                                      const a = document.createElement("a")
+                                      a.href = signedUrl
+                                      a.download =
+                                        doc.file_name || "documento-reporte-medico"
+                                      document.body.appendChild(a)
+                                      a.click()
+                                      a.remove()
+                                    }}
+                                  >
+                                    <Download className="w-4 h-4 mr-2" />
+                                    Descargar
+                                  </Button>
+
+                                  <Button
+                                    type="button"
+                                    variant="destructive"
+                                    onClick={async () => {
+                                      const ok = confirm(
+                                        `¿Eliminar "${doc.file_name ?? "este archivo"}"?`,
+                                      )
+                                      if (!ok) return
+
+                                      try {
+                                        await deleteWorkDocumentByFolder(
+                                          "medical_reports",
+                                          doc.id,
+                                        )
+                                      } catch (e: any) {
+                                        console.error(e)
+                                        alert(
+                                          e?.message ||
+                                            "No se pudo eliminar el archivo.",
+                                        )
+                                      }
+                                    }}
+                                  >
+                                    <Trash2 className="w-4 h-4 mr-2" />
+                                    Eliminar
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
               </TabsContent>
 
               <TabsContent value="projects">

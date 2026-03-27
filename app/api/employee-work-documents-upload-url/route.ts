@@ -3,15 +3,18 @@ import { createClient } from "@supabase/supabase-js"
 
 export const runtime = "nodejs"
 
-// Este endpoint genera URLs firmadas para subir documentos DC3 de cada empleado. El cliente debe enviar employeeId y fileName, y se devuelve una URL de subida válida por 30 minutos.
-
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.SUPABASE_SERVICE_ROLE_KEY!,
 )
 
-const BUCKET_DC3 = "employee-documents"
-const DC3_FOLDER_PREFIX = "dc3"
+const BUCKET_WORK_DOCS = "employee-documents"
+
+type FolderType = "dc3" | "medical_reports"
+
+function isValidFolderType(value: string): value is FolderType {
+  return value === "dc3" || value === "medical_reports"
+}
 
 function safeFileExt(fileName: string) {
   const parts = fileName.split(".")
@@ -34,11 +37,28 @@ function sanitizeFileBaseName(fileName: string) {
   )
 }
 
-function buildDc3Path(employeeId: string, fileName: string) {
+function mapFolderTypeToStorageFolder(folderType: FolderType) {
+  switch (folderType) {
+    case "dc3":
+      return "dc3"
+    case "medical_reports":
+      return "medical-reports"
+    default:
+      return "general"
+  }
+}
+
+function buildWorkDocumentPath(
+  employeeId: string,
+  folderType: FolderType,
+  fileName: string,
+) {
   const ts = Date.now()
   const ext = safeFileExt(fileName)
   const base = sanitizeFileBaseName(fileName)
-  return `employees/${employeeId}/${DC3_FOLDER_PREFIX}/${ts}-${base}${ext}`
+  const folder = mapFolderTypeToStorageFolder(folderType)
+
+  return `employees/${employeeId}/${folder}/${ts}-${base}${ext}`
 }
 
 export async function POST(req: NextRequest) {
@@ -47,18 +67,27 @@ export async function POST(req: NextRequest) {
 
     const employeeId = body?.employeeId as string | undefined
     const fileName = body?.fileName as string | undefined
+    const folderTypeRaw = body?.folderType as string | undefined
 
-    if (!employeeId || !fileName) {
+    if (!employeeId || !fileName || !folderTypeRaw) {
       return NextResponse.json(
-        { error: "Faltan employeeId y/o fileName." },
+        { error: "Faltan employeeId, fileName y/o folderType." },
         { status: 400 },
       )
     }
 
-    const path = buildDc3Path(employeeId, fileName)
+    if (!isValidFolderType(folderTypeRaw)) {
+      return NextResponse.json(
+        { error: "folderType inválido." },
+        { status: 400 },
+      )
+    }
+
+    const folderType = folderTypeRaw as FolderType
+    const path = buildWorkDocumentPath(employeeId, folderType, fileName)
 
     const { data, error } = await supabase.storage
-      .from(BUCKET_DC3)
+      .from(BUCKET_WORK_DOCS)
       .createSignedUploadUrl(path)
 
     if (error || !data) {
@@ -73,13 +102,17 @@ export async function POST(req: NextRequest) {
     }
 
     return NextResponse.json({
-      bucket: BUCKET_DC3,
+      bucket: BUCKET_WORK_DOCS,
       path,
       token: data.token,
       signedUrl: data.signedUrl ?? null,
+      folderType,
     })
   } catch (err: any) {
-    console.error("POST /api/employee-dc3-upload-url unexpected error:", err)
+    console.error(
+      "POST /api/employee-work-documents-upload-url unexpected error:",
+      err,
+    )
     return NextResponse.json(
       {
         error: "Error inesperado generando URL de subida.",
