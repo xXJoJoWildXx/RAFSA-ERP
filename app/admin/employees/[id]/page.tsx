@@ -1,6 +1,6 @@
 "use client"
 
-// Página de detalle de empleado, con tabs para perfil, documentos, DC3, historial salarial, etc.
+// Página de detalle de empleado, con tabs para perfil, documentos, DC3, historial salarial, datos bancarios, etc.
 
 import { useEffect, useMemo, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
@@ -46,6 +46,9 @@ import {
   Plus,
   FolderOpen,
   History,
+  Landmark,
+  CreditCard,
+  Wallet,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
@@ -66,6 +69,9 @@ type EmployeeRow = {
   bonus_amount: number | string
   overtime_hour_cost: number | string
   viatics_amount: number | string
+  bank_name: string | null
+  account_number: string | null
+  interbank_clabe: string | null
   emergency_contact: string | null
   created_at: string
 }
@@ -125,6 +131,9 @@ type EmployeeDetail = {
   bonus_amount: number
   overtime_hour_cost: number
   viatics_amount: number
+  bank_name: string | null
+  account_number: string | null
+  interbank_clabe: string | null
   emergency_contact: string | null
   created_at: string
   photo_url: string | null
@@ -145,6 +154,12 @@ type EditEmployeeForm = {
   bonus_amount: string
   overtime_hour_cost: string
   viatics_amount: string
+}
+
+type BankingForm = {
+  bank_name: string
+  account_number: string
+  interbank_clabe: string
 }
 
 // -------------------- Historial salarial --------------------
@@ -237,6 +252,15 @@ type EmployeeWorkDocumentsApiResponse = {
   signed_urls?: Record<string, string>
 }
 
+// -------------------- Banking API --------------------
+
+type EmployeeBankingApiResponse = {
+  ok: boolean
+  bank_name: string | null
+  account_number: string | null
+  interbank_clabe: string | null
+}
+
 // -------------------- Helpers --------------------
 
 function mapDbStatusToUi(status: string): EmployeeDetail["statusUi"] {
@@ -276,6 +300,20 @@ function makeAvatarInitials(name?: string | null): string {
 
 function formatDate(dateString: string | null) {
   if (!dateString) return "No especificado"
+  
+  // Parsear manualmente para evitar problemas de zona horaria
+  // Si es formato YYYY-MM-DD, crear date sin convertir a UTC
+  const parts = dateString.split("T")[0]?.split("-")
+  if (parts && parts.length === 3) {
+    const [year, month, day] = parts.map(Number)
+    const d = new Date(year, month - 1, day)
+    return d.toLocaleDateString("es-MX", {
+      year: "numeric",
+      month: "short",
+      day: "2-digit",
+    })
+  }
+  
   const d = new Date(dateString)
   if (Number.isNaN(d.getTime())) return dateString
   return d.toLocaleDateString("es-MX", {
@@ -304,6 +342,7 @@ function formatMoneyMXN(value: number) {
     maximumFractionDigits: 2,
   })} MXN`
 }
+
 
 function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
   const statusUi = mapDbStatusToUi(row.status)
@@ -340,6 +379,9 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     bonus_amount: bonusAmount,
     overtime_hour_cost: overtime,
     viatics_amount: viatics,
+    bank_name: row.bank_name ?? null,
+    account_number: row.account_number ?? null,
+    interbank_clabe: row.interbank_clabe ?? null,
     emergency_contact: row.emergency_contact,
     created_at: row.created_at,
     photo_url: row.photo_url ?? null,
@@ -476,6 +518,52 @@ async function deleteEmployeeCascade(employeeId: string) {
   return json as {
     ok: boolean
     deleted: boolean
+  }
+}
+
+async function fetchEmployeeBanking(employeeId: string) {
+  const res = await fetch(
+    `/api/employee-banking?employeeId=${encodeURIComponent(employeeId)}`,
+    {
+      method: "GET",
+      headers: { "Content-Type": "application/json" },
+    },
+  )
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudieron cargar los datos bancarios.")
+  }
+
+  return json as EmployeeBankingApiResponse
+}
+
+async function saveEmployeeBanking(args: {
+  employeeId: string
+  bank_name: string | null
+  account_number: string | null
+  interbank_clabe: string | null
+}) {
+  const res = await fetch("/api/employee-banking", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(args),
+  })
+
+  const json = await res.json().catch(() => null)
+
+  if (!res.ok) {
+    throw new Error(json?.error || "No se pudieron guardar los datos bancarios.")
+  }
+
+  return json as {
+    ok: boolean
+    banking: {
+      bank_name: string
+      account_number: string
+      interbank_clabe: string
+    }
   }
 }
 
@@ -653,6 +741,15 @@ export default function EmployeeDetailPage() {
   const [salaryHistoryRows, setSalaryHistoryRows] = useState<EmployeeSalaryHistoryRow[]>([])
   const [currentAuthUserId, setCurrentAuthUserId] = useState<string | null>(null)
 
+  const [bankingOpen, setBankingOpen] = useState(false)
+  const [bankingLoading, setBankingLoading] = useState(false)
+  const [bankingSaving, setBankingSaving] = useState(false)
+  const [bankingForm, setBankingForm] = useState<BankingForm>({
+    bank_name: "",
+    account_number: "",
+    interbank_clabe: "",
+  })
+
   const [deleteOpen, setDeleteOpen] = useState(false)
   const [deleting, setDeleting] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
@@ -727,6 +824,9 @@ export default function EmployeeDetailPage() {
             bonus_amount,
             overtime_hour_cost,
             viatics_amount,
+            bank_name,
+            account_number,
+            interbank_clabe,
             emergency_contact,
             created_at
           `,
@@ -779,6 +879,12 @@ export default function EmployeeDetailPage() {
         }
 
         setEmployee(mapped)
+
+        setBankingForm({
+          bank_name: mapped.bank_name ?? "",
+          account_number: mapped.account_number ?? "",
+          interbank_clabe: mapped.interbank_clabe ?? "",
+        })
 
         const { data: assignData, error: assignError } = await supabase
           .from("obra_assignments")
@@ -955,6 +1061,25 @@ export default function EmployeeDetailPage() {
     }
   }
 
+  const loadBanking = async () => {
+    if (!id) return
+    setBankingLoading(true)
+
+    try {
+      const res = await fetchEmployeeBanking(id)
+      setBankingForm({
+        bank_name: res.bank_name ?? "",
+        account_number: res.account_number ?? "",
+        interbank_clabe: res.interbank_clabe ?? "",
+      })
+    } catch (e: any) {
+      console.error(e)
+      alert(e?.message || "No se pudieron cargar los datos bancarios.")
+    } finally {
+      setBankingLoading(false)
+    }
+  }
+
   useEffect(() => {
     if (!id) return
     fetchDocuments()
@@ -1041,6 +1166,9 @@ export default function EmployeeDetailPage() {
           bonus_amount,
           overtime_hour_cost,
           viatics_amount,
+          bank_name,
+          account_number,
+          interbank_clabe,
           emergency_contact,
           created_at
         `,
@@ -1100,6 +1228,45 @@ export default function EmployeeDetailPage() {
       alert(e?.message || "No se pudieron guardar los salarios.")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const handleSaveBanking = async () => {
+    if (!id) return
+
+    try {
+      setBankingSaving(true)
+
+      const res = await saveEmployeeBanking({
+        employeeId: id,
+        bank_name: bankingForm.bank_name.trim() || null,
+        account_number: bankingForm.account_number.trim() || null,
+        interbank_clabe: bankingForm.interbank_clabe.trim() || null,
+      })
+
+      setEmployee((prev) =>
+        prev
+          ? {
+              ...prev,
+              bank_name: res.banking.bank_name || null,
+              account_number: res.banking.account_number || null,
+              interbank_clabe: res.banking.interbank_clabe || null,
+            }
+          : prev,
+      )
+
+      setBankingForm({
+        bank_name: res.banking.bank_name || "",
+        account_number: res.banking.account_number || "",
+        interbank_clabe: res.banking.interbank_clabe || "",
+      })
+
+      setBankingOpen(false)
+    } catch (e: any) {
+      console.error(e)
+      alert(e?.message || "No se pudieron guardar los datos bancarios.")
+    } finally {
+      setBankingSaving(false)
     }
   }
 
@@ -1831,6 +1998,90 @@ export default function EmployeeDetailPage() {
           </DialogContent>
         </Dialog>
 
+        <Dialog
+          open={bankingOpen}
+          onOpenChange={async (open) => {
+            setBankingOpen(open)
+            if (open) {
+              await loadBanking()
+            }
+          }}
+        >
+          <DialogContent className="max-w-xl">
+            <DialogHeader>
+              <DialogTitle>Editar datos bancarios</DialogTitle>
+              <DialogDescription>
+                Actualiza banco, número de cuenta y clave interbancaria del empleado.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="bank_name">Banco</Label>
+                <Input
+                  id="bank_name"
+                  value={bankingForm.bank_name}
+                  onChange={(e) =>
+                    setBankingForm((prev) => ({ ...prev, bank_name: e.target.value }))
+                  }
+                  placeholder="Ej. BBVA"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="account_number">Número de Cuenta</Label>
+                <Input
+                  id="account_number"
+                  value={bankingForm.account_number}
+                  onChange={(e) =>
+                    setBankingForm((prev) => ({
+                      ...prev,
+                      account_number: e.target.value.replace(/[^\d]/g, ""),
+                    }))
+                  }
+                  placeholder="Solo números"
+                  inputMode="numeric"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="interbank_clabe">Clave Interbancaria</Label>
+                <Input
+                  id="interbank_clabe"
+                  value={bankingForm.interbank_clabe}
+                  onChange={(e) =>
+                    setBankingForm((prev) => ({
+                      ...prev,
+                      interbank_clabe: e.target.value.replace(/[^\d]/g, ""),
+                    }))
+                  }
+                  placeholder="18 dígitos"
+                  inputMode="numeric"
+                  maxLength={18}
+                />
+              </div>
+            </div>
+
+            <DialogFooter>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setBankingOpen(false)}
+                disabled={bankingSaving || bankingLoading}
+              >
+                Cancelar
+              </Button>
+              <Button
+                type="button"
+                onClick={handleSaveBanking}
+                disabled={bankingSaving || bankingLoading}
+              >
+                {bankingSaving ? "Guardando..." : "Guardar datos"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 ">
           <Card>
             <CardContent className="p-6">
@@ -1927,7 +2178,7 @@ export default function EmployeeDetailPage() {
                   <div className="flex items-center gap-3 text-sm">
                     <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
-                      Contratado: {formatDate(employee.joinDate)}
+                      Contratado: {formatDate(employee.joinDate)} 
                     </span>
                   </div>
                 </div>
@@ -1939,6 +2190,7 @@ export default function EmployeeDetailPage() {
             <Tabs defaultValue="overview" className="space-y-6">
               <TabsList>
                 <TabsTrigger value="overview">Resumen</TabsTrigger>
+                <TabsTrigger value="banking">Datos bancarios</TabsTrigger>
                 <TabsTrigger value="documents">Documentos</TabsTrigger>
                 <TabsTrigger value="dc3">Documentos de Obra</TabsTrigger>
                 <TabsTrigger value="projects">Obras</TabsTrigger>
@@ -2226,6 +2478,60 @@ export default function EmployeeDetailPage() {
                     </CardContent>
                   </Card>
                 </div>
+              </TabsContent>
+
+              <TabsContent value="banking">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between">
+                    <CardTitle>Datos bancarios</CardTitle>
+
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={async () => {
+                        setBankingOpen(true)
+                        await loadBanking()
+                      }}
+                    >
+                      <Edit className="w-4 h-4 mr-2" />
+                      Editar
+                    </Button>
+                  </CardHeader>
+
+                  <CardContent>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <Landmark className="w-4 h-4" />
+                          <span>Banco</span>
+                        </div>
+                        <p className="font-medium text-slate-900">
+                          {employee.bank_name ?? "No registrado"}
+                        </p>
+                      </div>
+
+                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <CreditCard className="w-4 h-4" />
+                          <span>Número de Cuenta</span>
+                        </div>
+                        <p className="font-medium text-slate-900 break-all">
+                          {employee.account_number ?? "No registrado"}
+                        </p>
+                      </div>
+
+                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
+                        <div className="flex items-center gap-2 text-slate-500">
+                          <Wallet className="w-4 h-4" />
+                          <span>Clave Interbancaria</span>
+                        </div>
+                        <p className="font-medium text-slate-900 break-all">
+                          {employee.interbank_clabe ?? "No registrado"}
+                        </p>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
               </TabsContent>
 
               <TabsContent value="documents">
