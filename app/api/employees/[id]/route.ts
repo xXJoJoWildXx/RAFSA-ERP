@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 
-//Endpoint: DELETE /api/employees/[id] (eliminar un empleado y todos sus documentos relacionados, incluyendo foto de perfil)
+// Endpoint: DELETE /api/employees/[id]
+// Elimina un empleado y todos sus documentos relacionados, incluyendo foto de perfil
 
 export const runtime = "nodejs"
 
@@ -48,21 +49,21 @@ export async function DELETE(_req: Request, context: RouteContext) {
     if (employeeDocsError) {
       console.error("Error fetching employee_documents:", employeeDocsError)
       return NextResponse.json(
-        { error: "No se pudieron consultar los documentos del empleado." },
+        { error: "No se pudieron consultar los documentos base del empleado." },
         { status: 500 },
       )
     }
 
-    // 3) Obtener documentos DC3
-    const { data: dc3Docs, error: dc3DocsError } = await supabase
-      .from("employee_dc3_documents")
-      .select("id, storage_path")
+    // 3) Obtener documentos de obra (DC3 + reportes médicos + futuras carpetas)
+    const { data: workDocs, error: workDocsError } = await supabase
+      .from("employee_work_documents")
+      .select("id, storage_path, folder_type")
       .eq("employee_id", id)
 
-    if (dc3DocsError) {
-      console.error("Error fetching employee_dc3_documents:", dc3DocsError)
+    if (workDocsError) {
+      console.error("Error fetching employee_work_documents:", workDocsError)
       return NextResponse.json(
-        { error: "No se pudieron consultar los documentos DC3 del empleado." },
+        { error: "No se pudieron consultar los documentos de obra del empleado." },
         { status: 500 },
       )
     }
@@ -74,7 +75,7 @@ export async function DELETE(_req: Request, context: RouteContext) {
       if (doc?.storage_path) storagePaths.add(doc.storage_path)
     }
 
-    for (const doc of dc3Docs || []) {
+    for (const doc of workDocs || []) {
       if (doc?.storage_path) storagePaths.add(doc.storage_path)
     }
 
@@ -104,7 +105,7 @@ export async function DELETE(_req: Request, context: RouteContext) {
       supabase.from("employee_salary_history").delete().eq("employee_id", id),
       supabase.from("employee_roles").delete().eq("employee_id", id),
       supabase.from("employee_documents").delete().eq("employee_id", id),
-      supabase.from("employee_dc3_documents").delete().eq("employee_id", id),
+      supabase.from("employee_work_documents").delete().eq("employee_id", id),
       supabase.from("obra_assignments").delete().eq("employee_id", id),
     ]
 
@@ -114,7 +115,9 @@ export async function DELETE(_req: Request, context: RouteContext) {
       if (result.error) {
         console.error("Error cleaning related records:", result.error)
         return NextResponse.json(
-          { error: "No se pudieron eliminar los registros relacionados del empleado." },
+          {
+            error: "No se pudieron eliminar los registros relacionados del empleado.",
+          },
           { status: 500 },
         )
       }
