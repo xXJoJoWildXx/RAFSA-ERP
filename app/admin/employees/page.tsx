@@ -24,18 +24,18 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
-import { Search, Plus, Mail, Phone, MapPin, Briefcase, FilePlus, X } from "lucide-react"
+import { Search, Plus, Mail, Phone, MapPin, Briefcase, X } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
 
-// ----- Tipos DB -----
+// ----- Tipos que reflejan la DB real -----
 
 type EmployeeRow = {
   id: string
   full_name: string
   email: string | null
   phone: string | null
-  status: string // "active" | "inactive" | "on_leave"
+  status: string
   hire_date: string | null
   photo_url: string | null
 }
@@ -53,7 +53,6 @@ type EmployeeRoleJoinRow = {
   employee_roles_catalog: RoleCatalogRow | RoleCatalogRow[] | null
 }
 
-// Tipo con relación incluida de status de obra
 type ObraAssignmentWithObra = {
   employee_id: string
   obra_id: string
@@ -63,19 +62,12 @@ type ObraAssignmentWithObra = {
     | null
 }
 
-// ----- UI types -----
-
-type EmployeeRole = {
-  id: string
-  code: string
-  name: string
-}
-
 type Employee = {
   id: string
   name: string
   email: string
   phone: string
+  position: string
   department: string
   location: string
   status: "Activo" | "De permiso" | "Inactivo"
@@ -84,7 +76,11 @@ type Employee = {
   avatar: string
   photo_url: string | null
   signedPhotoUrl?: string | null
-  roles: EmployeeRole[]
+  roles: {
+    id: string
+    code: string
+    name: string
+  }[]
 }
 
 type NewEmployeeForm = {
@@ -118,22 +114,16 @@ const DOC_LABELS: Record<EmployeeDocType, string> = {
   profile_photo: "Foto de perfil",
 }
 
-const DOC_ORDER: EmployeeDocType[] = [
-  "tax_certificate",
-  "birth_certificate",
-  "imss",
-  "curp",
-  "ine",
-  "address_proof",
-  "profile_photo",
-]
-
 // ----- Helpers -----
 
 function stringifyAnyError(err: unknown) {
   try {
     if (err instanceof Error) {
-      return { name: err.name, message: err.message, stack: err.stack }
+      return {
+        name: err.name,
+        message: err.message,
+        stack: err.stack,
+      }
     }
     const anyErr = err as any
     return {
@@ -178,16 +168,29 @@ function makeAvatarInitials(name: string): string {
   return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
 }
 
-function mapEmployeeRowToEmployee(row: EmployeeRow, projects: number = 0): Employee {
+function mapEmployeeRowToEmployee(
+  row: EmployeeRow,
+  roles: Employee["roles"] = [],
+  projects: number = 0,
+): Employee {
   const uiStatus = mapDbStatusToUi(row.status)
   const department = "Sin departamento asignado"
   const location = "Sin ubicación registrada"
+
+  const sortedRoles = [...roles].sort((a, b) => {
+    const aIsDirector = a.code === "director_obra"
+    const bIsDirector = b.code === "director_obra"
+    if (aIsDirector && !bIsDirector) return -1
+    if (!aIsDirector && bIsDirector) return 1
+    return a.name.localeCompare(b.name, "es")
+  })
 
   return {
     id: row.id,
     name: row.full_name,
     email: row.email ?? "Sin correo",
     phone: row.phone ?? "Sin teléfono",
+    position: sortedRoles[0]?.name ?? "Sin rol",
     department,
     location,
     status: uiStatus,
@@ -196,17 +199,10 @@ function mapEmployeeRowToEmployee(row: EmployeeRow, projects: number = 0): Emplo
     avatar: makeAvatarInitials(row.full_name),
     photo_url: row.photo_url ?? null,
     signedPhotoUrl: null,
-    roles: [],
+    roles: sortedRoles,
   }
 }
 
-function getPrimaryRoleLabel(roles: EmployeeRole[]) {
-  if (!roles || roles.length === 0) return "Sin rol"
-  const director = roles.find((r) => r.code === "director_obra")
-  return (director ?? roles[0]).name
-}
-
-// ✅ Bucket privada => signed url por API
 async function getSignedPhotoUrl(storagePath: string) {
   const res = await fetch(
     `/api/employee-photo?path=${encodeURIComponent(storagePath)}&expiresIn=3600`,
@@ -226,33 +222,63 @@ async function getSignedPhotoUrl(storagePath: string) {
   return (json?.signedUrl as string) || null
 }
 
-// Subida via API Route (SERVER)
-async function uploadEmployeeFile(args: { employeeId: string; docType: EmployeeDocType; file: File }) {
+const EMPLOYEE_DOCS_BUCKET = "employee-documents"
+
+function safeFileExt(fileName: string) {
+  const parts = fileName.split(".")
+  if (parts.length <= 1) return ""
+  const ext = parts[parts.length - 1]
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "")
+  return ext ? `.${ext}` : ""
+}
+
+function sanitizeFileBaseName(fileName: string) {
+  const base = fileName.replace(/\.[^/.]+$/, "")
+  return (
+    base
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-")
+      .replace(/[^a-z0-9-_]/g, "")
+      .slice(0, 60) || "archivo"
+  )
+}
+
+function buildEmployeeDocPath(employeeId: string, docType: EmployeeDocType, file: File) {
+  const ts = Date.now()
+  const ext = safeFileExt(file.name)
+  const base = sanitizeFileBaseName(file.name)
+  return `employees/${employeeId}/${docType}/${ts}-${base}${ext}`
+}
+
+async function uploadEmployeeFileDirect(args: {
+  employeeId: string
+  docType: EmployeeDocType
+  file: File
+}) {
   const { employeeId, docType, file } = args
 
-  const form = new FormData()
-  form.append("employeeId", employeeId)
-  form.append("docType", docType)
-  form.append("file", file)
+  const path = buildEmployeeDocPath(employeeId, docType, file)
 
-  const res = await fetch("/api/employee-docs", { method: "POST", body: form })
-  const json = await res.json().catch(() => null)
-
-  if (!res.ok) {
-    console.error("Error subiendo archivo (API):", {
-      status: res.status,
-      statusText: res.statusText,
-      body: json,
+  const { error } = await supabase.storage
+    .from(EMPLOYEE_DOCS_BUCKET)
+    .upload(path, file, {
+      upsert: false,
+      contentType: file.type || "application/octet-stream",
     })
-    throw new Error(json?.error || "Error subiendo archivo a Storage")
+
+  if (error) {
+    console.error("Error subiendo archivo directo a Storage:", stringifyAnyError(error))
+    throw new Error(error.message || "Error subiendo archivo a Storage")
   }
 
-  return json as {
-    bucket: string
-    path: string
-    fileName: string
-    mimeType: string | null
-    fileSize: number | null
+  return {
+    bucket: EMPLOYEE_DOCS_BUCKET,
+    path,
+    fileName: file.name,
+    mimeType: file.type || null,
+    fileSize: file.size ?? null,
   }
 }
 
@@ -260,17 +286,16 @@ async function uploadEmployeeFile(args: { employeeId: string; docType: EmployeeD
 
 export default function AdminEmployeesPage() {
   const [searchQuery, setSearchQuery] = useState("")
-  const [roleFilter, setRoleFilter] = useState<string>("all") // role_id o "all"
+  const [roleFilter, setRoleFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<string>("all")
 
   const [employees, setEmployees] = useState<Employee[]>([])
   const [rolesCatalog, setRolesCatalog] = useState<RoleCatalogRow[]>([])
-
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
-  // Popup de creación
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [showDocsPopup, setShowDocsPopup] = useState(false)
   const [creating, setCreating] = useState(false)
 
   const [newEmployee, setNewEmployee] = useState<NewEmployeeForm>({
@@ -281,14 +306,8 @@ export default function AdminEmployeesPage() {
     hire_date: "",
   })
 
-  // ✅ Multi-rol: lista de role_id
-  const [newRoleIds, setNewRoleIds] = useState<string[]>([])
-
-  // Para resetear Select después de elegir (lo dejamos controlado aparte)
-  const [rolePickerValue, setRolePickerValue] = useState<string>("")
-
-  // Popup adicional para documentos
-  const [docsDialogOpen, setDocsDialogOpen] = useState(false)
+  const [selectedRoleIds, setSelectedRoleIds] = useState<string[]>([])
+  const [rolePickerValue, setRolePickerValue] = useState("")
 
   const [newEmployeeFiles, setNewEmployeeFiles] = useState<NewEmployeeFiles>({
     tax_certificate: null,
@@ -300,7 +319,6 @@ export default function AdminEmployeesPage() {
     profile_photo: null,
   })
 
-  // 1) Cargar catálogo roles
   useEffect(() => {
     const fetchRolesCatalog = async () => {
       const { data, error } = await supabase
@@ -320,7 +338,6 @@ export default function AdminEmployeesPage() {
     fetchRolesCatalog()
   }, [])
 
-  // 2) Cargar empleados + roles + proyectos + firmar fotos
   useEffect(() => {
     const fetchEmployees = async () => {
       setLoading(true)
@@ -350,6 +367,7 @@ export default function AdminEmployeesPage() {
         }
 
         const rows = (empData || []) as EmployeeRow[]
+
         if (rows.length === 0) {
           setEmployees([])
           setLoading(false)
@@ -358,31 +376,7 @@ export default function AdminEmployeesPage() {
 
         const employeeIds = rows.map((e) => e.id)
 
-        // Proyectos activos
-        const { data: assignData, error: assignError } = await supabase
-          .from("obra_assignments")
-          .select("employee_id, obra_id, obras(status)")
-          .in("employee_id", employeeIds)
-
-        if (assignError) {
-          console.error("Error fetching obra_assignments:", stringifyAnyError(assignError))
-        }
-
-        const assignments = (assignData || []) as ObraAssignmentWithObra[]
-        const projectsMap: Record<string, number> = {}
-
-        assignments.forEach((a) => {
-          const raw = a.obras
-          let status: string | null = null
-          if (Array.isArray(raw)) status = raw[0]?.status ?? null
-          else status = raw?.status ?? null
-
-          if ((status || "").toLowerCase() === "closed") return
-          projectsMap[a.employee_id] = (projectsMap[a.employee_id] || 0) + 1
-        })
-
-        // Roles por empleado (join)
-        const { data: roleJoinData, error: roleJoinErr } = await supabase
+        const { data: rolesJoinData, error: rolesJoinError } = await supabase
           .from("employee_roles")
           .select(
             `
@@ -398,39 +392,72 @@ export default function AdminEmployeesPage() {
           )
           .in("employee_id", employeeIds)
 
-        if (roleJoinErr) {
-          console.error("Error fetching employee_roles join:", stringifyAnyError(roleJoinErr))
+        if (rolesJoinError) {
+          console.error("Error fetching employee_roles:", stringifyAnyError(rolesJoinError))
         }
 
-        const joinRows = (roleJoinData || []) as EmployeeRoleJoinRow[]
-        const rolesMap: Record<string, EmployeeRole[]> = {}
+        const rolesMap: Record<string, Employee["roles"]> = {}
 
-        joinRows.forEach((jr) => {
-          const raw = jr.employee_roles_catalog
-          const cat = Array.isArray(raw) ? raw[0] : raw
-          if (!cat) return
-          if (cat.is_active === false) return
+        ;((rolesJoinData || []) as EmployeeRoleJoinRow[]).forEach((row) => {
+          const raw = row.employee_roles_catalog
+          const role = Array.isArray(raw) ? raw[0] : raw
+          if (!role || role.is_active === false) return
 
-          const role: EmployeeRole = { id: cat.id, code: cat.code, name: cat.name }
-          rolesMap[jr.employee_id] = rolesMap[jr.employee_id] || []
-          rolesMap[jr.employee_id].push(role)
+          if (!rolesMap[row.employee_id]) rolesMap[row.employee_id] = []
+
+          rolesMap[row.employee_id].push({
+            id: role.id,
+            code: role.code,
+            name: role.name,
+          })
         })
 
-        const mapped: Employee[] = rows.map((row) => {
-          const emp = mapEmployeeRowToEmployee(row, projectsMap[row.id] || 0)
-          emp.roles = rolesMap[row.id] || []
-          return emp
+        const { data: assignData, error: assignError } = await supabase
+          .from("obra_assignments")
+          .select("employee_id, obra_id, obras(status)")
+          .in("employee_id", employeeIds)
+
+        if (assignError) {
+          console.error("Error fetching obra_assignments:", stringifyAnyError(assignError))
+        }
+
+        const assignments = (assignData || []) as ObraAssignmentWithObra[]
+        const projectsMap: Record<string, number> = {}
+
+        assignments.forEach((a) => {
+          const raw = a.obras
+          let status: string | null = null
+
+          if (Array.isArray(raw)) {
+            status = raw[0]?.status ?? null
+          } else {
+            status = raw?.status ?? null
+          }
+
+          const normalized = (status || "").toLowerCase()
+          if (normalized === "closed") return
+
+          projectsMap[a.employee_id] = (projectsMap[a.employee_id] || 0) + 1
         })
 
-        const withSigned = await Promise.all(
-          mapped.map(async (emp) => {
-            if (!emp.photo_url) return emp
-            const signed = await getSignedPhotoUrl(emp.photo_url)
-            return { ...emp, signedPhotoUrl: signed }
-          }),
+        const mapped: Employee[] = rows.map((row) =>
+          mapEmployeeRowToEmployee(row, rolesMap[row.id] || [], projectsMap[row.id] || 0),
         )
 
-        setEmployees(withSigned)
+        setEmployees(mapped)
+
+        try {
+          const withSigned = await Promise.all(
+            mapped.map(async (emp) => {
+              if (!emp.photo_url) return emp
+              const signed = await getSignedPhotoUrl(emp.photo_url)
+              return { ...emp, signedPhotoUrl: signed }
+            }),
+          )
+          setEmployees(withSigned)
+        } catch (e) {
+          console.error("Error creando signed URLs de fotos:", stringifyAnyError(e))
+        }
       } catch (e) {
         console.error("fetchEmployees unexpected:", stringifyAnyError(e))
         setError("Error inesperado al cargar los empleados.")
@@ -443,27 +470,24 @@ export default function AdminEmployeesPage() {
     fetchEmployees()
   }, [])
 
-  // Roles disponibles para el picker (excluye seleccionados)
   const availableRolesForPicker = useMemo(() => {
-    const selected = new Set(newRoleIds)
+    const selected = new Set(selectedRoleIds)
     return rolesCatalog.filter((r) => !selected.has(r.id))
-  }, [rolesCatalog, newRoleIds])
+  }, [rolesCatalog, selectedRoleIds])
 
   const selectedRoleChips = useMemo(() => {
-    const catalogMap = new Map(rolesCatalog.map((r) => [r.id, r]))
-    return newRoleIds
-      .map((id) => catalogMap.get(id))
+    const map = new Map(rolesCatalog.map((r) => [r.id, r]))
+    return selectedRoleIds
+      .map((rid) => map.get(rid))
       .filter((r): r is RoleCatalogRow => !!r)
-  }, [newRoleIds, rolesCatalog])
+  }, [selectedRoleIds, rolesCatalog])
 
   const filteredEmployees = useMemo(() => {
     return employees.filter((employee) => {
-      const primaryRoleLabel = getPrimaryRoleLabel(employee.roles)
-
       const matchesSearch =
         employee.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         employee.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        primaryRoleLabel.toLowerCase().includes(searchQuery.toLowerCase())
+        employee.position.toLowerCase().includes(searchQuery.toLowerCase())
 
       const matchesRole =
         roleFilter === "all"
@@ -477,25 +501,48 @@ export default function AdminEmployeesPage() {
     })
   }, [employees, searchQuery, roleFilter, statusFilter])
 
-  // ----- Handlers -----
-
   const handleChangeNewEmployee = (field: keyof NewEmployeeForm, value: string) => {
-    setNewEmployee((prev) => ({ ...prev, [field]: value }))
+    setNewEmployee((prev) => ({
+      ...prev,
+      [field]: value,
+    }))
   }
 
   const handleChangeNewEmployeeFile = (docType: EmployeeDocType, file: File | null) => {
     setNewEmployeeFiles((prev) => ({ ...prev, [docType]: file }))
   }
 
-  const addRoleToNewEmployee = (roleId: string) => {
+  const addRole = (roleId: string) => {
     if (!roleId) return
-    setNewRoleIds((prev) => (prev.includes(roleId) ? prev : [...prev, roleId]))
-    // resetear picker para que el placeholder vuelva
+    setSelectedRoleIds((prev) => (prev.includes(roleId) ? prev : [...prev, roleId]))
     setRolePickerValue("")
   }
 
-  const removeRoleFromNewEmployee = (roleId: string) => {
-    setNewRoleIds((prev) => prev.filter((id) => id !== roleId))
+  const removeRole = (roleId: string) => {
+    setSelectedRoleIds((prev) => prev.filter((id) => id !== roleId))
+  }
+
+  const resetCreateForm = () => {
+    setNewEmployee({
+      full_name: "",
+      email: "",
+      phone: "",
+      status: "active",
+      hire_date: "",
+    })
+    setSelectedRoleIds([])
+    setRolePickerValue("")
+    setNewEmployeeFiles({
+      tax_certificate: null,
+      birth_certificate: null,
+      imss: null,
+      curp: null,
+      ine: null,
+      address_proof: null,
+      profile_photo: null,
+    })
+    setShowCreateForm(false)
+    setShowDocsPopup(false)
   }
 
   const handleCreateEmployee = async () => {
@@ -503,8 +550,9 @@ export default function AdminEmployeesPage() {
       alert("El nombre completo es obligatorio.")
       return
     }
-    if (newRoleIds.length === 0) {
-      alert("Selecciona al menos un rol para el empleado.")
+
+    if (selectedRoleIds.length === 0) {
+      alert("Selecciona al menos un rol.")
       return
     }
 
@@ -519,20 +567,19 @@ export default function AdminEmployeesPage() {
     }
 
     try {
-      // 1) Crear empleado
       const { data, error } = await supabase
         .from("employees")
         .insert([payload])
         .select(
           `
-          id,
-          full_name,
-          email,
-          phone,
-          status,
-          hire_date,
-          photo_url
-        `,
+            id,
+            full_name,
+            email,
+            phone,
+            status,
+            hire_date,
+            photo_url
+          `,
         )
 
       if (error) {
@@ -550,8 +597,7 @@ export default function AdminEmployeesPage() {
       const createdRow = insertedRows[0]
       const employeeId = createdRow.id
 
-      // 2) Insert employee_roles (multi)
-      const rolePayload = newRoleIds.map((roleId) => ({
+      const rolePayload = selectedRoleIds.map((roleId) => ({
         employee_id: employeeId,
         role_id: roleId,
       }))
@@ -560,16 +606,25 @@ export default function AdminEmployeesPage() {
 
       if (roleErr) {
         console.error("Error insertando employee_roles:", stringifyAnyError(roleErr))
-        alert("Empleado creado, pero no se pudieron asignar los roles.")
+        alert("Empleado creado, pero hubo un error guardando los roles.")
       }
 
-      // 3) Subir documentos (si hay seleccionados en popup)
       const entries = Object.entries(newEmployeeFiles) as Array<[EmployeeDocType, File | null]>
       const selectedDocs = entries.filter(([, f]) => !!f) as Array<[EmployeeDocType, File]>
 
+      for (const [, file] of selectedDocs) {
+        const maxMb = 25
+        if (file.size > maxMb * 1024 * 1024) {
+          alert(`El archivo "${file.name}" excede el límite de ${maxMb} MB.`)
+          setCreating(false)
+          return
+        }
+      }
+
       const uploaded = await Promise.all(
         selectedDocs.map(async ([docType, file]) => {
-          const up = await uploadEmployeeFile({ employeeId, docType, file })
+          const up = await uploadEmployeeFileDirect({ employeeId, docType, file })
+
           return {
             employee_id: employeeId,
             doc_type: docType,
@@ -582,16 +637,15 @@ export default function AdminEmployeesPage() {
         }),
       )
 
-      // 4) Insert employee_documents
       if (uploaded.length > 0) {
         const { error: docsErr } = await supabase.from("employee_documents").insert(uploaded)
+
         if (docsErr) {
           console.error("Error insertando employee_documents:", stringifyAnyError(docsErr))
           alert("Empleado creado, pero hubo un error guardando algunos documentos.")
         }
       }
 
-      // 5) Actualizar employees.photo_url si se subió profile_photo
       const profileDoc = uploaded.find((d) => d.doc_type === "profile_photo")
       if (profileDoc) {
         const { error: photoErr } = await supabase
@@ -606,14 +660,15 @@ export default function AdminEmployeesPage() {
         }
       }
 
-      // 6) Refrescar UI: construir objeto UI con roles
-      const uiEmployee = mapEmployeeRowToEmployee(createdRow, 0)
+      const createdRoles = rolesCatalog
+        .filter((r) => selectedRoleIds.includes(r.id))
+        .map((r) => ({
+          id: r.id,
+          code: r.code,
+          name: r.name,
+        }))
 
-      const selectedRoles = rolesCatalog
-        .filter((r) => newRoleIds.includes(r.id))
-        .map((r) => ({ id: r.id, code: r.code, name: r.name }))
-
-      uiEmployee.roles = selectedRoles
+      const uiEmployee = mapEmployeeRowToEmployee(createdRow, createdRoles, 0)
 
       if (uiEmployee.photo_url) {
         try {
@@ -622,28 +677,7 @@ export default function AdminEmployeesPage() {
       }
 
       setEmployees((prev) => [uiEmployee, ...prev])
-
-      // 7) Reset
-      setNewEmployee({
-        full_name: "",
-        email: "",
-        phone: "",
-        status: "active",
-        hire_date: "",
-      })
-      setNewRoleIds([])
-      setRolePickerValue("")
-      setNewEmployeeFiles({
-        tax_certificate: null,
-        birth_certificate: null,
-        imss: null,
-        curp: null,
-        ine: null,
-        address_proof: null,
-        profile_photo: null,
-      })
-      setDocsDialogOpen(false)
-      setShowCreateForm(false)
+      resetCreateForm()
     } catch (e) {
       console.error("Error inesperado creando empleado:", stringifyAnyError(e))
       alert("Ocurrió un error inesperado al crear el empleado.")
@@ -663,8 +697,15 @@ export default function AdminEmployeesPage() {
             </p>
           </div>
 
-          {/* Botón + Popup */}
-          <Dialog open={showCreateForm} onOpenChange={setShowCreateForm}>
+          <Dialog
+            open={showCreateForm}
+            onOpenChange={(open) => {
+              setShowCreateForm(open)
+              if (!open) {
+                setShowDocsPopup(false)
+              }
+            }}
+          >
             <DialogTrigger asChild>
               <Button>
                 <Plus className="w-4 h-4 mr-2" />
@@ -675,7 +716,9 @@ export default function AdminEmployeesPage() {
             <DialogContent className="max-w-2xl">
               <DialogHeader>
                 <DialogTitle>Agregar empleado</DialogTitle>
-                <DialogDescription>Registra un nuevo empleado en el directorio.</DialogDescription>
+                <DialogDescription>
+                  Registra un nuevo empleado en el directorio.
+                </DialogDescription>
               </DialogHeader>
 
               <div className="space-y-6 py-2">
@@ -689,53 +732,46 @@ export default function AdminEmployeesPage() {
                     />
                   </div>
 
-                  {/* ✅ Multi-rol: dropdown + chips */}
                   <div className="space-y-2">
-                    <Label>Roles / Puestos</Label>
-
-                    <Select
-                      value={rolePickerValue}
-                      onValueChange={(value) => addRoleToNewEmployee(value)}
-                    >
+                    <Label>Roles</Label>
+                    <Select value={rolePickerValue} onValueChange={(v) => addRole(v)}>
                       <SelectTrigger>
-                        <SelectValue placeholder="Agregar un rol..." />
+                        <SelectValue placeholder="Selecciona uno o más roles" />
                       </SelectTrigger>
-
                       <SelectContent>
                         {availableRolesForPicker.length === 0 ? (
                           <SelectItem value="__empty__" disabled>
                             No hay más roles disponibles
                           </SelectItem>
                         ) : (
-                          availableRolesForPicker.map((r) => (
-                            <SelectItem key={r.id} value={r.id}>
-                              {r.name}
+                          availableRolesForPicker.map((role) => (
+                            <SelectItem key={role.id} value={role.id}>
+                              {role.name}
                             </SelectItem>
                           ))
                         )}
                       </SelectContent>
                     </Select>
 
-                    {/* Chips seleccionados */}
                     {selectedRoleChips.length === 0 ? (
                       <p className="text-xs text-slate-500">
-                        Selecciona uno o más roles. Se guardan en <span className="font-medium">employee_roles</span>.
+                        Selecciona uno o más roles.
                       </p>
                     ) : (
                       <div className="flex flex-wrap gap-2 pt-1">
-                        {selectedRoleChips.map((r) => (
+                        {selectedRoleChips.map((role) => (
                           <span
-                            key={r.id}
-                            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+                            key={role.id}
+                            className="inline-flex items-center justify-between rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
                           >
-                            {r.name}
+                            <span className="truncate">{role.name}</span>
                             <button
                               type="button"
-                              className="rounded-full p-1 hover:bg-slate-100"
-                              onClick={() => removeRoleFromNewEmployee(r.id)}
-                              aria-label={`Quitar rol ${r.name}`}
+                              className="ml-2 rounded-full p-1 hover:bg-slate-100 flex-shrink-0"
+                              onClick={() => removeRole(role.id)}
+                              aria-label={`Quitar rol ${role.name}`}
                             >
-                              <X className="h-3 w-3" />
+                              <X className="w-3 h-3 text-slate-500" />
                             </button>
                           </span>
                         ))}
@@ -790,61 +826,20 @@ export default function AdminEmployeesPage() {
                     </Select>
                   </div>
 
-                  {/* ✅ Botón para popup adicional de documentos */}
                   <div className="md:col-span-2 flex items-center justify-between gap-3 border-t pt-4">
                     <div>
                       <p className="text-sm font-medium text-slate-900">Documentos del empleado</p>
                       <p className="text-xs text-slate-500">
-                        Súbelos ahora o después. Se guardan en Storage y se registran en la DB.
+                        Súbelos ahora o después, en el perfil del empleado.
                       </p>
                     </div>
-
-                    <Dialog open={docsDialogOpen} onOpenChange={setDocsDialogOpen}>
-                      <DialogTrigger asChild>
-                        <Button type="button" variant="outline">
-                          <FilePlus className="w-4 h-4 mr-2" />
-                          Agregar documentos +
-                        </Button>
-                      </DialogTrigger>
-
-                      <DialogContent className="max-w-3xl">
-                        <DialogHeader>
-                          <DialogTitle>Agregar documentos</DialogTitle>
-                          <DialogDescription>
-                            Selecciona los archivos que deseas subir para este empleado.
-                          </DialogDescription>
-                        </DialogHeader>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 py-2">
-                          {DOC_ORDER.map((docType) => (
-                            <div key={docType} className="space-y-2 border border-slate-200 rounded-lg p-4">
-                              <Label>{DOC_LABELS[docType]}</Label>
-                              <Input
-                                type="file"
-                                accept={docType === "profile_photo" ? "image/*" : ".pdf,image/*"}
-                                onChange={(e) => {
-                                  const file = e.target.files?.[0] ?? null
-                                  handleChangeNewEmployeeFile(docType, file)
-                                }}
-                              />
-                              {newEmployeeFiles[docType] ? (
-                                <p className="text-xs text-slate-500 truncate">
-                                  Seleccionado: {newEmployeeFiles[docType]?.name}
-                                </p>
-                              ) : (
-                                <p className="text-xs text-slate-400">Sin archivo</p>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-
-                        <DialogFooter>
-                          <Button type="button" variant="outline" onClick={() => setDocsDialogOpen(false)}>
-                            Listo
-                          </Button>
-                        </DialogFooter>
-                      </DialogContent>
-                    </Dialog>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setShowDocsPopup(true)}
+                    >
+                      Agregar documentos +
+                    </Button>
                   </div>
                 </div>
               </div>
@@ -853,7 +848,7 @@ export default function AdminEmployeesPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setShowCreateForm(false)}
+                  onClick={resetCreateForm}
                   disabled={creating}
                 >
                   Cancelar
@@ -866,7 +861,56 @@ export default function AdminEmployeesPage() {
           </Dialog>
         </div>
 
-        {/* Filtros */}
+        <Dialog open={showDocsPopup} onOpenChange={setShowDocsPopup}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Documentos del empleado</DialogTitle>
+              <DialogDescription>
+                Selecciona los archivos que deseas subir para este empleado.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 py-2">
+              {(
+                [
+                  "tax_certificate",
+                  "birth_certificate",
+                  "imss",
+                  "curp",
+                  "ine",
+                  "address_proof",
+                  "profile_photo",
+                ] as EmployeeDocType[]
+              ).map((docType) => (
+                <div key={docType} className="space-y-1 px-2 border border-slate-200 rounded-lg p-3">
+                  <Label>{DOC_LABELS[docType]}</Label>
+                  <Input
+                    type="file"
+                    accept={docType === "profile_photo" ? "image/*" : ".pdf,image/*"}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0] ?? null
+                      handleChangeNewEmployeeFile(docType, file)
+                    }}
+                  />
+                  {newEmployeeFiles[docType] ? (
+                    <p className="text-xs text-slate-500 truncate">
+                      Seleccionado: {newEmployeeFiles[docType]?.name}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-slate-400">Sin archivo</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <DialogFooter>
+              <Button type="button" variant="outline" onClick={() => setShowDocsPopup(false)}>
+                Cerrar
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -878,7 +922,6 @@ export default function AdminEmployeesPage() {
             />
           </div>
 
-          {/* Filtro por rol (role_id) */}
           <Select value={roleFilter} onValueChange={setRoleFilter}>
             <SelectTrigger className="w-full md:w-64">
               <SelectValue placeholder="Rol / Puesto" />
@@ -893,7 +936,6 @@ export default function AdminEmployeesPage() {
             </SelectContent>
           </Select>
 
-          {/* Filtro de estatus */}
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-full md:w-40">
               <SelectValue placeholder="Estatus" />
@@ -907,15 +949,18 @@ export default function AdminEmployeesPage() {
           </Select>
         </div>
 
-        {loading && <div className="text-center py-12 text-sm text-slate-500">Cargando empleados...</div>}
-        {!loading && error && <div className="text-center py-12 text-sm text-red-500">{error}</div>}
+        {loading && (
+          <div className="text-center py-12 text-sm text-slate-500">Cargando empleados...</div>
+        )}
+
+        {!loading && error && (
+          <div className="text-center py-12 text-sm text-red-500">{error}</div>
+        )}
 
         {!loading && !error && (
           <>
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
               {filteredEmployees.map((employee) => {
-                const primaryRoleLabel = getPrimaryRoleLabel(employee.roles)
-
                 return (
                   <Link key={employee.id} href={`/admin/employees/${employee.id}`}>
                     <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
@@ -941,7 +986,7 @@ export default function AdminEmployeesPage() {
 
                           <div className="space-y-1 w-full">
                             <h3 className="font-semibold text-slate-900 text-lg">{employee.name}</h3>
-                            <p className="text-sm text-slate-600">{primaryRoleLabel}</p>
+                            <p className="text-sm text-slate-600">{employee.position}</p>
                             <Badge className={getStatusColor(employee.status)}>{employee.status}</Badge>
                           </div>
 
@@ -980,7 +1025,9 @@ export default function AdminEmployeesPage() {
 
             {filteredEmployees.length === 0 && (
               <div className="text-center py-12">
-                <p className="text-slate-600">No se encontraron empleados con los filtros actuales.</p>
+                <p className="text-slate-600">
+                  No se encontraron empleados con los filtros actuales.
+                </p>
               </div>
             )}
           </>
