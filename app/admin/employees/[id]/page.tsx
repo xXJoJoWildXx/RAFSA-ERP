@@ -32,8 +32,6 @@ import {
 import {
   Mail,
   Phone,
-  MapPin,
-  Briefcase,
   Calendar,
   ArrowLeft,
   Edit,
@@ -49,6 +47,7 @@ import {
   Landmark,
   CreditCard,
   Wallet,
+  X,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
@@ -61,6 +60,7 @@ type EmployeeRow = {
   phone: string | null
   status: string
   hire_date: string | null
+  termination_date: string | null
   photo_url: string | null
   imss_number: string | null
   rfc: string | null
@@ -123,6 +123,7 @@ type EmployeeDetail = {
   statusUi: "Activo" | "Inactivo" | "De permiso"
   statusRaw: string
   joinDate: string | null
+  terminationDate: string | null
   avatar: string
   imss_number: string | null
   rfc: string | null
@@ -146,6 +147,7 @@ type EditEmployeeForm = {
   phone: string
   status: "active" | "inactive"
   hire_date: string
+  termination_date: string
   birth_date: string
   imss_number: string
   rfc: string
@@ -300,7 +302,7 @@ function makeAvatarInitials(name?: string | null): string {
 
 function formatDate(dateString: string | null) {
   if (!dateString) return "No especificado"
-  
+
   // Parsear manualmente para evitar problemas de zona horaria
   // Si es formato YYYY-MM-DD, crear date sin convertir a UTC
   const parts = dateString.split("T")[0]?.split("-")
@@ -313,7 +315,7 @@ function formatDate(dateString: string | null) {
       day: "2-digit",
     })
   }
-  
+
   const d = new Date(dateString)
   if (Number.isNaN(d.getTime())) return dateString
   return d.toLocaleDateString("es-MX", {
@@ -343,6 +345,30 @@ function formatMoneyMXN(value: number) {
   })} MXN`
 }
 
+function calculateAge(birthDate: string | null) {
+  if (!birthDate) return null
+
+  const parts = birthDate.split("T")[0]?.split("-")
+  if (!parts || parts.length !== 3) return null
+
+  const [year, month, day] = parts.map(Number)
+  const birth = new Date(year, month - 1, day)
+
+  if (Number.isNaN(birth.getTime())) return null
+
+  const today = new Date()
+  let age = today.getFullYear() - birth.getFullYear()
+  const monthDiff = today.getMonth() - birth.getMonth()
+
+  if (
+    monthDiff < 0 ||
+    (monthDiff === 0 && today.getDate() < birth.getDate())
+  ) {
+    age--
+  }
+
+  return age >= 0 ? age : null
+}
 
 function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
   const statusUi = mapDbStatusToUi(row.status)
@@ -370,7 +396,8 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     phone: row.phone,
     statusUi,
     statusRaw: row.status,
-    joinDate: row.hire_date,
+    joinDate: row.hire_date ?? null,
+    terminationDate: row.termination_date ?? null,
     avatar: makeAvatarInitials(row.full_name),
     imss_number: row.imss_number,
     rfc: row.rfc,
@@ -694,6 +721,26 @@ async function uploadEmployeeDocDirect(args: {
   }
 }
 
+async function forceDownloadFile(signedUrl: string, fileName: string) {
+  const response = await fetch(signedUrl)
+
+  if (!response.ok) {
+    throw new Error("No se pudo descargar el archivo.")
+  }
+
+  const blob = await response.blob()
+  const objectUrl = window.URL.createObjectURL(blob)
+
+  const link = document.createElement("a")
+  link.href = objectUrl
+  link.download = fileName
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+
+  window.URL.revokeObjectURL(objectUrl)
+}
+
 // -------------------- Page --------------------
 
 export default function EmployeeDetailPage() {
@@ -707,6 +754,7 @@ export default function EmployeeDetailPage() {
   const [error, setError] = useState<string | null>(null)
 
   const [profilePhotoUrl, setProfilePhotoUrl] = useState<string | null>(null)
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false)
 
   const [documents, setDocuments] = useState<EmployeeDocumentRow[]>([])
   const [docsLoading, setDocsLoading] = useState(false)
@@ -816,6 +864,7 @@ export default function EmployeeDetailPage() {
             phone,
             status,
             hire_date,
+            termination_date,
             photo_url,
             imss_number,
             rfc,
@@ -1102,6 +1151,7 @@ export default function EmployeeDetailPage() {
       phone: employee.phone ?? "",
       status: mapUiStatusToDb(employee.statusUi),
       hire_date: employee.joinDate ?? "",
+      termination_date: employee.terminationDate ?? "",
       birth_date: employee.birth_date ?? "",
       imss_number: employee.imss_number ?? "",
       rfc: employee.rfc ?? "",
@@ -1139,6 +1189,7 @@ export default function EmployeeDetailPage() {
       phone: editForm.phone.trim() || null,
       status: editForm.status,
       hire_date: editForm.hire_date || null,
+      termination_date: editForm.termination_date || null,
       birth_date: editForm.birth_date || null,
       imss_number: editForm.imss_number.trim() || null,
       rfc: editForm.rfc.trim() || null,
@@ -1158,6 +1209,7 @@ export default function EmployeeDetailPage() {
           phone,
           status,
           hire_date,
+          termination_date,
           photo_url,
           imss_number,
           rfc,
@@ -1217,6 +1269,8 @@ export default function EmployeeDetailPage() {
         setEmployee((prev) => {
           const next = mapRowToDetail(updatedRow)
           next.roles = prev?.roles || []
+          next.terminationDate =
+            updatedRow.termination_date ?? prev?.terminationDate ?? null
           return next
         })
       }
@@ -1624,6 +1678,7 @@ export default function EmployeeDetailPage() {
 
   const sortedRoles = sortRolesWithPriority(employee.roles)
   const primaryRoleLabel = getPrimaryRoleLabelFromSorted(sortedRoles)
+  const employeeAge = calculateAge(employee.birth_date)
 
   return (
     <AdminLayout>
@@ -1738,6 +1793,18 @@ export default function EmployeeDetailPage() {
                           value={editForm.birth_date ?? ""}
                           onChange={(e) =>
                             handleEditChange("birth_date", e.target.value)
+                          }
+                        />
+                      </div>
+
+                      <div className="space-y-2 md:col-span-2">
+                        <Label htmlFor="termination_date">Fecha de bajada</Label>
+                        <Input
+                          id="termination_date"
+                          type="date"
+                          value={editForm.termination_date ?? ""}
+                          onChange={(e) =>
+                            handleEditChange("termination_date", e.target.value)
                           }
                         />
                       </div>
@@ -2086,7 +2153,18 @@ export default function EmployeeDetailPage() {
           <Card>
             <CardContent className="p-6">
               <div className="flex flex-col items-center text-center space-y-4">
-                <div className="w-24 h-24 rounded-full bg-blue-100 overflow-hidden flex items-center justify-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (profilePhotoUrl) setImagePreviewOpen(true)
+                  }}
+                  className={`
+                    w-24 h-24 rounded-full bg-blue-100 overflow-hidden flex items-center justify-center
+                    transition hover:scale-105
+                    ${profilePhotoUrl ? "cursor-zoom-in" : "cursor-default"}
+                  `}
+                  aria-label="Ver foto de perfil en grande"
+                >
                   {profilePhotoUrl ? (
                     <img
                       src={profilePhotoUrl}
@@ -2098,7 +2176,7 @@ export default function EmployeeDetailPage() {
                       {employee.avatar}
                     </span>
                   )}
-                </div>
+                </button>
 
                 <div className="space-y-1 w-full">
                   <h3 className="font-semibold text-slate-900 text-xl">
@@ -2152,33 +2230,37 @@ export default function EmployeeDetailPage() {
 
                 <div className="w-full space-y-3 pt-4 border-t text-left">
                   <div className="flex items-center gap-3 text-sm">
-                    <Briefcase className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
-                      Departamento no especificado
+                      Edad: {employeeAge !== null ? `${employeeAge} años` : "No especificada"}
                     </span>
                   </div>
+
                   <div className="flex items-center gap-3 text-sm">
                     <Mail className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600 break-all">
                       {employee.email ?? "Sin correo"}
                     </span>
                   </div>
+
                   <div className="flex items-center gap-3 text-sm">
                     <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
                       {employee.phone ?? "Sin teléfono"}
                     </span>
                   </div>
-                  <div className="flex items-center gap-3 text-sm">
-                    <MapPin className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
-                      Ubicación no especificada
-                    </span>
-                  </div>
+
                   <div className="flex items-center gap-3 text-sm">
                     <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
-                      Contratado: {formatDate(employee.joinDate)} 
+                      Fecha de contratación: {formatDate(employee.joinDate)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-sm">
+                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    <span className="text-slate-600">
+                      Fecha de bajada: {formatDate(employee.terminationDate)}
                     </span>
                   </div>
                 </div>
@@ -2835,14 +2917,14 @@ export default function EmployeeDetailPage() {
                                   type="button"
                                   variant="outline"
                                   disabled={!isReady || !signedUrl}
-                                  onClick={() => {
-                                    if (!signedUrl) return
-                                    const a = document.createElement("a")
-                                    a.href = signedUrl
-                                    a.download = doc?.file_name || "documento"
-                                    document.body.appendChild(a)
-                                    a.click()
-                                    a.remove()
+                                  onClick={async () => {
+                                    try {
+                                      if (!signedUrl) return
+                                      await forceDownloadFile(signedUrl, doc?.file_name || "documento")
+                                    } catch (e: any) {
+                                      console.error(e)
+                                      alert(e?.message || "No se pudo descargar el archivo.")
+                                    }
                                   }}
                                 >
                                   <Download className="w-4 h-4 mr-2" />
@@ -3013,14 +3095,14 @@ export default function EmployeeDetailPage() {
                                     type="button"
                                     variant="outline"
                                     disabled={!signedUrl}
-                                    onClick={() => {
-                                      if (!signedUrl) return
-                                      const a = document.createElement("a")
-                                      a.href = signedUrl
-                                      a.download = doc.file_name || "documento-dc3"
-                                      document.body.appendChild(a)
-                                      a.click()
-                                      a.remove()
+                                    onClick={async () => {
+                                      try {
+                                        if (!signedUrl) return
+                                        await forceDownloadFile(signedUrl, doc.file_name || "documento-dc3")
+                                      } catch (e: any) {
+                                        console.error(e)
+                                        alert(e?.message || "No se pudo descargar el archivo.")
+                                      }
                                     }}
                                   >
                                     <Download className="w-4 h-4 mr-2" />
@@ -3212,15 +3294,17 @@ export default function EmployeeDetailPage() {
                                     type="button"
                                     variant="outline"
                                     disabled={!signedUrl}
-                                    onClick={() => {
-                                      if (!signedUrl) return
-                                      const a = document.createElement("a")
-                                      a.href = signedUrl
-                                      a.download =
-                                        doc.file_name || "documento-reporte-medico"
-                                      document.body.appendChild(a)
-                                      a.click()
-                                      a.remove()
+                                    onClick={async () => {
+                                      try {
+                                        if (!signedUrl) return
+                                        await forceDownloadFile(
+                                          signedUrl,
+                                          doc.file_name || "documento-reporte-medico",
+                                        )
+                                      } catch (e: any) {
+                                        console.error(e)
+                                        alert(e?.message || "No se pudo descargar el archivo.")
+                                      }
                                     }}
                                   >
                                     <Download className="w-4 h-4 mr-2" />
@@ -3313,6 +3397,33 @@ export default function EmployeeDetailPage() {
             </Tabs>
           </div>
         </div>
+
+        {imagePreviewOpen && profilePhotoUrl && (
+          <div
+            className="fixed inset-0 z-[100] bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setImagePreviewOpen(false)}
+          >
+            <div
+              className="relative max-w-3xl w-full flex items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => setImagePreviewOpen(false)}
+                className="absolute -top-3 right-3 z-10 rounded-full bg-white shadow-md p-2 text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                aria-label="Cerrar vista previa"
+              >
+                <X className="w-5 h-5 hover:w-6 hover:h-6 transition-all" />
+              </button>
+
+              <img
+                src={profilePhotoUrl}
+                alt={`Foto ampliada de ${employee.name}`}
+                className="max-h-[85vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl bg-white"
+              />
+            </div>
+          </div>
+        )}
       </div>
     </AdminLayout>
   )
