@@ -9,6 +9,9 @@ const inter = Inter({ subsets: ["latin"] })
 export const metadata: Metadata = {
   title: "RAFSA - Administrative",
   description: "Professional construction company management system",
+  icons: {
+    icon: "/brand/rafsa-r-icon.png",
+  },
 }
 
 export default function RootLayout({
