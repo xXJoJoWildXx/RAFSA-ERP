@@ -1,6 +1,7 @@
 "use client"
 
 import { EmployeeLayout } from "@/components/employee-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -46,6 +47,7 @@ export default function EmployeeProjectDetailPage({ params }: { params: { id: st
   }
 
   return (
+    <RoleGuard allowed={["user"]}>
     <EmployeeLayout>
       <div className="space-y-6">
         <div className="flex items-center gap-4">
@@ -142,5 +144,6 @@ export default function EmployeeProjectDetailPage({ params }: { params: { id: st
         </Card>
       </div>
     </EmployeeLayout>
+    </RoleGuard>
   )
 }

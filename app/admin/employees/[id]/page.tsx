@@ -7,6 +7,7 @@ import { useRouter, useParams } from "next/navigation"
 import Link from "next/link"
 
 import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -1633,11 +1634,13 @@ export default function EmployeeDetailPage() {
 
   if (!id) {
     return (
-      <AdminLayout>
-        <div className="flex items-center justify-center h-[60vh] text-sm text-slate-500">
-          ID de empleado inválido.
-        </div>
-      </AdminLayout>
+      <RoleGuard allowed={["admin"]}>
+        <AdminLayout>
+          <div className="flex items-center justify-center h-[60vh] text-sm text-slate-500">
+            ID de empleado inválido.
+          </div>
+        </AdminLayout>
+      </RoleGuard>
     )
   }
 
@@ -1681,6 +1684,7 @@ export default function EmployeeDetailPage() {
   const employeeAge = calculateAge(employee.birth_date)
 
   return (
+    <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -3426,5 +3430,6 @@ export default function EmployeeDetailPage() {
         )}
       </div>
     </AdminLayout>
+    </RoleGuard>
   )
 }

@@ -3,6 +3,7 @@
 import { useParams, useRouter } from "next/navigation"
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -949,6 +950,7 @@ export default function ProjectDetailPage() {
   const clientName = obra.client_name ?? "Cliente no especificado"
 
   return (
+    <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
         {/* Header */}
@@ -1409,5 +1411,6 @@ export default function ProjectDetailPage() {
         </DialogContent>
       </Dialog>
     </AdminLayout>
+    </RoleGuard>
   )
 }
