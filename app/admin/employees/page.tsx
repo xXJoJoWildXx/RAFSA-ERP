@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react"
 import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
@@ -687,6 +688,7 @@ export default function AdminEmployeesPage() {
   }
 
   return (
+    <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -1034,5 +1036,6 @@ export default function AdminEmployeesPage() {
         )}
       </div>
     </AdminLayout>
+    </RoleGuard>
   )
 }

@@ -1,4 +1,4 @@
-import { createClient } from "@supabase/supabase-js"
+import { createBrowserClient } from "@supabase/ssr"
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
@@ -13,4 +13,6 @@ if (!supabaseAnonKey) {
   )
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey)
+// createBrowserClient persiste la sesión tanto en localStorage como en cookies,
+// lo que permite que el middleware de Next.js la lea server-side.
+export const supabase = createBrowserClient(supabaseUrl, supabaseAnonKey)

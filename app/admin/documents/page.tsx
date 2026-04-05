@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -132,6 +133,7 @@ export default function AdminDocumentsPage() {
   }
 
   return (
+    <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
@@ -298,5 +300,6 @@ export default function AdminDocumentsPage() {
       <DocumentUpload open={showUpload} onOpenChange={setShowUpload} />
       <DocumentAIAssistant open={showAI} onOpenChange={setShowAI} />
     </AdminLayout>
+    </RoleGuard>
   )
 }

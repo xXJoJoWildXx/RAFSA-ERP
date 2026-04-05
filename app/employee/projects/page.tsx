@@ -2,6 +2,7 @@
 
 import { useState } from "react"
 import { EmployeeLayout } from "@/components/employee-layout"
+import { RoleGuard } from "@/lib/role-guard"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -78,6 +79,7 @@ export default function EmployeeProjectsPage() {
   }
 
   return (
+    <RoleGuard allowed={["user"]}>
     <EmployeeLayout>
       <div className="space-y-6">
         <div>
@@ -148,5 +150,6 @@ export default function EmployeeProjectsPage() {
         </div>
       </div>
     </EmployeeLayout>
+    </RoleGuard>
   )
 }
