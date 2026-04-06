@@ -87,6 +87,7 @@ type ObraAssignmentRow = {
   obra_id: string
   employee_id: string
   role_on_site: string | null
+  assigned_to: string | null
   employees: { full_name: string } | { full_name: string }[] | null
 }
 
@@ -777,6 +778,36 @@ export default function ProjectDetailPage() {
     { id: 4, action: "Budget updated", detail: "Additional $200,000 allocated for materials", time: "2 weeks ago" },
   ]
 
+  // Aplica las stats de equipo desde un array ya cargado
+  function applyTeamStats(assignments: ObraAssignmentRow[], today: string) {
+    const activeAssignments = assignments.filter(
+      (a) => !a.assigned_to || a.assigned_to >= today
+    )
+    setTeamSize(activeAssignments.length)
+
+    const directorAssignment = activeAssignments.find(
+      (a) => a.role_on_site === "director_obra"
+    )
+    let foundManagerName: string | null = null
+    if (directorAssignment) {
+      const emp = directorAssignment.employees
+      if (Array.isArray(emp)) foundManagerName = emp[0]?.full_name ?? null
+      else foundManagerName = emp?.full_name ?? null
+    }
+    setManagerName(foundManagerName)
+  }
+
+  // Re-fetcha solo los datos de equipo (para refrescar el card Overview)
+  async function fetchTeamStats(obraId: string) {
+    const { data, error } = await supabase
+      .from("obra_assignments")
+      .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
+      .eq("obra_id", obraId)
+    if (error) { console.error("fetchTeamStats error:", error); return }
+    const today = new Date().toISOString().slice(0, 10)
+    applyTeamStats((data || []) as ObraAssignmentRow[], today)
+  }
+
   useEffect(() => {
     const loadData = async () => {
       setLoading(true)
@@ -845,7 +876,7 @@ export default function ProjectDetailPage() {
             .limit(1),
           supabase
             .from("obra_assignments")
-            .select("id, obra_id, employee_id, role_on_site, employees(full_name)")
+            .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
             .eq("obra_id", obraId),
         ])
 
@@ -880,19 +911,9 @@ export default function ProjectDetailPage() {
         const progressValue = lastReport[0]?.progress_percent
         setProgress(progressValue !== null && progressValue !== undefined ? Number(progressValue) : 0)
 
+        const today = new Date().toISOString().slice(0, 10)
         const assignments = (assignmentsData || []) as ObraAssignmentRow[]
-        setTeamSize(assignments.length)
-
-        const managerAssignment = assignments.find((a) => a.role_on_site?.toLowerCase() === "manager")
-        let foundManagerName: string | null = null
-
-        if (managerAssignment) {
-          const emp = managerAssignment.employees
-          if (Array.isArray(emp)) foundManagerName = emp[0]?.full_name ?? null
-          else foundManagerName = emp?.full_name ?? null
-        }
-
-        setManagerName(foundManagerName)
+        applyTeamStats(assignments, today)
 
         await fetchDocuments(obraId)
       } catch (e) {
@@ -1067,8 +1088,8 @@ export default function ProjectDetailPage() {
                     <div>
                       <p className="text-sm font-medium text-slate-600">Team Size</p>
                       <p className="text-xs text-slate-500 mt-1">
-                        Manager:{" "}
-                        <span className="font-medium text-slate-900">{managerName ?? "Sin responsable asignado"}</span>
+                        Director de Obra:{" "}
+                        <span className="font-medium text-slate-900">{managerName ?? "Sin asignar"}</span>
                       </p>
                       <p className="text-2xl font-bold text-slate-900 mt-3">{teamSize}</p>
                     </div>
@@ -1238,7 +1259,7 @@ export default function ProjectDetailPage() {
 
           {/* TEAM  */}
           <TabsContent value="team" forceMount className="space-y-6">
-            <ProjectTeamTab obraId={obra.id} allowManage />
+            <ProjectTeamTab obraId={obra.id} allowManage onTeamChange={() => fetchTeamStats(obra.id)} />
           </TabsContent>
 
           {/* ACTIVITY (mock) */}
