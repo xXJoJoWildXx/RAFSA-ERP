@@ -16,6 +16,7 @@ type EmployeeRow = {
   full_name: string
   position_title: string | null
   status: "active" | "inactive" | string
+  roles: string[] // códigos de employee_roles_catalog
 }
 
 type AssignmentRow = {
@@ -47,20 +48,21 @@ type TeamMember = {
 type Props = {
   obraId: string
   allowManage?: boolean
+  onTeamChange?: () => void
 }
 
 /**
  * Convención:
- * - role_on_site = 'manager' => Jefe de Obra (Manager)
- * - el resto son libres (ej. 'engineer', 'worker', etc.)
+ * - role_on_site = 'director_obra' => Director de Obra (rol único activo por obra)
+ * - el resto corresponden a los códigos del catálogo employee_roles_catalog
  */
 const ROLE_ON_SITE_OPTIONS = [
-  { value: "manager", label: "Manager (Jefe de Obra)" },
-  { value: "site_supervisor", label: "Site Supervisor" },
-  { value: "engineer", label: "Engineer" },
-  { value: "safety", label: "Safety" },
-  { value: "quality", label: "Quality" },
-  { value: "worker", label: "Worker" },
+  { value: "director_obra", label: "Director de Obra" },
+  { value: "pintor_muros_tiltup", label: "Pintor de muros tilt-up" },
+  { value: "pintor_estructura", label: "Pintor de estructura" },
+  { value: "oficial_pastero", label: "Oficial Pastero" },
+  { value: "pintor_tablaroca", label: "Pintor de Tablaroca" },
+  { value: "ayudante_obra", label: "Ayudante de Obra" },
 ]
 
 function normalizeRoleLabel(v: string | null) {
@@ -79,17 +81,13 @@ function isActiveAssignment(a: TeamMember) {
 }
 
 /**
- * “Employee es manager” lo inferimos por position_title
- * (no existe un campo role en employees según tu schema)
+ * Verifica si el empleado tiene el rol 'director_obra' en el catálogo
  */
-function isEmployeeManager(e: EmployeeRow | null | undefined) {
-  const t = (e?.position_title || "").trim().toLowerCase()
-  if (!t) return false
-  // tolerante: "manager", "project manager", "site manager", etc.
-  return t.includes("manager")
+function isEmployeeDirectorObra(e: EmployeeRow | null | undefined) {
+  return (e?.roles ?? []).includes("director_obra")
 }
 
-export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
+export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -102,13 +100,15 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
   // modal add
   const [addOpen, setAddOpen] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
+  // true cuando se abre desde "Asignar Director" — bloquea el selector de rol
+  const [directorMode, setDirectorMode] = useState(false)
 
   const [employees, setEmployees] = useState<EmployeeRow[]>([])
   const [employeesLoading, setEmployeesLoading] = useState(false)
 
   const [addForm, setAddForm] = useState({
     employee_id: "",
-    role_on_site: "worker",
+    role_on_site: "ayudante_obra",
   })
 
   async function fetchMembers() {
@@ -165,10 +165,17 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
   async function fetchEmployees() {
     setEmployeesLoading(true)
 
-    // solo activos por default (como estabas manejando)
     const { data, error } = await supabase
       .from("employees")
-      .select("id, full_name, position_title, status")
+      .select(`
+        id,
+        full_name,
+        position_title,
+        status,
+        employee_roles(
+          employee_roles_catalog(code)
+        )
+      `)
       .eq("status", "active")
       .order("full_name", { ascending: true })
 
@@ -179,35 +186,46 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
       return
     }
 
-    setEmployees((data || []) as EmployeeRow[])
+    const mapped: EmployeeRow[] = (data || []).map((emp: any) => ({
+      id: emp.id,
+      full_name: emp.full_name,
+      position_title: emp.position_title ?? null,
+      status: emp.status,
+      roles: (emp.employee_roles || [])
+        .map((er: any) => er.employee_roles_catalog?.code)
+        .filter(Boolean) as string[],
+    }))
+
+    setEmployees(mapped)
     setEmployeesLoading(false)
   }
 
   async function handleOpenAdd() {
     setError(null)
-    setAddForm({ employee_id: "", role_on_site: "worker" })
+    setDirectorMode(false)
+    setAddForm({ employee_id: "", role_on_site: "ayudante_obra" })
     setAddOpen(true)
     await fetchEmployees()
   }
 
   /**
-   * Cierra cualquier MANAGER activo previo para la misma obra (evita 2 managers activos).
-   * - “activo” aquí = assigned_to IS NULL OR assigned_to >= hoy
+   * Cierra el Director de Obra activo previo para la misma obra (solo puede haber uno activo).
+   * - "activo" aquí = assigned_to IS NULL OR assigned_to >= hoy
    * - Setea assigned_to = hoy
    */
-  async function closeActiveManagerAssignments() {
+  async function closeActiveDirectorObraAssignment() {
     const today = todayISO()
 
     const { error } = await supabase
       .from("obra_assignments")
       .update({ assigned_to: today })
       .eq("obra_id", obraId)
-      .eq("role_on_site", "manager")
+      .eq("role_on_site", "director_obra")
       .or(`assigned_to.is.null,assigned_to.gte.${today}`)
 
     if (error) {
-      console.error("closeActiveManagerAssignments error:", error)
-      throw new Error("No se pudo cerrar el manager anterior.")
+      console.error("closeActiveDirectorObraAssignment error:", error)
+      throw new Error("No se pudo cerrar el Director de Obra anterior.")
     }
   }
 
@@ -231,10 +249,10 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
       return
     }
 
-    // Validación extra: si vas a asignar MANAGER, el empleado debe ser manager (por position_title)
+    // Validación extra: si vas a asignar Director de Obra, el empleado debe tener ese rol en el catálogo
     const selectedEmp = employees.find((e) => e.id === addForm.employee_id) ?? null
-    if (addForm.role_on_site === "manager" && !isEmployeeManager(selectedEmp)) {
-      setError('Solo puedes asignar como "manager" a empleados cuyo puesto (position_title) sea manager.')
+    if (addForm.role_on_site === "director_obra" && !isEmployeeDirectorObra(selectedEmp)) {
+      setError('Solo puedes asignar como "Director de Obra" a empleados que tengan ese rol en el catálogo.')
       setSavingAdd(false)
       return
     }
@@ -244,9 +262,9 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
     const created_by = authData?.user?.id ?? null
 
     try {
-      // 🔒 Evitar 2 managers activos
-      if (addForm.role_on_site === "manager") {
-        await closeActiveManagerAssignments()
+      // 🔒 Solo puede haber un Director de Obra activo por obra
+      if (addForm.role_on_site === "director_obra") {
+        await closeActiveDirectorObraAssignment()
       }
 
       const payload = {
@@ -268,6 +286,7 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
       setAddOpen(false)
       setSavingAdd(false)
       await fetchMembers()
+      onTeamChange?.()
     } catch (e) {
       setError(e instanceof Error ? e.message : "No se pudo completar la asignación.")
       setSavingAdd(false)
@@ -286,6 +305,7 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
     }
 
     await fetchMembers()
+    onTeamChange?.()
   }
 
   useEffect(() => {
@@ -293,11 +313,11 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
 
-  const manager = useMemo(() => {
-    const managers = members.filter((m) => (m.role_on_site || "").toLowerCase() === "manager")
-    if (managers.length === 0) return null
-    const active = managers.find((m) => isActiveAssignment(m))
-    return active ?? managers[0]
+  const director = useMemo(() => {
+    const directors = members.filter((m) => (m.role_on_site || "") === "director_obra")
+    if (directors.length === 0) return null
+    const active = directors.find((m) => isActiveAssignment(m))
+    return active ?? directors[0]
   }, [members])
 
   const filtered = useMemo(() => {
@@ -313,17 +333,16 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
     })
   }, [members, search, roleFilter])
 
-  // 👇 Lista de empleados que se muestran en el modal
-  // Si estás asignando MANAGER, solo muestra los employees cuyo position_title “parezca manager”
+  // 👇 Siempre filtra empleados por el rol seleccionado en el modal
   const employeesForModal = useMemo(() => {
-    if (addForm.role_on_site !== "manager") return employees
-    return employees.filter((e) => isEmployeeManager(e))
+    if (!addForm.role_on_site) return employees
+    return employees.filter((e) => e.roles.includes(addForm.role_on_site))
   }, [employees, addForm.role_on_site])
 
-  async function handleAssignManagerShortcut() {
-    // abre modal ya en modo manager
-    setAddForm({ employee_id: "", role_on_site: "manager" })
+  async function handleAssignDirectorShortcut() {
     setError(null)
+    setDirectorMode(true)
+    setAddForm({ employee_id: "", role_on_site: "director_obra" })
     setAddOpen(true)
     await fetchEmployees()
   }
@@ -352,7 +371,7 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
         </div>
       </div>
 
-      {/* ⭐ Card Manager */}
+      {/* ⭐ Card Director de Obra */}
       <Card className="border-slate-200">
         <CardContent className="p-5">
           <div className="flex items-start justify-between gap-4">
@@ -361,34 +380,34 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
                 <div className="p-2 rounded-md bg-amber-50 border border-amber-100">
                   <Crown className="w-5 h-5 text-amber-600" />
                 </div>
-                <p className="text-sm font-semibold text-slate-900">Jefe de Obra (manager)</p>
-                <Badge className="bg-amber-100 text-amber-800">Manager</Badge>
+                <p className="text-sm font-semibold text-slate-900">Director de Obra</p>
+                <Badge className="bg-amber-100 text-amber-800">Director de Obra</Badge>
               </div>
 
-              <p className="text-2xl font-bold text-slate-900">{manager?.full_name ?? "Sin asignar"}</p>
+              <p className="text-2xl font-bold text-slate-900">{director?.full_name ?? "Sin asignar"}</p>
 
               <div className="text-sm text-slate-600">
-                {manager ? (
+                {director ? (
                   <>
-                    <span className="font-medium">{manager.position_title ?? "—"}</span>
+                    <span className="font-medium">{director.position_title ?? "—"}</span>
                     <span className="text-slate-400 mx-2">•</span>
                     <span className="font-mono text-xs">
-                      desde {manager.assigned_from}
-                      {manager.assigned_to ? ` hasta ${manager.assigned_to}` : ""}
+                      desde {director.assigned_from}
+                      {director.assigned_to ? ` hasta ${director.assigned_to}` : ""}
                     </span>
                   </>
                 ) : (
                   <span>
-                    Asigna un empleado con rol <span className="font-mono">manager</span> para mostrarlo aquí.
+                    Asigna un empleado con rol <span className="font-mono">director_obra</span> para mostrarlo aquí.
                   </span>
                 )}
               </div>
             </div>
 
             {allowManage && (
-              <Button variant="outline" onClick={handleAssignManagerShortcut}>
+              <Button variant="outline" onClick={handleAssignDirectorShortcut}>
                 <Plus className="w-4 h-4 mr-2" />
-                Asignar manager
+                {director ? "Actualizar Director" : "Asignar Director"}
               </Button>
             )}
           </div>
@@ -519,36 +538,48 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
       <Dialog open={addOpen} onOpenChange={(v) => (savingAdd ? null : setAddOpen(v))}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Agregar miembro al equipo</DialogTitle>
+            <DialogTitle>
+              {directorMode ? "Asignar Director de Obra" : "Agregar miembro al equipo"}
+            </DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 mt-2">
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">Rol en obra</label>
-              <Select
-                value={addForm.role_on_site}
-                onValueChange={(v) => setAddForm((f) => ({ ...f, role_on_site: v, employee_id: "" }))}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {ROLE_ON_SITE_OPTIONS.map((r) => (
-                    <SelectItem key={r.value} value={r.value}>
-                      {r.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
 
-              <p className="text-[11px] text-slate-500">
-                Si eliges <span className="font-mono">manager</span>, el sistema cerrará al manager activo anterior.
-              </p>
+              {directorMode ? (
+                <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+                  <Crown className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span className="text-sm font-medium text-amber-800">Director de Obra</span>
+                </div>
+              ) : (
+                <Select
+                  value={addForm.role_on_site}
+                  onValueChange={(v) => setAddForm((f) => ({ ...f, role_on_site: v, employee_id: "" }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {ROLE_ON_SITE_OPTIONS.filter((r) => r.value !== "director_obra").map((r) => (
+                      <SelectItem key={r.value} value={r.value}>
+                        {r.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+
+              {directorMode && (
+                <p className="text-[11px] text-slate-500">
+                  Solo puede haber un Director de Obra activo. El anterior se cerrará automáticamente.
+                </p>
+              )}
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-600">
-                Empleado {addForm.role_on_site === "manager" ? '(solo "managers")' : ""} *
+                Empleado *
               </label>
 
               <Select
@@ -560,9 +591,7 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
                     placeholder={
                       employeesLoading
                         ? "Cargando..."
-                        : addForm.role_on_site === "manager"
-                        ? "Selecciona un manager"
-                        : "Selecciona un empleado"
+                        : `Selecciona un empleado`
                     }
                   />
                 </SelectTrigger>
@@ -570,9 +599,7 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
                 <SelectContent>
                   {employeesForModal.length === 0 ? (
                     <SelectItem value="__none__" disabled>
-                      {addForm.role_on_site === "manager"
-                        ? 'No hay employees con position_title que contenga "manager"'
-                        : "No hay empleados disponibles"}
+                      {`No hay empleados con el rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catálogo`}
                     </SelectItem>
                   ) : (
                     employeesForModal.map((e) => (
@@ -585,9 +612,9 @@ export function ProjectTeamTab({ obraId, allowManage = true }: Props) {
                 </SelectContent>
               </Select>
 
-              {addForm.role_on_site === "manager" && (
+              {!directorMode && (
                 <p className="text-[11px] text-slate-500">
-                  Se filtra por <span className="font-mono">employees.position_title</span> que incluya “manager”.
+                  {`Mostrando empleados con rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catálogo.`}
                 </p>
               )}
             </div>
