@@ -25,9 +25,10 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
-import { Search, Plus, Mail, Phone, MapPin, Briefcase, X } from "lucide-react"
+import { Search, Plus, Mail, Phone, MapPin, Briefcase, X, FileDown } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
+import { generateEmployeesPdf, type EmployeePdfData, type SalaryPdfData } from "@/lib/generateEmployeesPdf"
 
 // ----- Tipos que reflejan la DB real -----
 
@@ -687,6 +688,67 @@ export default function AdminEmployeesPage() {
     }
   }
 
+  // ── PDF Export ────────────────────────────────────────────────────────────
+  const [generatingPdf, setGeneratingPdf] = useState(false)
+
+  async function handleExportPdf() {
+    setGeneratingPdf(true)
+    try {
+      const ids = employees.map((e) => e.id)
+
+      // Fetch termination_date for all employees
+      const { data: empExtra } = await supabase
+        .from("employees")
+        .select("id, termination_date")
+        .in("id", ids)
+
+      const terminationMap: Record<string, string | null> = {}
+      ;(empExtra || []).forEach((e: any) => {
+        terminationMap[e.id] = e.termination_date ?? null
+      })
+
+      // Fetch latest salary record per employee (most recent valid_from)
+      const { data: salaryData } = await supabase
+        .from("employee_salary_history")
+        .select("employee_id, real_salary, payroll_salary, bonus_amount, overtime_hour_cost, viatics_amount, valid_from, valid_to")
+        .in("employee_id", ids)
+        .order("valid_from", { ascending: false })
+
+      const salaryMap: Record<string, SalaryPdfData> = {}
+      ;(salaryData || []).forEach((row: any) => {
+        // Keep only the first (most recent) record per employee
+        if (!salaryMap[row.employee_id]) {
+          salaryMap[row.employee_id] = {
+            real_salary: row.real_salary,
+            payroll_salary: row.payroll_salary,
+            bonus_amount: row.bonus_amount,
+            overtime_hour_cost: row.overtime_hour_cost,
+            viatics_amount: row.viatics_amount,
+          }
+        }
+      })
+
+      const pdfData: EmployeePdfData[] = employees.map((emp) => ({
+        id: emp.id,
+        full_name: emp.name,
+        status: emp.status === "Activo" ? "active" : "inactive",
+        hire_date: emp.joinDate || null,
+        termination_date: terminationMap[emp.id] ?? null,
+        roles: emp.roles.map((r) => ({ name: r.name })),
+        signedPhotoUrl: emp.signedPhotoUrl ?? null,
+        salary: salaryMap[emp.id] ?? null,
+      }))
+
+      const activeCount = employees.filter((e) => e.status === "Activo").length
+      const inactiveCount = employees.filter((e) => e.status !== "Activo").length
+      await generateEmployeesPdf(pdfData, activeCount, inactiveCount)
+    } catch (e) {
+      console.error("Error generando PDF:", e)
+    } finally {
+      setGeneratingPdf(false)
+    }
+  }
+
   return (
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
@@ -698,6 +760,17 @@ export default function AdminEmployeesPage() {
               Administra y visualiza a todos los empleados de la empresa
             </p>
           </div>
+
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={handleExportPdf}
+              disabled={generatingPdf || employees.length === 0}
+              className="cursor-pointer"
+            >
+              <FileDown className={`w-4 h-4 mr-2 ${generatingPdf ? "animate-pulse" : ""}`} />
+              {generatingPdf ? "Generando PDF..." : "Exportar PDF"}
+            </Button>
 
           <Dialog
             open={showCreateForm}
@@ -861,6 +934,7 @@ export default function AdminEmployeesPage() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          </div>{/* end flex gap-2 */}
         </div>
 
         <Dialog open={showDocsPopup} onOpenChange={setShowDocsPopup}>
