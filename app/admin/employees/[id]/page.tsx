@@ -31,9 +31,9 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
-  Mail,
   Phone,
   Calendar,
+  Clock,
   ArrowLeft,
   Edit,
   Building2,
@@ -369,6 +369,29 @@ function calculateAge(birthDate: string | null) {
   }
 
   return age >= 0 ? age : null
+}
+
+function calculateTenure(hireDate: string | null): string {
+  if (!hireDate) return "No especificado"
+  const parts = hireDate.split("T")[0]?.split("-")
+  if (!parts || parts.length !== 3) return "No especificado"
+  const [year, month, day] = parts.map(Number)
+  const hire = new Date(year, month - 1, day)
+  if (Number.isNaN(hire.getTime())) return "No especificado"
+  const today = new Date()
+  let years = today.getFullYear() - hire.getFullYear()
+  let months = today.getMonth() - hire.getMonth()
+  let days = today.getDate() - hire.getDate()
+  if (days < 0) {
+    months--
+    days += new Date(today.getFullYear(), today.getMonth(), 0).getDate()
+  }
+  if (months < 0) { years--; months += 12 }
+  const segs: string[] = []
+  if (years > 0) segs.push(`${years} ${years === 1 ? "año" : "años"}`)
+  if (months > 0) segs.push(`${months} ${months === 1 ? "mes" : "meses"}`)
+  if (days > 0 || segs.length === 0) segs.push(`${days} ${days === 1 ? "día" : "días"}`)
+  return segs.join(", ")
 }
 
 function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
@@ -1734,18 +1757,6 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="email">Correo</Label>
-                        <Input
-                          id="email"
-                          type="email"
-                          value={editForm.email}
-                          onChange={(e) =>
-                            handleEditChange("email", e.target.value)
-                          }
-                        />
-                      </div>
-
-                      <div className="space-y-2">
                         <Label htmlFor="phone">Teléfono</Label>
                         <Input
                           id="phone"
@@ -2241,13 +2252,6 @@ export default function EmployeeDetailPage() {
                   </div>
 
                   <div className="flex items-center gap-3 text-sm">
-                    <Mail className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600 break-all">
-                      {employee.email ?? "Sin correo"}
-                    </span>
-                  </div>
-
-                  <div className="flex items-center gap-3 text-sm">
                     <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
                       {employee.phone ?? "Sin teléfono"}
@@ -2258,6 +2262,13 @@ export default function EmployeeDetailPage() {
                     <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
                     <span className="text-slate-600">
                       Fecha de contratación: {formatDate(employee.joinDate)}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-3 text-sm">
+                    <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                    <span className="text-slate-600">
+                      Tiempo contratado: {calculateTenure(employee.joinDate)}
                     </span>
                   </div>
 

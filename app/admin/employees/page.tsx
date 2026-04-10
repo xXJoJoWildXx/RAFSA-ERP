@@ -25,7 +25,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 
-import { Search, Plus, Mail, Phone, MapPin, Briefcase, X, FileDown } from "lucide-react"
+import { Search, Plus, Phone, X, FileDown, Calendar, Clock, User } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
 import { generateEmployeesPdf, type EmployeePdfData, type SalaryPdfData } from "@/lib/generateEmployeesPdf"
@@ -35,10 +35,10 @@ import { generateEmployeesPdf, type EmployeePdfData, type SalaryPdfData } from "
 type EmployeeRow = {
   id: string
   full_name: string
-  email: string | null
   phone: string | null
   status: string
   hire_date: string | null
+  birth_date: string | null
   photo_url: string | null
 }
 
@@ -67,14 +67,12 @@ type ObraAssignmentWithObra = {
 type Employee = {
   id: string
   name: string
-  email: string
   phone: string
   position: string
-  department: string
-  location: string
   status: "Activo" | "De permiso" | "Inactivo"
   projects: number
   joinDate: string
+  birth_date: string | null
   avatar: string
   photo_url: string | null
   signedPhotoUrl?: string | null
@@ -87,7 +85,6 @@ type Employee = {
 
 type NewEmployeeForm = {
   full_name: string
-  email: string
   phone: string
   status: "active" | "inactive"
   hire_date: string
@@ -170,14 +167,49 @@ function makeAvatarInitials(name: string): string {
   return (parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase()
 }
 
+function calculateAge(birthDate: string | null): number | null {
+  if (!birthDate) return null
+  const parts = birthDate.split("T")[0]?.split("-")
+  if (!parts || parts.length !== 3) return null
+  const [year, month, day] = parts.map(Number)
+  const birth = new Date(year, month - 1, day)
+  if (Number.isNaN(birth.getTime())) return null
+  const today = new Date()
+  let age = today.getFullYear() - birth.getFullYear()
+  const m = today.getMonth() - birth.getMonth()
+  if (m < 0 || (m === 0 && today.getDate() < birth.getDate())) age--
+  return age
+}
+
+function calculateTenure(hireDate: string | null): string {
+  if (!hireDate) return "No especificado"
+  const parts = hireDate.split("T")[0]?.split("-")
+  if (!parts || parts.length !== 3) return "No especificado"
+  const [year, month, day] = parts.map(Number)
+  const hire = new Date(year, month - 1, day)
+  if (Number.isNaN(hire.getTime())) return "No especificado"
+  const today = new Date()
+  let years = today.getFullYear() - hire.getFullYear()
+  let months = today.getMonth() - hire.getMonth()
+  let days = today.getDate() - hire.getDate()
+  if (days < 0) {
+    months--
+    days += new Date(today.getFullYear(), today.getMonth(), 0).getDate()
+  }
+  if (months < 0) { years--; months += 12 }
+  const segs: string[] = []
+  if (years > 0) segs.push(`${years} ${years === 1 ? "año" : "años"}`)
+  if (months > 0) segs.push(`${months} ${months === 1 ? "mes" : "meses"}`)
+  if (days > 0 || segs.length === 0) segs.push(`${days} ${days === 1 ? "día" : "días"}`)
+  return segs.join(", ")
+}
+
 function mapEmployeeRowToEmployee(
   row: EmployeeRow,
   roles: Employee["roles"] = [],
   projects: number = 0,
 ): Employee {
   const uiStatus = mapDbStatusToUi(row.status)
-  const department = "Sin departamento asignado"
-  const location = "Sin ubicación registrada"
 
   const sortedRoles = [...roles].sort((a, b) => {
     const aIsDirector = a.code === "director_obra"
@@ -190,14 +222,12 @@ function mapEmployeeRowToEmployee(
   return {
     id: row.id,
     name: row.full_name,
-    email: row.email ?? "Sin correo",
     phone: row.phone ?? "Sin teléfono",
     position: sortedRoles[0]?.name ?? "Sin rol",
-    department,
-    location,
     status: uiStatus,
     projects,
     joinDate: row.hire_date ?? "",
+    birth_date: row.birth_date ?? null,
     avatar: makeAvatarInitials(row.full_name),
     photo_url: row.photo_url ?? null,
     signedPhotoUrl: null,
@@ -302,7 +332,6 @@ export default function AdminEmployeesPage() {
 
   const [newEmployee, setNewEmployee] = useState<NewEmployeeForm>({
     full_name: "",
-    email: "",
     phone: "",
     status: "active",
     hire_date: "",
@@ -352,10 +381,10 @@ export default function AdminEmployeesPage() {
             `
             id,
             full_name,
-            email,
             phone,
             status,
             hire_date,
+            birth_date,
             photo_url
           `,
           )
@@ -488,7 +517,6 @@ export default function AdminEmployeesPage() {
     return employees.filter((employee) => {
       const matchesSearch =
         employee.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        employee.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
         employee.position.toLowerCase().includes(searchQuery.toLowerCase())
 
       const matchesRole =
@@ -527,7 +555,6 @@ export default function AdminEmployeesPage() {
   const resetCreateForm = () => {
     setNewEmployee({
       full_name: "",
-      email: "",
       phone: "",
       status: "active",
       hire_date: "",
@@ -562,7 +589,6 @@ export default function AdminEmployeesPage() {
 
     const payload = {
       full_name: newEmployee.full_name.trim(),
-      email: newEmployee.email.trim() || null,
       phone: newEmployee.phone.trim() || null,
       status: newEmployee.status,
       hire_date: newEmployee.hire_date || null,
@@ -576,10 +602,10 @@ export default function AdminEmployeesPage() {
           `
             id,
             full_name,
-            email,
             phone,
             status,
             hire_date,
+            birth_date,
             photo_url
           `,
         )
@@ -734,6 +760,7 @@ export default function AdminEmployeesPage() {
         status: emp.status === "Activo" ? "active" : "inactive",
         hire_date: emp.joinDate || null,
         termination_date: terminationMap[emp.id] ?? null,
+        tenure: calculateTenure(emp.joinDate || null),
         roles: emp.roles.map((r) => ({ name: r.name })),
         signedPhotoUrl: emp.signedPhotoUrl ?? null,
         salary: salaryMap[emp.id] ?? null,
@@ -852,16 +879,6 @@ export default function AdminEmployeesPage() {
                         ))}
                       </div>
                     )}
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="email">Correo</Label>
-                    <Input
-                      id="email"
-                      type="email"
-                      value={newEmployee.email}
-                      onChange={(e) => handleChangeNewEmployee("email", e.target.value)}
-                    />
                   </div>
 
                   <div className="space-y-2">
@@ -1067,21 +1084,37 @@ export default function AdminEmployeesPage() {
                           </div>
 
                           <div className="w-full space-y-2 pt-4 border-t">
+                            {/* Edad */}
                             <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <Briefcase className="w-4 h-4 flex-shrink-0" />
-                              <span className="truncate">{employee.department}</span>
+                              <User className="w-4 h-4 flex-shrink-0" />
+                              <span className="text-slate-400 mr-1">Edad</span>
+                              <span className="truncate">
+                                {calculateAge(employee.birth_date) !== null
+                                  ? `${calculateAge(employee.birth_date)} años`
+                                  : "No registrada"}
+                              </span>
                             </div>
-                            <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <Mail className="w-4 h-4 flex-shrink-0" />
-                              <span className="truncate">{employee.email}</span>
-                            </div>
+                            {/* Teléfono */}
                             <div className="flex items-center gap-2 text-sm text-slate-600">
                               <Phone className="w-4 h-4 flex-shrink-0" />
+                              <span className="text-slate-400 mr-1">Teléfono</span>
                               <span className="truncate">{employee.phone}</span>
                             </div>
+                            {/* Separador Contratación */}
+                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-1">Contratación</p>
+                            {/* Fecha */}
                             <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <MapPin className="w-4 h-4 flex-shrink-0" />
-                              <span className="truncate">{employee.location}</span>
+                              <Calendar className="w-4 h-4 flex-shrink-0" />
+                              <span className="truncate">
+                                {employee.joinDate
+                                  ? new Date(employee.joinDate + "T12:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })
+                                  : "Sin fecha"}
+                              </span>
+                            </div>
+                            {/* Tiempo */}
+                            <div className="flex items-center gap-2 text-sm text-slate-600">
+                              <Clock className="w-4 h-4 flex-shrink-0" />
+                              <span className="truncate">{calculateTenure(employee.joinDate)}</span>
                             </div>
                           </div>
 
