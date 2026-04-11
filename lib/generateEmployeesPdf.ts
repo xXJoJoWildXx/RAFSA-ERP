@@ -14,6 +14,7 @@ export type EmployeePdfData = {
   status: string // "active" | "inactive"
   hire_date: string | null
   termination_date: string | null
+  tenure: string // "X años, Y meses, Z días"
   roles: { name: string }[]
   signedPhotoUrl: string | null
   salary: SalaryPdfData | null
@@ -295,20 +296,27 @@ export async function generateEmployeesPdf(
 
     doc.setFont("helvetica", "bold")
     doc.setTextColor(100, 100, 100)
-    doc.text("Contratacion:", INFO_X, yB + 33)
+    doc.text("Contratacion:", INFO_X, yB + 30)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(30, 30, 30)
-    doc.text(fmtDate(emp.hire_date), INFO_X + labelW, yB + 33)
+    doc.text(fmtDate(emp.hire_date), INFO_X + labelW, yB + 30)
 
     doc.setFont("helvetica", "bold")
     doc.setTextColor(100, 100, 100)
-    doc.text("Fecha de baja:", INFO_X, yB + 39)
+    doc.text("Tiempo:", INFO_X, yB + 36)
     doc.setFont("helvetica", "normal")
     doc.setTextColor(30, 30, 30)
-    doc.text(fmtDate(emp.termination_date), INFO_X + labelW, yB + 39)
+    doc.text(emp.tenure || "No especificado", INFO_X + labelW, yB + 36)
+
+    doc.setFont("helvetica", "bold")
+    doc.setTextColor(100, 100, 100)
+    doc.text("Fecha de baja:", INFO_X, yB + 42)
+    doc.setFont("helvetica", "normal")
+    doc.setTextColor(30, 30, 30)
+    doc.text(fmtDate(emp.termination_date), INFO_X + labelW, yB + 42)
 
     // ── Salary section ────────────────────────────────────────────────────
-    const salaryY = yB + 45
+    const salaryY = yB + 48
 
     // Light background
     doc.setFillColor(248, 250, 252)
