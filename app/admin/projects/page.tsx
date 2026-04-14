@@ -58,11 +58,10 @@ type Project = {
   code?: string | null
 }
 
-// Empleados que pueden fungir como managers
+// Directores de obra activos (para el form)
 type EmployeeManager = {
   id: string
   full_name: string
-  position_title: string | null
   status: string
 }
 
@@ -97,31 +96,31 @@ type ObraStateAccountRow = {
 
 function mapDbStatusToUi(status: DbObraStatus): ProjectStatus {
   switch (status) {
-    case "planned":
-      return "Planning"
-    case "in_progress":
-      return "In Progress"
-    case "paused":
-      return "On Hold"
-    case "closed":
-      return "Completed"
-    default:
-      return "Planning"
+    case "planned":     return "Planning"
+    case "in_progress": return "In Progress"
+    case "paused":      return "On Hold"
+    case "closed":      return "Completed"
+    default:            return "Planning"
   }
 }
 
 function mapUiStatusToDb(status: ProjectStatus): DbObraStatus {
   switch (status) {
-    case "Planning":
-      return "planned"
-    case "In Progress":
-      return "in_progress"
-    case "On Hold":
-      return "paused"
-    case "Completed":
-      return "closed"
-    default:
-      return "planned"
+    case "Planning":    return "planned"
+    case "In Progress": return "in_progress"
+    case "On Hold":     return "paused"
+    case "Completed":   return "closed"
+    default:            return "planned"
+  }
+}
+
+function getStatusLabel(status: ProjectStatus): string {
+  switch (status) {
+    case "Planning":    return "Planeacion"
+    case "In Progress": return "En progreso"
+    case "Completed":   return "Completada"
+    case "On Hold":     return "En pausa"
+    default:            return status
   }
 }
 
@@ -161,14 +160,13 @@ function mapObraToProject(
     id: obra.id,
     code: obra.code,
     name: obra.name,
-    location: obra.location_text ?? "Sin ubicación",
+    location: obra.location_text ?? "Sin ubicacion",
     status: mapDbStatusToUi(obra.status),
     progress: opts?.progress ?? 0,
     startDate,
     endDate,
     budget: opts?.budget ?? "-",
     spent: opts?.spent ?? "-",
-    // 🔴 Ya no usamos client_name como fallback
     manager: opts?.managerName || "Sin asignar",
     teamSize: opts?.teamSize ?? 0,
   }
@@ -184,7 +182,7 @@ function parseMoney(value: string): number {
   return Number.isNaN(n) ? 0 : n
 }
 
-// ----- Página principal -----
+// ----- Pagina principal -----
 
 export default function AdminProjectsPage() {
   const [projects, setProjects] = useState<Project[]>([])
@@ -199,7 +197,7 @@ export default function AdminProjectsPage() {
   const [openDialog, setOpenDialog] = useState(false)
   const [editingProject, setEditingProject] = useState<Project | null>(null)
 
-  // Managers activos (para el form)
+  // Directores de obra activos (para el form)
   const [managers, setManagers] = useState<EmployeeManager[]>([])
   const [loadingManagers, setLoadingManagers] = useState(false)
 
@@ -247,14 +245,20 @@ export default function AdminProjectsPage() {
 
       const obraIds = obras.map((o) => o.id)
 
-      // 2) En paralelo: manager assignments, site_reports, contracts, state_accounts
-      const [assignRes, siteRes, contractsRes, accountsRes] =
+      // 2) En paralelo: director assignments, team count, site_reports, contracts, state_accounts
+      const [assignRes, teamRes, siteRes, contractsRes, accountsRes] =
         await Promise.all([
           supabase
             .from("obra_assignments")
             .select("obra_id, employee_id, employees(full_name)")
             .in("obra_id", obraIds)
-            .eq("role_on_site", "manager"),
+            .eq("role_on_site", "director_obra")
+            .is("assigned_to", null),
+          supabase
+            .from("obra_assignments")
+            .select("obra_id")
+            .in("obra_id", obraIds)
+            .is("assigned_to", null),
           supabase
             .from("site_reports")
             .select("obra_id, progress_percent, report_date")
@@ -270,28 +274,30 @@ export default function AdminProjectsPage() {
         ])
 
       const { data: assignments, error: assignError } = assignRes
-      const { data: siteReports, error: siteError } = siteRes
-      const { data: contracts, error: contractsError } = contractsRes
-      const { data: accounts, error: accountsError } = accountsRes
+      const { data: teamRows,    error: teamError }   = teamRes
+      const { data: siteReports, error: siteError }   = siteRes
+      const { data: contracts,   error: contractsError } = contractsRes
+      const { data: accounts,    error: accountsError }  = accountsRes
 
-      if (assignError) {
-        console.error("Error fetching obra_assignments:", assignError)
-      }
-      if (siteError) {
-        console.error("Error fetching site_reports:", siteError)
-      }
-      if (contractsError) {
-        console.error("Error fetching contracts:", contractsError)
-      }
-      if (accountsError) {
-        console.error("Error fetching obra_state_accounts:", accountsError)
+      if (assignError)    console.error("Error fetching obra_assignments:", assignError)
+      if (teamError)      console.error("Error fetching team count:", teamError)
+      if (siteError)      console.error("Error fetching site_reports:", siteError)
+      if (contractsError) console.error("Error fetching contracts:", contractsError)
+      if (accountsError)  console.error("Error fetching obra_state_accounts:", accountsError)
+
+      // --- Team size map (obra_id -> cantidad de asignaciones activas) ---
+      const teamSizeMap: Record<string, number> = {}
+      if (teamRows) {
+        ;(teamRows as { obra_id: string }[]).forEach((r) => {
+          teamSizeMap[r.obra_id] = (teamSizeMap[r.obra_id] || 0) + 1
+        })
       }
 
-      // --- Manager map (obra_id -> full_name) ---
+      // --- Director map (obra_id -> full_name) ---
       const managerMap: Record<string, string> = {}
 
       if (assignments) {
-        (assignments as ObraAssignmentWithEmployee[]).forEach((a) => {
+        ;(assignments as ObraAssignmentWithEmployee[]).forEach((a) => {
           const emp = a.employees
           let fullName: string | undefined
 
@@ -307,7 +313,7 @@ export default function AdminProjectsPage() {
         })
       }
 
-      // --- Progress map (obra_id -> último progress_percent) ---
+      // --- Progress map (obra_id -> ultimo progress_percent) ---
       const progressMap: Record<string, number> = {}
       const lastDateMap: Record<string, string> = {}
 
@@ -356,17 +362,23 @@ export default function AdminProjectsPage() {
         })
       }
 
-      // 3) Mapeamos obras → projects usando datos agregados
+      // 3) Mapeamos obras -> projects usando datos agregados
       const mapped = obras.map((obra) => {
-        const progress = progressMap[obra.id] ?? 0
-        const budgetNumber = budgetMap[obra.id]
-        const spentNumber = spentMap[obra.id]
+        const budgetNumber = budgetMap[obra.id] ?? 0
+        const spentNumber = spentMap[obra.id] ?? 0
+
+        // Avance financiero: lo cobrado / cotizacion, expresado en porcentaje
+        const financialProgress =
+          budgetNumber > 0
+            ? Math.min(100, Math.round((spentNumber / budgetNumber) * 100))
+            : 0
 
         return mapObraToProject(obra, {
           managerName: managerMap[obra.id],
-          progress,
+          progress: financialProgress,
           budget: formatCurrency(budgetNumber),
           spent: formatCurrency(spentNumber),
+          teamSize: teamSizeMap[obra.id] ?? 0,
         })
       })
 
@@ -377,41 +389,53 @@ export default function AdminProjectsPage() {
     fetchObras()
   }, [])
 
-  // ----- READ de empleados que pueden ser managers (para el form) -----
+  // ----- READ de directores de obra (para el form) -----
 
   useEffect(() => {
-    const fetchManagers = async () => {
+    const fetchDirectores = async () => {
       setLoadingManagers(true)
 
       const { data, error } = await supabase
         .from("employees")
-        .select("id, full_name, position_title, status")
+        .select(`
+          id,
+          full_name,
+          status,
+          employee_roles(
+            employee_roles_catalog(code)
+          )
+        `)
         .eq("status", "active")
+        .order("full_name", { ascending: true })
 
       if (error) {
-        console.error("Error fetching managers:", error)
+        console.error("Error fetching directores:", error)
         setManagers([])
         setLoadingManagers(false)
         return
       }
 
-      const rows = (data || []) as EmployeeManager[]
+      // Filtrar solo empleados con rol director_obra en el catalogo
+      const filtered = (data || []).filter((emp: any) =>
+        (emp.employee_roles || []).some(
+          (er: any) => er.employee_roles_catalog?.code === "director_obra"
+        )
+      )
 
-      // Heurística: puesto que incluye "manager" o "gerente"
-      const filtered = rows.filter((e) => {
-        if (!e.position_title) return false
-        const t = e.position_title.toLowerCase()
-        return t.includes("manager") || t.includes("gerente")
-      })
-
-      setManagers(filtered)
+      setManagers(
+        filtered.map((e: any) => ({
+          id: e.id,
+          full_name: e.full_name,
+          status: e.status,
+        }))
+      )
       setLoadingManagers(false)
     }
 
-    fetchManagers()
+    fetchDirectores()
   }, [])
 
-  // ----- Filtros / búsqueda -----
+  // ----- Filtros / busqueda -----
 
   const filteredProjects = useMemo(() => {
     return projects.filter((project) => {
@@ -471,16 +495,13 @@ export default function AdminProjectsPage() {
 
       const progressValue = data.progress ?? 0
       const budgetAmount = parseMoney(data.budget)
-      const spentAmount = parseMoney(data.spent)
 
       // 1) Creamos la obra base
       const payloadObra = {
         name: data.name,
-        client_name: null as string | null, // ya NO guardamos manager como cliente
+        client_name: null as string | null,
         location_text: data.location || null,
         status: mapUiStatusToDb(data.status),
-        start_date_planned: data.startDate || null,
-        end_date_planned: data.endDate || null,
         notes: null as string | null,
       }
 
@@ -512,14 +533,14 @@ export default function AdminProjectsPage() {
 
       const obra = inserted as ObraRow
 
-      // 2) Si hay manager seleccionado, creamos assignment como 'manager'
+      // 2) Si hay director seleccionado, creamos assignment como director_obra
       if (managerEmployeeId) {
         const { error: assignError } = await supabase
           .from("obra_assignments")
           .insert({
             obra_id: obra.id,
             employee_id: managerEmployeeId,
-            role_on_site: "manager",
+            role_on_site: "director_obra",
           })
 
         if (assignError) {
@@ -530,7 +551,7 @@ export default function AdminProjectsPage() {
         }
       }
 
-      // 3) Si hay progress > 0 y manager (necesario para reported_by), creamos site_report inicial
+      // 3) Si hay progress > 0 y director, creamos site_report inicial
       if (progressValue > 0 && managerEmployeeId) {
         const { error: reportError } = await supabase
           .from("site_reports")
@@ -538,7 +559,7 @@ export default function AdminProjectsPage() {
             obra_id: obra.id,
             reported_by: managerEmployeeId,
             progress_percent: progressValue,
-            summary: "Initial progress from New Project form",
+            summary: "Avance inicial desde formulario de nueva obra",
           })
 
         if (reportError) {
@@ -549,7 +570,7 @@ export default function AdminProjectsPage() {
         }
       }
 
-      // 4) Si hay budget, creamos un contrato "manual"
+      // 4) Si hay presupuesto, creamos un contrato manual
       if (budgetAmount > 0) {
         const { error: contractError } = await supabase
           .from("contracts")
@@ -558,7 +579,7 @@ export default function AdminProjectsPage() {
             contract_amount: budgetAmount,
             currency: "MXN",
             file_url: "manual://new-project-form",
-            file_name: "Manual budget entry",
+            file_name: "Presupuesto manual",
           })
 
         if (contractError) {
@@ -569,27 +590,7 @@ export default function AdminProjectsPage() {
         }
       }
 
-      // 5) Si hay spent, creamos un movimiento en estado de cuenta
-      if (spentAmount > 0) {
-        const { error: accountError } = await supabase
-          .from("obra_state_accounts")
-          .insert({
-            obra_id: obra.id,
-            amount: spentAmount,
-            concept: "deposit",
-            method: "transfer",
-            note: "Initial spent from New Project form",
-          })
-
-        if (accountError) {
-          console.error(
-            "Error creating obra_state_account from spent:",
-            accountError,
-          )
-        }
-      }
-
-      // 6) Actualizamos la lista en memoria (sin recomputar agregados; se verán al recargar)
+      // 5) Actualizamos la lista en memoria (sin recomputar agregados; se veran al recargar)
       setProjects((prev) => [mapObraToProject(obra), ...prev])
       setOpenDialog(false)
     } catch (e) {
@@ -607,27 +608,27 @@ export default function AdminProjectsPage() {
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-slate-900">
-              Project Management
+              Gestion de Obras
             </h1>
             <p className="text-slate-600 mt-1">
-              Manage and track all construction projects
+              Administra y da seguimiento a todas las obras
             </p>
           </div>
           <Button onClick={handleNewProject}>
             <Plus className="w-4 h-4 mr-2" />
-            New Project
+            Nueva Obra
           </Button>
         </div>
 
         <Card>
           <CardHeader>
             <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-              <CardTitle>All Projects</CardTitle>
+              <CardTitle>Todas las Obras</CardTitle>
               <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
                 <div className="relative flex-1 md:w-64">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <Input
-                    placeholder="Search projects..."
+                    placeholder="Buscar obras..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
                     className="pl-10"
@@ -638,14 +639,14 @@ export default function AdminProjectsPage() {
                   onValueChange={(v) => setStatusFilter(v as any)}
                 >
                   <SelectTrigger className="w-full sm:w-40">
-                    <SelectValue placeholder="Filter by status" />
+                    <SelectValue placeholder="Filtrar por estado" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="all">All Status</SelectItem>
-                    <SelectItem value="in-progress">In Progress</SelectItem>
-                    <SelectItem value="planning">Planning</SelectItem>
-                    <SelectItem value="completed">Completed</SelectItem>
-                    <SelectItem value="on-hold">On Hold</SelectItem>
+                    <SelectItem value="all">Todos</SelectItem>
+                    <SelectItem value="in-progress">En progreso</SelectItem>
+                    <SelectItem value="planning">Planeacion</SelectItem>
+                    <SelectItem value="completed">Completada</SelectItem>
+                    <SelectItem value="on-hold">En pausa</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -655,19 +656,19 @@ export default function AdminProjectsPage() {
           <CardContent>
             {loading && (
               <div className="py-10 text-center text-slate-500 text-sm">
-                Loading projects...
+                Cargando obras...
               </div>
             )}
 
             {!loading && error && (
               <div className="py-10 text-center text-red-500 text-sm">
-                Error loading projects: {error}
+                Error al cargar obras: {error}
               </div>
             )}
 
             {!loading && !error && filteredProjects.length === 0 && (
               <div className="py-10 text-center text-slate-500 text-sm">
-                No projects found with the current filters.
+                No se encontraron obras con los filtros actuales.
               </div>
             )}
 
@@ -690,15 +691,15 @@ export default function AdminProjectsPage() {
           </CardContent>
         </Card>
 
-        {/* Dialog Create */}
+        {/* Dialog Crear Obra */}
         <Dialog open={openDialog} onOpenChange={setOpenDialog}>
           <DialogContent className="max-w-xl">
             <DialogHeader>
               <DialogTitle>
-                {editingProject ? "Edit Project" : "New Project"}
+                {editingProject ? "Editar Obra" : "Nueva Obra"}
               </DialogTitle>
               <DialogDescription>
-                Define the main information for this project.
+                Define la informacion principal de esta obra.
               </DialogDescription>
             </DialogHeader>
 
@@ -738,12 +739,12 @@ function ProjectCard({ project, statusClass }: ProjectCardProps) {
             <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">
               <Calendar className="w-3 h-3" />
               <span>
-                {project.startDate || "Sin fecha inicio"} –{" "}
+                {project.startDate || "Sin fecha inicio"} -{" "}
                 {project.endDate || "Sin fecha fin"}
               </span>
             </div>
           </div>
-          <Badge className={statusClass}>{project.status}</Badge>
+          <Badge className={statusClass}>{getStatusLabel(project.status)}</Badge>
         </div>
       </CardHeader>
 
@@ -755,7 +756,7 @@ function ProjectCard({ project, statusClass }: ProjectCardProps) {
 
         <div className="space-y-1">
           <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-500">Progress</span>
+            <span className="text-slate-500">Avance</span>
             <span className="text-slate-700 font-medium">
               {project.progress}%
             </span>
@@ -770,21 +771,21 @@ function ProjectCard({ project, statusClass }: ProjectCardProps) {
 
         <div className="flex items-center justify-between text-sm">
           <div>
-            <p className="text-xs text-slate-500">Budget</p>
+            <p className="text-xs text-slate-500">Cotizacion</p>
             <p className="text-sm font-medium text-slate-900">
               {project.budget}
             </p>
             <p className="text-xs text-slate-500">
-              Spent: {project.spent}
+              Cobrado: {project.spent}
             </p>
           </div>
           <div className="text-right">
-            <p className="text-xs text-slate-500">Manager</p>
+            <p className="text-xs text-slate-500">Director de Obra</p>
             <p className="text-sm font-medium text-slate-900">
               {project.manager}
             </p>
             <p className="text-xs text-slate-500">
-              Team: {project.teamSize}
+              Equipo: {project.teamSize}
             </p>
           </div>
         </div>
@@ -793,7 +794,7 @@ function ProjectCard({ project, statusClass }: ProjectCardProps) {
   )
 }
 
-// ---------- FORMULARIO  ----------
+// ---------- FORMULARIO ----------
 
 type ProjectFormProps = {
   initialData?: Project
@@ -819,12 +820,11 @@ function ProjectForm({
     location: initialData?.location ?? "",
     status: initialData?.status ?? "Planning",
     progress: initialData?.progress ?? 0,
-    startDate:
-      initialData?.startDate ?? new Date().toISOString().slice(0, 10),
+    startDate: initialData?.startDate ?? "",
     endDate: initialData?.endDate ?? "",
     budget: initialData?.budget ?? "",
     spent: initialData?.spent ?? "",
-    manager: "", // en creación no tenemos asignado; aquí guardamos employee_id
+    manager: "",
     teamSize: initialData?.teamSize ?? 0,
   }))
 
@@ -851,31 +851,31 @@ function ProjectForm({
       <div className="grid gap-4 md:grid-cols-2">
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-slate-600">
-            Project Name *
+            Nombre de la obra *
           </label>
           <Input
             value={form.name}
             onChange={(e) => handleChange("name", e.target.value)}
-            placeholder="Downtown Plaza..."
+            placeholder="Plaza Centro..."
             required
           />
         </div>
 
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-slate-600">
-            Location *
+            Ubicacion *
           </label>
           <Input
             value={form.location}
             onChange={(e) => handleChange("location", e.target.value)}
-            placeholder="City, State"
+            placeholder="Ciudad, Estado"
             required
           />
         </div>
 
         <div className="flex flex-col gap-1.5">
           <label className="text-xs font-medium text-slate-600">
-            Status
+            Estado
           </label>
           <Select
             value={form.status}
@@ -887,59 +887,17 @@ function ProjectForm({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="Planning">Planning</SelectItem>
-              <SelectItem value="In Progress">In Progress</SelectItem>
-              <SelectItem value="Completed">Completed</SelectItem>
-              <SelectItem value="On Hold">On Hold</SelectItem>
+              <SelectItem value="Planning">Planeacion</SelectItem>
+              <SelectItem value="In Progress">En progreso</SelectItem>
+              <SelectItem value="Completed">Completada</SelectItem>
+              <SelectItem value="On Hold">En pausa</SelectItem>
             </SelectContent>
           </Select>
         </div>
 
-        <div className="flex flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5 md:col-span-2">
           <label className="text-xs font-medium text-slate-600">
-            Progress (%)
-          </label>
-          <Input
-            type="number"
-            min={0}
-            max={100}
-            value={form.progress}
-            onChange={(e) =>
-              handleChange(
-                "progress",
-                Math.min(100, Math.max(0, Number(e.target.value) || 0)),
-              )
-            }
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Start Date
-          </label>
-          <Input
-            type="date"
-            value={form.startDate}
-            onChange={(e) =>
-              handleChange("startDate", e.target.value)
-            }
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            End Date
-          </label>
-          <Input
-            type="date"
-            value={form.endDate}
-            onChange={(e) => handleChange("endDate", e.target.value)}
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Budget
+            Presupuesto
           </label>
           <Input
             value={form.budget}
@@ -948,21 +906,10 @@ function ProjectForm({
           />
         </div>
 
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Spent
-          </label>
-          <Input
-            value={form.spent}
-            onChange={(e) => handleChange("spent", e.target.value)}
-            placeholder="$0.00"
-          />
-        </div>
-
-        {/* Manager centrado y ocupando todo el renglón */}
+        {/* Director de Obra */}
         <div className="flex flex-col gap-1.5 md:col-span-2">
-          <label className="text-xs font-medium text-slate-600 text-center md:text-left">
-            Manager
+          <label className="text-xs font-medium text-slate-600">
+            Director de Obra
           </label>
           <div className="flex">
             <div className="w-full md:w-2/3">
@@ -975,10 +922,10 @@ function ProjectForm({
                   <SelectValue
                     placeholder={
                       loadingManagers
-                        ? "Loading managers..."
+                        ? "Cargando directores..."
                         : managers.length === 0
-                        ? "No managers available"
-                        : "Select a manager"
+                        ? "Sin directores disponibles"
+                        : "Seleccionar director"
                     }
                   />
                 </SelectTrigger>
@@ -986,11 +933,6 @@ function ProjectForm({
                   {managers.map((m) => (
                     <SelectItem key={m.id} value={m.id}>
                       {m.full_name}
-                      {m.position_title ? (
-                        <span className="ml-1 text-xs text-slate-500">
-                          ({m.position_title})
-                        </span>
-                      ) : null}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -998,8 +940,6 @@ function ProjectForm({
             </div>
           </div>
         </div>
-
-        {/* Team Size queda fuera visualmente por ahora */}
       </div>
 
       {error && (
@@ -1010,14 +950,14 @@ function ProjectForm({
 
       <div className="flex justify-end gap-2 mt-4">
         <Button type="button" variant="outline" onClick={onCancel}>
-          Cancel
+          Cancelar
         </Button>
         <Button type="submit" disabled={loading}>
           {loading
-            ? "Saving..."
+            ? "Guardando..."
             : initialData
-            ? "Save changes"
-            : "Create project"}
+            ? "Guardar cambios"
+            : "Crear obra"}
         </Button>
       </div>
     </form>
