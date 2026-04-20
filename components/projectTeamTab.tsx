@@ -16,7 +16,7 @@ type EmployeeRow = {
   full_name: string
   position_title: string | null
   status: "active" | "inactive" | string
-  roles: string[] // códigos de employee_roles_catalog
+  roles: string[] // codigos de employee_roles_catalog
 }
 
 type AssignmentRow = {
@@ -52,9 +52,9 @@ type Props = {
 }
 
 /**
- * Convención:
- * - role_on_site = 'director_obra' => Director de Obra (rol único activo por obra)
- * - el resto corresponden a los códigos del catálogo employee_roles_catalog
+ * Convencion:
+ * - role_on_site = 'director_obra' => Director de Obra (rol unico activo por obra)
+ * - el resto corresponden a los codigos del catalogo employee_roles_catalog
  */
 const ROLE_ON_SITE_OPTIONS = [
   { value: "director_obra", label: "Director de Obra" },
@@ -81,7 +81,7 @@ function isActiveAssignment(a: TeamMember) {
 }
 
 /**
- * Verifica si el empleado tiene el rol 'director_obra' en el catálogo
+ * Verifica si el empleado tiene el rol 'director_obra' en el catalogo
  */
 function isEmployeeDirectorObra(e: EmployeeRow | null | undefined) {
   return (e?.roles ?? []).includes("director_obra")
@@ -100,7 +100,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
   // modal add
   const [addOpen, setAddOpen] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
-  // true cuando se abre desde "Asignar Director" — bloquea el selector de rol
+  // true cuando se abre desde "Asignar Director" - bloquea el selector de rol
   const [directorMode, setDirectorMode] = useState(false)
 
   const [employees, setEmployees] = useState<EmployeeRow[]>([])
@@ -110,6 +110,20 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     employee_id: "",
     role_on_site: "ayudante_obra",
   })
+
+  // Segundo slot de Director de Obra
+  const [showSecondSlot, setShowSecondSlot] = useState(false)
+  // ID del assignment a reemplazar cuando se hace "Actualizar" en un card de director
+  const [replacingDirectorAssignmentId, setReplacingDirectorAssignmentId] = useState<string | null>(null)
+
+  // Transferencia de empleado entre obras
+  const [transferConfirmOpen, setTransferConfirmOpen] = useState(false)
+  const [savingTransfer, setSavingTransfer] = useState(false)
+  const [transferInfo, setTransferInfo] = useState<{
+    employeeName: string
+    fromObraName: string
+    assignmentIds: string[]   // puede haber >1 si hubo datos sucios previos
+  } | null>(null)
 
   async function fetchMembers() {
     if (!obraId) return
@@ -208,27 +222,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     await fetchEmployees()
   }
 
-  /**
-   * Cierra el Director de Obra activo previo para la misma obra (solo puede haber uno activo).
-   * - "activo" aquí = assigned_to IS NULL OR assigned_to >= hoy
-   * - Setea assigned_to = hoy
-   */
-  async function closeActiveDirectorObraAssignment() {
-    const today = todayISO()
-
-    const { error } = await supabase
-      .from("obra_assignments")
-      .update({ assigned_to: today })
-      .eq("obra_id", obraId)
-      .eq("role_on_site", "director_obra")
-      .or(`assigned_to.is.null,assigned_to.gte.${today}`)
-
-    if (error) {
-      console.error("closeActiveDirectorObraAssignment error:", error)
-      throw new Error("No se pudo cerrar el Director de Obra anterior.")
-    }
-  }
-
   async function handleAddMember() {
     if (!obraId) return
     if (!addForm.employee_id) {
@@ -244,40 +237,90 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       (m) => m.employee_id === addForm.employee_id && isActiveAssignment(m),
     )
     if (alreadyActive) {
-      setError("Este empleado ya está asignado actualmente a la obra.")
+      setError("Este empleado ya esta asignado actualmente a la obra.")
       setSavingAdd(false)
       return
     }
 
-    // Validación extra: si vas a asignar Director de Obra, el empleado debe tener ese rol en el catálogo
+    // El empleado debe tener el rol director_obra en el catalogo
     const selectedEmp = employees.find((e) => e.id === addForm.employee_id) ?? null
     if (addForm.role_on_site === "director_obra" && !isEmployeeDirectorObra(selectedEmp)) {
-      setError('Solo puedes asignar como "Director de Obra" a empleados que tengan ese rol en el catálogo.')
+      setError("Solo puedes asignar como Director de Obra a empleados que tengan ese rol en el catalogo.")
       setSavingAdd(false)
       return
     }
 
-    // created_by (opcional)
+    // Maximo 2 directores activos por obra
+    const activeDirectors = members.filter(
+      (m) => m.role_on_site === "director_obra" && isActiveAssignment(m),
+    )
+    if (
+      addForm.role_on_site === "director_obra" &&
+      !replacingDirectorAssignmentId &&
+      activeDirectors.length >= 2
+    ) {
+      setError("Ya hay 2 Directores de Obra activos. Quita uno antes de asignar otro.")
+      setSavingAdd(false)
+      return
+    }
+
+    // Para roles que NO son director, verificar si el empleado ya esta en otra obra
+    if (addForm.role_on_site !== "director_obra") {
+      const { data: otherAssignments } = await supabase
+        .from("obra_assignments")
+        .select("id, obra_id, obras(name)")
+        .eq("employee_id", addForm.employee_id)
+        .neq("obra_id", obraId)
+        .is("assigned_to", null)
+
+      if (otherAssignments && otherAssignments.length > 0) {
+        const first = otherAssignments[0] as any
+        const obraName =
+          Array.isArray(first.obras)
+            ? (first.obras[0]?.name ?? "otra obra")
+            : (first.obras?.name ?? "otra obra")
+        setTransferInfo({
+          employeeName: selectedEmp?.full_name ?? "este empleado",
+          fromObraName: obraName,
+          assignmentIds: otherAssignments.map((a: any) => a.id),
+        })
+        setTransferConfirmOpen(true)
+        setSavingAdd(false)
+        return  // Pausar - esperar confirmacion del usuario
+      }
+    }
+
     const { data: authData } = await supabase.auth.getUser()
     const created_by = authData?.user?.id ?? null
 
     try {
-      // 🔒 Solo puede haber un Director de Obra activo por obra
-      if (addForm.role_on_site === "director_obra") {
-        await closeActiveDirectorObraAssignment()
+      // Si se esta reemplazando un director especifico, eliminar su asignacion primero
+      if (addForm.role_on_site === "director_obra" && replacingDirectorAssignmentId) {
+        const { error: delErr } = await supabase
+          .from("obra_assignments")
+          .delete()
+          .eq("id", replacingDirectorAssignmentId)
+        if (delErr) {
+          console.error("delete director error:", delErr)
+          setError("No se pudo reemplazar el Director de Obra.")
+          setSavingAdd(false)
+          return
+        }
+        setReplacingDirectorAssignmentId(null)
       }
 
       const payload = {
         obra_id: obraId,
         employee_id: addForm.employee_id,
         role_on_site: addForm.role_on_site || null,
-        // assigned_from default CURRENT_DATE en DB
         created_by,
       }
 
       const { error } = await supabase.from("obra_assignments").insert(payload)
       if (error) {
-        console.error("insert obra_assignments error:", error)
+          console.error("insert error code:", error.code)
+          console.error("insert error message:", error.message)
+          console.error("insert error details:", error.details)
         setError("No se pudo agregar al miembro.")
         setSavingAdd(false)
         return
@@ -288,13 +331,13 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       await fetchMembers()
       onTeamChange?.()
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo completar la asignación.")
+      setError(e instanceof Error ? e.message : "No se pudo completar la asignacion.")
       setSavingAdd(false)
     }
   }
 
   async function handleRemoveMember(member: TeamMember) {
-    const ok = window.confirm(`¿Quitar a "${member.full_name}" de esta obra?`)
+    const ok = window.confirm(`Quitar a "${member.full_name}" de esta obra?`)
     if (!ok) return
 
     const { error } = await supabase.from("obra_assignments").delete().eq("id", member.assignment_id)
@@ -313,12 +356,25 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
 
-  const director = useMemo(() => {
-    const directors = members.filter((m) => (m.role_on_site || "") === "director_obra")
-    if (directors.length === 0) return null
-    const active = directors.find((m) => isActiveAssignment(m))
-    return active ?? directors[0]
+  // Hasta 2 directores de obra activos simultaneamente
+  const directors = useMemo(() => {
+    return members
+      .filter((m) => (m.role_on_site || "") === "director_obra" && isActiveAssignment(m))
+      .slice(0, 2)
   }, [members])
+
+  // Revela el segundo slot si ya hay 2 directores asignados
+  useEffect(() => {
+    if (directors.length >= 2) setShowSecondSlot(true)
+  }, [directors])
+
+  function handleUpdateDirector(m: TeamMember) {
+    setReplacingDirectorAssignmentId(m.assignment_id)
+    setDirectorMode(true)
+    setAddForm({ employee_id: "", role_on_site: "director_obra" })
+    setAddOpen(true)
+    fetchEmployees()
+  }
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -333,7 +389,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     })
   }, [members, search, roleFilter])
 
-  // 👇 Siempre filtra empleados por el rol seleccionado en el modal
+  //  Siempre filtra empleados por el rol seleccionado en el modal
   const employeesForModal = useMemo(() => {
     if (!addForm.role_on_site) return employees
     return employees.filter((e) => e.roles.includes(addForm.role_on_site))
@@ -345,6 +401,65 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     setAddForm({ employee_id: "", role_on_site: "director_obra" })
     setAddOpen(true)
     await fetchEmployees()
+  }
+
+  async function handleConfirmTransfer() {
+    if (!transferInfo || !obraId) return
+    setSavingTransfer(true)
+    setError(null)
+
+    try {
+      // 1. Eliminar las asignaciones activas del empleado en la otra obra
+      for (const assignmentId of transferInfo.assignmentIds) {
+        const { error: delErr } = await supabase
+          .from("obra_assignments")
+          .delete()
+          .eq("id", assignmentId)
+        if (delErr) {
+          console.error("delete transfer assignment error:", delErr)
+          setError("No se pudo eliminar la asignacion anterior del empleado.")
+          setSavingTransfer(false)
+          return
+        }
+      }
+
+      // 2. Insertar la nueva asignacion en esta obra
+      const { data: authData } = await supabase.auth.getUser()
+      const created_by = authData?.user?.id ?? null
+
+      const { error: insertErr } = await supabase.from("obra_assignments").insert({
+        obra_id: obraId,
+        employee_id: addForm.employee_id,
+        role_on_site: addForm.role_on_site || null,
+        created_by,
+      })
+
+      if (insertErr) {
+        console.error("insert after transfer error:", insertErr)
+        setError("No se pudo agregar al empleado a esta obra.")
+        setSavingTransfer(false)
+        return
+      }
+
+      // 3. Limpiar estado y refrescar
+      setTransferConfirmOpen(false)
+      setTransferInfo(null)
+      setAddOpen(false)
+      setSavingTransfer(false)
+      await fetchMembers()
+      onTeamChange?.()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al transferir empleado.")
+      setSavingTransfer(false)
+    }
+  }
+
+  function handleCancelTransfer() {
+    setTransferConfirmOpen(false)
+    setTransferInfo(null)
+    setSavingTransfer(false)
+    // Dejar el modal de agregar abierto para que el usuario pueda elegir otro empleado
+    setAddOpen(true)
   }
 
   return (
@@ -371,48 +486,92 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
         </div>
       </div>
 
-      {/* ⭐ Card Director de Obra */}
-      <Card className="border-slate-200">
-        <CardContent className="p-5">
-          <div className="flex items-start justify-between gap-4">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <div className="p-2 rounded-md bg-amber-50 border border-amber-100">
-                  <Crown className="w-5 h-5 text-amber-600" />
+      {/* Cards de Directores de Obra (hasta 2) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
+        {/* Slot 1 - siempre visible */}
+        {[0, ...(showSecondSlot ? [1] : [])].map((slot) => {
+          const dir = directors[slot] ?? null
+          return (
+            <Card key={slot} className="border-amber-100">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="p-2 rounded-md bg-amber-50 border border-amber-100 shrink-0">
+                        <Crown className="w-4 h-4 text-amber-600" />
+                      </div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+                        Director de Obra {showSecondSlot ? `${slot + 1}` : ""}
+                      </p>
+                      {dir && (
+                        <Badge className="bg-amber-100 text-amber-800 text-xs">Activo</Badge>
+                      )}
+                    </div>
+
+                    <p className="text-xl font-bold text-slate-900 truncate">
+                      {dir?.full_name ?? "Sin asignar"}
+                    </p>
+
+                    <div className="text-sm text-slate-500">
+                      {dir ? (
+                        <span className="font-mono text-xs">
+                          Desde {dir.assigned_from}
+                        </span>
+                      ) : (
+                        <span className="text-slate-400 text-xs">
+                          Ningun director asignado en este slot.
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {allowManage && (
+                    <div className="flex flex-col gap-1 shrink-0">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() =>
+                          dir ? handleUpdateDirector(dir) : handleAssignDirectorShortcut()
+                        }
+                      >
+                        <Plus className="w-3 h-3 mr-1" />
+                        {dir ? "Actualizar" : "Asignar"}
+                      </Button>
+                      {dir && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          onClick={() => handleRemoveMember(dir)}
+                        >
+                          <Trash2 className="w-3 h-3 mr-1" />
+                          Quitar
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <p className="text-sm font-semibold text-slate-900">Director de Obra</p>
-                <Badge className="bg-amber-100 text-amber-800">Director de Obra</Badge>
-              </div>
+              </CardContent>
+            </Card>
+          )
+        })}
 
-              <p className="text-2xl font-bold text-slate-900">{director?.full_name ?? "Sin asignar"}</p>
-
-              <div className="text-sm text-slate-600">
-                {director ? (
-                  <>
-                    <span className="font-medium">{director.position_title ?? "—"}</span>
-                    <span className="text-slate-400 mx-2">•</span>
-                    <span className="font-mono text-xs">
-                      desde {director.assigned_from}
-                      {director.assigned_to ? ` hasta ${director.assigned_to}` : ""}
-                    </span>
-                  </>
-                ) : (
-                  <span>
-                    Asigna un empleado con rol <span className="font-mono">director_obra</span> para mostrarlo aquí.
-                  </span>
-                )}
-              </div>
+        {/* Boton para agregar segundo slot */}
+        {allowManage && !showSecondSlot && directors.length < 2 && (
+          <button
+            onClick={() => {
+              setShowSecondSlot(true)
+              handleAssignDirectorShortcut()
+            }}
+            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 p-5 text-slate-400 hover:border-amber-300 hover:text-amber-600 transition-colors min-h-[110px] w-full"
+          >
+            <div className="p-2 rounded-full border-2 border-current">
+              <Plus className="w-4 h-4" />
             </div>
-
-            {allowManage && (
-              <Button variant="outline" onClick={handleAssignDirectorShortcut}>
-                <Plus className="w-4 h-4 mr-2" />
-                {director ? "Actualizar Director" : "Asignar Director"}
-              </Button>
-            )}
-          </div>
-        </CardContent>
-      </Card>
+            <span className="text-sm font-medium">Agregar 2 Director de Obra</span>
+          </button>
+        )}
+      </div>
 
       {/* filtros */}
       <Card>
@@ -464,7 +623,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             <div className="py-10 text-center text-slate-500 text-sm">Cargando equipo...</div>
           ) : filtered.length === 0 ? (
             <div className="py-10 text-center text-slate-500 text-sm">
-              No hay miembros asignados aún.
+              No hay miembros asignados aun.
               {allowManage && (
                 <div className="mt-2">
                   <Button size="sm" onClick={handleOpenAdd}>
@@ -482,7 +641,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                     <TableHead>Empleado</TableHead>
                     <TableHead>Puesto</TableHead>
                     <TableHead>Rol en obra</TableHead>
-                    <TableHead>Asignación</TableHead>
+                    <TableHead>Asignacion</TableHead>
                     <TableHead className="text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -511,9 +670,9 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                       <TableCell className="text-sm text-slate-600">
                         <span className="font-mono text-xs">
                           {m.assigned_from}
-                          {m.assigned_to ? ` → ${m.assigned_to}` : ""}
+                          {m.assigned_to ? `  ${m.assigned_to}` : ""}
                         </span>
-                        {!isActiveAssignment(m) && <div className="text-xs text-slate-400 mt-1">histórico</div>}
+                        {!isActiveAssignment(m) && <div className="text-xs text-slate-400 mt-1">historico</div>}
                       </TableCell>
 
                       <TableCell className="text-right">
@@ -522,7 +681,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         ) : (
-                          <span className="text-xs text-slate-400">—</span>
+                          <span className="text-xs text-slate-400">-</span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -572,7 +731,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
 
               {directorMode && (
                 <p className="text-[11px] text-slate-500">
-                  Solo puede haber un Director de Obra activo. El anterior se cerrará automáticamente.
+                  Puedes tener hasta 2 Directores de Obra activos al mismo tiempo.
                 </p>
               )}
             </div>
@@ -599,13 +758,13 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                 <SelectContent>
                   {employeesForModal.length === 0 ? (
                     <SelectItem value="__none__" disabled>
-                      {`No hay empleados con el rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catálogo`}
+                      {`No hay empleados con el rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catalogo`}
                     </SelectItem>
                   ) : (
                     employeesForModal.map((e) => (
                       <SelectItem key={e.id} value={e.id}>
                         {e.full_name}
-                        {e.position_title ? ` — ${e.position_title}` : ""}
+                        {e.position_title ? ` - ${e.position_title}` : ""}
                       </SelectItem>
                     ))
                   )}
@@ -614,7 +773,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
 
               {!directorMode && (
                 <p className="text-[11px] text-slate-500">
-                  {`Mostrando empleados con rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catálogo.`}
+                  {`Mostrando empleados con rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catalogo.`}
                 </p>
               )}
             </div>
@@ -628,6 +787,51 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                 disabled={savingAdd || !addForm.employee_id || addForm.employee_id === "__none__"}
               >
                 {savingAdd ? "Guardando..." : "Agregar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog de confirmacion de transferencia */}
+      <Dialog open={transferConfirmOpen} onOpenChange={(v) => (savingTransfer ? null : setTransferConfirmOpen(v))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Transferir empleado</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 mt-2">
+            {transferInfo && (
+              <p className="text-sm text-slate-700 leading-relaxed">
+                Seguro que quieres agregar a{" "}
+                <span className="font-semibold">"{transferInfo.employeeName}"</span>{" "}
+                a esta obra? Actualmente se encuentra en el equipo de la obra{" "}
+                <span className="font-semibold">"{transferInfo.fromObraName}"</span>.
+                Si aceptas, sera transferido a esta obra y eliminado de la otra.
+              </p>
+            )}
+
+            {error && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                {error}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={handleCancelTransfer}
+                disabled={savingTransfer}
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleConfirmTransfer}
+                disabled={savingTransfer}
+                className="bg-amber-600 hover:bg-amber-700 text-white"
+              >
+                {savingTransfer ? "Transfiriendo..." : "Confirmar transferencia"}
               </Button>
             </div>
           </div>
