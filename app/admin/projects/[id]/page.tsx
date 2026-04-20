@@ -39,7 +39,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
 
-// ---------- Tipos DB básicos ----------
+// ---------- Tipos DB basicos ----------
 
 type DbObraStatus = "planned" | "in_progress" | "paused" | "closed"
 
@@ -74,6 +74,20 @@ type ObraStateAccountRow = {
   bank_ref: string | null
   note: string | null
 }
+
+type AttachmentRow = {
+  id: string
+  ref_table: string
+  ref_id: string
+  file_url: string
+  file_name: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  uploaded_by: string | null
+  uploaded_at: string
+}
+
+const EVIDENCE_BUCKET = "state-account-evidence"
 
 type SiteReportRow = {
   id: string
@@ -181,7 +195,7 @@ function statusBadge(status: DocStatus) {
 
 function docTypeLabel(t: DocType) {
   if (t === "contract") return "Contrato"
-  if (t === "quote") return "Cotización"
+  if (t === "quote") return "Cotizacion"
   return "Anexo" // other
 }
 
@@ -214,7 +228,7 @@ function isAllowedDoc(file: File) {
   return allowed.includes(file.type) || file.name.toLowerCase().endsWith(".pdf")
 }
 
-// ---------- Página de detalle ----------
+// ---------- Pagina de detalle ----------
 
 export default function ProjectDetailPage() {
   const params = useParams()
@@ -251,6 +265,20 @@ export default function ProjectDetailPage() {
   const [stateAccounts, setStateAccounts] = useState<ObraStateAccountRow[]>([])
   const [newPaymentOpen, setNewPaymentOpen] = useState(false)
   const [newPaymentSaving, setNewPaymentSaving] = useState(false)
+
+  // Evidencias (attachments de obra_state_accounts)
+  const [evidenceMap, setEvidenceMap] = useState<Record<string, AttachmentRow>>({})
+  const [uploadingEvidenceId, setUploadingEvidenceId] = useState<string | null>(null)
+  const [pendingEvidenceAccountId, setPendingEvidenceAccountId] = useState<string | null>(null)
+  const [replacingEvidence, setReplacingEvidence] = useState<AttachmentRow | null>(null)
+  const evidenceInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Modal de visualizacion de evidencia
+  const [evidenceViewOpen, setEvidenceViewOpen] = useState(false)
+  const [viewingEvidence, setViewingEvidence] = useState<AttachmentRow | null>(null)
+  const [viewingSignedUrl, setViewingSignedUrl] = useState<string | null>(null)
+  const [viewingLoading, setViewingLoading] = useState(false)
+  const [deletingEvidence, setDeletingEvidence] = useState(false)
   const [newPaymentForm, setNewPaymentForm] = useState({
     concept: "deposit" as ObraStateAccountRow["concept"],
     amount: "",
@@ -260,7 +288,7 @@ export default function ProjectDetailPage() {
     note: "",
   })
 
-  // ------------------ Documentos: UI + Modal (Opción B) ------------------
+  // ------------------ Documentos: UI + Modal (Opcion B) ------------------
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -316,7 +344,7 @@ export default function ProjectDetailPage() {
       return
     }
     if (file.size > 25 * 1024 * 1024) {
-      setUploadError("El archivo excede el tamaño máximo (25MB).")
+      setUploadError("El archivo excede el tamano maximo (25MB).")
       setSelectedFile(null)
       return
     }
@@ -324,7 +352,7 @@ export default function ProjectDetailPage() {
     setUploadError(null)
     setSelectedFile(file)
 
-    // autollenar título si está vacío
+    // autollenar titulo si esta vacio
     setUploadForm((f) => ({
       ...f,
       title: f.title?.trim() ? f.title : file.name.replace(/\.[^/.]+$/, ""),
@@ -468,7 +496,7 @@ export default function ProjectDetailPage() {
       return
     }
 
-    const ok = window.confirm("¿Eliminar este documento? Se borrará también del Storage.")
+    const ok = window.confirm("Eliminar este documento? Se borrara tambien del Storage.")
     if (!ok) return
 
     const { error: storageError } = await supabase.storage.from(doc.bucket).remove([doc.object_path])
@@ -481,7 +509,7 @@ export default function ProjectDetailPage() {
     const { error: rowError } = await supabase.from("obra_documents").delete().eq("id", doc.id)
     if (rowError) {
       console.error("row delete error:", rowError)
-      alert("Se borró el archivo, pero no se pudo borrar el registro en DB.")
+      alert("Se borro el archivo, pero no se pudo borrar el registro en DB.")
     }
 
     if (obra) await fetchDocuments(obra.id)
@@ -498,12 +526,12 @@ export default function ProjectDetailPage() {
 
     const v = Number(uploadForm.version)
     if (!Number.isFinite(v) || v <= 0) {
-      setUploadError("La versión debe ser un número válido mayor a 0.")
+      setUploadError("La version debe ser un numero valido mayor a 0.")
       return
     }
 
     if (!uploadForm.title.trim()) {
-      setUploadError("El título es obligatorio.")
+      setUploadError("El titulo es obligatorio.")
       return
     }
 
@@ -512,7 +540,7 @@ export default function ProjectDetailPage() {
     try {
       const { data: authData, error: authErr } = await supabase.auth.getUser()
       if (authErr || !authData?.user) {
-        setUploadError("Sesión inválida. Vuelve a iniciar sesión.")
+        setUploadError("Sesion invalida. Vuelve a iniciar sesion.")
         setUploadSaving(false)
         return
       }
@@ -682,7 +710,7 @@ export default function ProjectDetailPage() {
 
   async function handleDeleteObra() {
     if (!obra) return
-    const ok = window.confirm("¿Seguro que deseas eliminar esta obra? Esta acción no se puede deshacer.")
+    const ok = window.confirm("Seguro que deseas eliminar esta obra? Esta accion no se puede deshacer.")
     if (!ok) return
 
     setDeleteLoading(true)
@@ -697,12 +725,183 @@ export default function ProjectDetailPage() {
     router.push("/admin/projects")
   }
 
+  async function handleUploadEvidence(accountId: string, file: File) {
+    if (!obra) return
+    setUploadingEvidenceId(accountId)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const safeName = file.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+      const uuid =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : String(Date.now())
+      const objectPath = `${obra.id}/${accountId}/${uuid}_${safeName}`
+
+      const { error: upErr } = await supabase.storage
+        .from(EVIDENCE_BUCKET)
+        .upload(objectPath, file, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        })
+
+      if (upErr) {
+        console.error("evidence upload error:", upErr)
+        alert("No se pudo subir el archivo. Revisa permisos del bucket.")
+        return
+      }
+
+      const { data: attData, error: attErr } = await supabase
+        .from("attachments")
+        .insert({
+          ref_table: "obra_state_accounts",
+          ref_id: accountId,
+          file_url: objectPath,
+          file_name: file.name,
+          mime_type: file.type || null,
+          size_bytes: file.size,
+          uploaded_by: userId,
+        })
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .single()
+
+      if (attErr || !attData) {
+        console.error("attachments insert error:", attErr)
+        await supabase.storage.from(EVIDENCE_BUCKET).remove([objectPath])
+        alert("No se pudo registrar la evidencia en la base de datos.")
+        return
+      }
+
+      setEvidenceMap((prev) => ({ ...prev, [accountId]: attData as AttachmentRow }))
+    } finally {
+      setUploadingEvidenceId(null)
+      setPendingEvidenceAccountId(null)
+    }
+  }
+
+  async function handleViewEvidence(attachment: AttachmentRow) {
+    setViewingEvidence(attachment)
+    setViewingSignedUrl(null)
+    setEvidenceViewOpen(true)
+    setViewingLoading(true)
+    try {
+      const url = await getSignedUrl(EVIDENCE_BUCKET, attachment.file_url, 600)
+      setViewingSignedUrl(url)
+    } catch {
+      alert("No se pudo generar el link del archivo.")
+      setEvidenceViewOpen(false)
+    } finally {
+      setViewingLoading(false)
+    }
+  }
+
+  async function handleReplaceEvidence(oldAttachment: AttachmentRow, file: File) {
+    if (!obra) return
+    setUploadingEvidenceId(oldAttachment.ref_id)
+    setViewingLoading(true)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const safeName = file.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+      const uuid =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : String(Date.now())
+      const objectPath = `${obra.id}/${oldAttachment.ref_id}/${uuid}_${safeName}`
+
+      const { error: upErr } = await supabase.storage
+        .from(EVIDENCE_BUCKET)
+        .upload(objectPath, file, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        })
+      if (upErr) {
+        alert("No se pudo subir el archivo.")
+        return
+      }
+
+      const { data: attData, error: attErr } = await supabase
+        .from("attachments")
+        .update({
+          file_url: objectPath,
+          file_name: file.name,
+          mime_type: file.type || null,
+          size_bytes: file.size,
+          uploaded_by: userId,
+        })
+        .eq("id", oldAttachment.id)
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .single()
+
+      if (attErr || !attData) {
+        alert("No se pudo actualizar la evidencia.")
+        await supabase.storage.from(EVIDENCE_BUCKET).remove([objectPath])
+        return
+      }
+
+      // Borrar archivo anterior del bucket
+      await supabase.storage.from(EVIDENCE_BUCKET).remove([oldAttachment.file_url])
+
+      const newAtt = attData as AttachmentRow
+      setEvidenceMap((prev) => ({ ...prev, [newAtt.ref_id]: newAtt }))
+      setViewingEvidence(newAtt)
+
+      const url = await getSignedUrl(EVIDENCE_BUCKET, newAtt.file_url, 600)
+      setViewingSignedUrl(url)
+    } finally {
+      setUploadingEvidenceId(null)
+      setReplacingEvidence(null)
+      setViewingLoading(false)
+    }
+  }
+
+  async function handleDeleteEvidence(attachment: AttachmentRow) {
+    const ok = window.confirm("Eliminar esta evidencia? Esta accion no se puede deshacer.")
+    if (!ok) return
+    setDeletingEvidence(true)
+    try {
+      await supabase.storage.from(EVIDENCE_BUCKET).remove([attachment.file_url])
+
+      const { error: dbErr } = await supabase
+        .from("attachments")
+        .delete()
+        .eq("id", attachment.id)
+
+      if (dbErr) {
+        console.error("attachments delete error:", dbErr)
+        alert("No se pudo eliminar la evidencia.")
+        return
+      }
+
+      setEvidenceMap((prev) => {
+        const next = { ...prev }
+        delete next[attachment.ref_id]
+        return next
+      })
+      setEvidenceViewOpen(false)
+      setViewingEvidence(null)
+      setViewingSignedUrl(null)
+    } finally {
+      setDeletingEvidence(false)
+    }
+  }
+
   async function handleCreatePayment() {
     if (!obra) return
 
     const amountNumber = Number(newPaymentForm.amount)
     if (!amountNumber || amountNumber <= 0) {
-      alert("Ingresa un monto válido mayor a 0.")
+      alert("Ingresa un monto valido mayor a 0.")
       return
     }
 
@@ -754,7 +953,7 @@ export default function ProjectDetailPage() {
     setNewPaymentSaving(false)
   }
 
-  // 👇 mock (otros tabs)
+  //  mock (otros tabs)
   const milestones = [
     { id: 1, name: "Site Preparation", status: "completed", date: "2024-02-15", progress: 100 },
     { id: 2, name: "Foundation Work", status: "completed", date: "2024-04-30", progress: 100 },
@@ -840,7 +1039,7 @@ export default function ProjectDetailPage() {
 
         if (obraError || !obraData) {
           console.error("Error fetching obra:", obraError)
-          setError("No se encontró la obra o hubo un error al cargarla.")
+          setError("No se encontro la obra o hubo un error al cargarla.")
           setLoading(false)
           return
         }
@@ -901,6 +1100,22 @@ export default function ProjectDetailPage() {
         stateAccounts.sort((a, b) => (a.date > b.date ? -1 : 1))
         setStateAccounts(stateAccounts)
 
+        // Cargar evidencias de los movimientos
+        if (stateAccounts.length > 0) {
+          const accountIds = stateAccounts.map((a) => a.id)
+          const { data: evidenceData } = await supabase
+            .from("attachments")
+            .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+            .eq("ref_table", "obra_state_accounts")
+            .in("ref_id", accountIds)
+
+          const map: Record<string, AttachmentRow> = {}
+          ;(evidenceData || []).forEach((a: any) => {
+            map[a.ref_id] = a as AttachmentRow
+          })
+          setEvidenceMap(map)
+        }
+
         const totalSpent = stateAccounts.reduce((sum, m) => {
           const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
           return sum + (val || 0)
@@ -930,7 +1145,7 @@ export default function ProjectDetailPage() {
   if (loading) {
     return (
       <AdminLayout>
-        <div className="py-10 text-center text-slate-500 text-sm">Cargando información de la obra...</div>
+        <div className="py-10 text-center text-slate-500 text-sm">Cargando informacion de la obra...</div>
       </AdminLayout>
     )
   }
@@ -948,7 +1163,7 @@ export default function ProjectDetailPage() {
             <h1 className="text-2xl font-bold text-slate-900">Detalle de obra</h1>
           </div>
           <Card>
-            <CardContent className="py-10 text-center text-red-500">{error ?? "No se encontró la obra."}</CardContent>
+            <CardContent className="py-10 text-center text-red-500">{error ?? "No se encontro la obra."}</CardContent>
           </Card>
         </div>
       </AdminLayout>
@@ -967,7 +1182,7 @@ export default function ProjectDetailPage() {
   const startDate = obra.start_date_actual ?? obra.start_date_planned ?? "Sin fecha de inicio"
   const endDate = obra.end_date_actual ?? obra.end_date_planned ?? "Sin fecha de cierre"
 
-  const location = obra.location_text ?? "Sin ubicación registrada"
+  const location = obra.location_text ?? "Sin ubicacion registrada"
   const clientName = obra.client_name ?? "Cliente no especificado"
 
   return (
@@ -987,13 +1202,13 @@ export default function ProjectDetailPage() {
               <div className="flex flex-wrap items-center gap-2 mt-1 text-sm">
                 <MapPin className="w-4 h-4 text-slate-500" />
                 <span className="text-slate-600">{location}</span>
-                <span className="text-slate-400 mx-2">•</span>
+                <span className="text-slate-400 mx-2">-</span>
                 <span className="text-slate-500">
                   Cliente: <span className="font-medium">{clientName}</span>
                 </span>
                 {obra.code && (
                   <>
-                    <span className="text-slate-400 mx-2">•</span>
+                    <span className="text-slate-400 mx-2">-</span>
                     <span className="text-slate-500">
                       Clave: <span className="font-mono text-xs">{obra.code}</span>
                     </span>
@@ -1056,7 +1271,7 @@ export default function ProjectDetailPage() {
                     <div>
                       <p className="text-sm font-medium text-slate-600">Progress</p>
                       <p className="text-2xl font-bold text-slate-900 mt-2">{displayedProgress}%</p>
-                      <p className="text-xs text-slate-500 mt-1">Basado en el último reporte de obra</p>
+                      <p className="text-xs text-slate-500 mt-1">Basado en el ultimo reporte de obra</p>
                     </div>
                     <div className="p-3 bg-green-50 rounded-lg">
                       <CheckCircle2 className="w-5 h-5 text-green-600" />
@@ -1065,7 +1280,7 @@ export default function ProjectDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Budget – clickable */}
+              {/* Budget - clickable */}
               <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("account")}>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
@@ -1081,7 +1296,7 @@ export default function ProjectDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Team size – clickable */}
+              {/* Team size - clickable */}
               <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("team")}>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
@@ -1109,7 +1324,7 @@ export default function ProjectDetailPage() {
               <CardContent className="space-y-4">
                 <div>
                   <p className="text-sm font-medium text-slate-600">Description / Notes</p>
-                  <p className="text-sm text-slate-900 mt-1">{obra.notes || "No hay notas registradas aún para esta obra."}</p>
+                  <p className="text-sm text-slate-900 mt-1">{obra.notes || "No hay notas registradas aun para esta obra."}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4 pt-4 border-t">
                   <div>
@@ -1166,7 +1381,7 @@ export default function ProjectDetailPage() {
             </Card>
           </TabsContent>
 
-          {/* MILESTONES => Documentos (Opción B con modal) */}
+          {/* MILESTONES => Documentos (Opcion B con modal) */}
           <TabsContent value="milestones" forceMount className="space-y-6">
             {/* Header */}
             <ProjectDocumentsTab obraId={obra.id}/>
@@ -1200,39 +1415,60 @@ export default function ProjectDetailPage() {
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Pagos y movimientos</CardTitle>
                 <Button size="sm" onClick={() => setNewPaymentOpen(true)}>
-                  + Nuevo depósito
+                  + Nuevo deposito
                 </Button>
               </CardHeader>
               <CardContent>
+                {/* Input oculto para subir evidencia */}
+                <input
+                  ref={evidenceInputRef}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ""
+                    if (!file) return
+                    if (replacingEvidence) {
+                      handleReplaceEvidence(replacingEvidence, file)
+                    } else if (pendingEvidenceAccountId) {
+                      handleUploadEvidence(pendingEvidenceAccountId, file)
+                    }
+                  }}
+                />
+
                 {stateAccounts.length === 0 ? (
-                  <p className="text-sm text-slate-500">Aún no hay movimientos registrados para esta obra.</p>
+                  <p className="text-sm text-slate-500">Aun no hay movimientos registrados para esta obra.</p>
                 ) : (
                   <div className="rounded-md border">
                     <Table>
                       <TableHeader>
                         <TableRow>
-                          <TableHead>Fecha depósito</TableHead>
+                          <TableHead>Fecha</TableHead>
                           <TableHead>Concepto</TableHead>
-                          <TableHead>Método</TableHead>
+                          <TableHead>Metodo</TableHead>
                           <TableHead>Referencia</TableHead>
                           <TableHead>Nota</TableHead>
+                          <TableHead>Evidencia</TableHead>
                           <TableHead className="text-right">Monto</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
                         {stateAccounts.map((m) => {
                           const amountNumber = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+                          const evidence = evidenceMap[m.id]
+                          const isUploading = uploadingEvidenceId === m.id
                           return (
                             <TableRow key={m.id}>
                               <TableCell>{m.date}</TableCell>
                               <TableCell>
                                 {m.concept === "deposit"
-                                  ? "Depósito"
+                                  ? "Deposito"
                                   : m.concept === "advance"
                                   ? "Anticipo"
                                   : m.concept === "retention"
-                                  ? "Retención"
-                                  : "Devolución"}
+                                  ? "Retencion"
+                                  : "Devolucion"}
                               </TableCell>
                               <TableCell>
                                 {m.method === "transfer"
@@ -1245,6 +1481,36 @@ export default function ProjectDetailPage() {
                               </TableCell>
                               <TableCell>{m.bank_ref || "-"}</TableCell>
                               <TableCell className="max-w-xs truncate">{m.note || "-"}</TableCell>
+                              <TableCell>
+                                {isUploading ? (
+                                  <span className="text-xs text-slate-400 flex items-center gap-1">
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    Subiendo...
+                                  </span>
+                                ) : evidence ? (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="text-xs h-7 cursor-pointer gap-1"
+                                    onClick={() => handleViewEvidence(evidence)}
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                    Visualizar
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    className="text-xs h-7 cursor-pointer text-slate-500 hover:text-slate-900"
+                                    onClick={() => {
+                                      setPendingEvidenceAccountId(m.id)
+                                      evidenceInputRef.current?.click()
+                                    }}
+                                  >
+                                    + Agregar
+                                  </Button>
+                                )}
+                              </TableCell>
                               <TableCell className="text-right font-medium">{formatCurrency(Number(amountNumber || 0), budgetCurrency)}</TableCell>
                             </TableRow>
                           )
@@ -1353,11 +1619,11 @@ export default function ProjectDetailPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog nuevo depósito / movimiento */}
+      {/* Dialog nuevo deposito / movimiento */}
       <Dialog open={newPaymentOpen} onOpenChange={setNewPaymentOpen}>
         <DialogContent className="max-w-lg">
           <DialogHeader>
-            <DialogTitle>Registrar nuevo depósito</DialogTitle>
+            <DialogTitle>Registrar nuevo deposito</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 mt-2">
@@ -1369,10 +1635,10 @@ export default function ProjectDetailPage() {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="deposit">Depósito</SelectItem>
+                    <SelectItem value="deposit">Deposito</SelectItem>
                     <SelectItem value="advance">Anticipo</SelectItem>
-                    <SelectItem value="retention">Retención</SelectItem>
-                    <SelectItem value="return">Devolución</SelectItem>
+                    <SelectItem value="retention">Retencion</SelectItem>
+                    <SelectItem value="return">Devolucion</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -1390,7 +1656,7 @@ export default function ProjectDetailPage() {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Método de pago</label>
+                <label className="text-xs font-medium text-slate-600">Metodo de pago</label>
                 <Select value={newPaymentForm.method || "transfer"} onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, method: v as ObraStateAccountRow["method"] }))}>
                   <SelectTrigger>
                     <SelectValue />
@@ -1405,7 +1671,7 @@ export default function ProjectDetailPage() {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Fecha del depósito</label>
+                <label className="text-xs font-medium text-slate-600">Fecha del deposito</label>
                 <Input type="date" value={newPaymentForm.date} onChange={(e) => setNewPaymentForm((f) => ({ ...f, date: e.target.value }))} />
               </div>
             </div>
@@ -1425,7 +1691,91 @@ export default function ProjectDetailPage() {
                 Cancelar
               </Button>
               <Button onClick={handleCreatePayment} disabled={newPaymentSaving}>
-                {newPaymentSaving ? "Guardando..." : "Guardar depósito"}
+                {newPaymentSaving ? "Guardando..." : "Guardar deposito"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* Dialog visualizador de evidencia */}
+      <Dialog
+        open={evidenceViewOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEvidenceViewOpen(false)
+            setViewingEvidence(null)
+            setViewingSignedUrl(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base">
+              <FileText className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{viewingEvidence?.file_name || "Evidencia"}</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="mt-1 min-h-[200px] flex items-center justify-center">
+            {viewingLoading ? (
+              <div className="flex flex-col items-center gap-2 text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin" />
+                <span className="text-sm">Cargando archivo...</span>
+              </div>
+            ) : viewingSignedUrl ? (
+              viewingEvidence?.mime_type?.startsWith("image/") ? (
+                <img
+                  src={viewingSignedUrl}
+                  alt={viewingEvidence?.file_name || "Evidencia"}
+                  className="max-h-[60vh] w-full object-contain rounded border border-slate-200"
+                />
+              ) : (
+                <iframe
+                  src={viewingSignedUrl}
+                  title={viewingEvidence?.file_name || "Evidencia"}
+                  className="w-full h-[60vh] rounded border border-slate-200"
+                />
+              )
+            ) : (
+              <p className="text-sm text-red-500">No se pudo cargar el archivo.</p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between pt-3 border-t">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deletingEvidence || viewingLoading}
+              onClick={() => viewingEvidence && handleDeleteEvidence(viewingEvidence)}
+            >
+              {deletingEvidence ? (
+                <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Eliminando...</>
+              ) : (
+                <><Trash2 className="w-3 h-3 mr-1" />Eliminar</>
+              )}
+            </Button>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={viewingLoading || deletingEvidence}
+                onClick={() => {
+                  if (viewingEvidence) {
+                    setReplacingEvidence(viewingEvidence)
+                    evidenceInputRef.current?.click()
+                  }
+                }}
+              >
+                <Edit className="w-3 h-3 mr-1" />
+                Reemplazar
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setEvidenceViewOpen(false)}
+              >
+                Cerrar
               </Button>
             </div>
           </div>
