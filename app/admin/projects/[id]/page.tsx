@@ -88,6 +88,16 @@ type AttachmentRow = {
   uploaded_at: string
 }
 
+type BillingItem = {
+  id: string
+  obra_id: string
+  type: "cotizacion" | "aditivo"
+  description: string | null
+  amount: number
+  date: string
+  created_at: string
+}
+
 const EVIDENCE_BUCKET = "state-account-evidence"
 
 type SiteReportRow = {
@@ -266,6 +276,9 @@ export default function ProjectDetailPage() {
   const [stateAccounts, setStateAccounts] = useState<ObraStateAccountRow[]>([])
   const [newPaymentOpen, setNewPaymentOpen] = useState(false)
   const [newPaymentSaving, setNewPaymentSaving] = useState(false)
+  const [editPaymentsOpen, setEditPaymentsOpen] = useState(false)
+  const [selectedPaymentIds, setSelectedPaymentIds] = useState<Set<string>>(new Set())
+  const [deletingPayments, setDeletingPayments] = useState(false)
 
   // Evidencias (attachments de obra_state_accounts)
   const [evidenceMap, setEvidenceMap] = useState<Record<string, AttachmentRow>>({})
@@ -288,6 +301,19 @@ export default function ProjectDetailPage() {
     bank_ref: "",
     note: "",
   })
+
+  // Cotizacion y Aditivos
+  const [billingItems, setBillingItems] = useState<BillingItem[]>([])
+  const [billingDialogOpen, setBillingDialogOpen] = useState(false)
+  const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
+  const [billingForm, setBillingForm] = useState({
+    type: "aditivo" as "cotizacion" | "aditivo",
+    description: "",
+    amount: "",
+    date: new Date().toISOString().slice(0, 10),
+  })
+  const [savingBilling, setSavingBilling] = useState(false)
+  const [billingError, setBillingError] = useState<string | null>(null)
 
   // ------------------ Documentos: UI + Modal (Opcion B) ------------------
 
@@ -1008,8 +1034,7 @@ export default function ProjectDetailPage() {
     applyTeamStats((data || []) as ObraAssignmentRow[], today)
   }
 
-  useEffect(() => {
-    const loadData = async () => {
+  async function loadData() {
       setLoading(true)
       setError(null)
 
@@ -1062,6 +1087,7 @@ export default function ProjectDetailPage() {
           { data: stateAccountsData, error: stateAccountsError },
           { data: reportsData, error: reportsError },
           { data: assignmentsData, error: assignmentsError },
+          { data: billingItemsData, error: billingItemsError },
         ] = await Promise.all([
           supabase.from("contracts").select("id, obra_id, contract_amount, currency").eq("obra_id", obraId),
           supabase
@@ -1078,12 +1104,18 @@ export default function ProjectDetailPage() {
             .from("obra_assignments")
             .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
             .eq("obra_id", obraId),
+          supabase
+            .from("obra_billing_items")
+            .select("id, obra_id, type, description, amount, date, created_at")
+            .eq("obra_id", obraId)
+            .order("date", { ascending: true }),
         ])
 
         if (contractsError) console.error("contracts error", contractsError)
         if (stateAccountsError) console.error("state accounts error", stateAccountsError)
         if (reportsError) console.error("reports error", reportsError)
         if (assignmentsError) console.error("assignments error", assignmentsError)
+        if (billingItemsError) console.error("billing items error", billingItemsError)
 
         const contracts = (contractsData || []) as ContractRow[]
         const totalContractAmount = contracts.reduce((sum, c) => {
@@ -1094,7 +1126,12 @@ export default function ProjectDetailPage() {
         const currency =
           contracts[0]?.currency && contracts[0].currency.trim() !== "" ? contracts[0].currency : "MXN"
 
-        setBudgetTotal(totalContractAmount)
+        // Load billing items and compute budget from them instead of contracts
+        const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+        setBillingItems(loadedBillingItems)
+
+        const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+        setBudgetTotal(totalBillingAmount)
         setBudgetCurrency(currency)
 
         const stateAccounts = (stateAccountsData || []) as ObraStateAccountRow[]
@@ -1138,9 +1175,11 @@ export default function ProjectDetailPage() {
       } finally {
         setLoading(false)
       }
-    }
+  }
 
+  useEffect(() => {
     loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id])
 
   if (loading) {
@@ -1180,11 +1219,102 @@ export default function ProjectDetailPage() {
   const remaining = budgetTotal - spentTotal
   const remainingFormatted = formatCurrency(remaining, budgetCurrency)
 
+  // Billing items computed values
+  const cotizacion = billingItems.find((b) => b.type === "cotizacion") ?? null
+  const aditivos = billingItems.filter((b) => b.type === "aditivo")
+  const totalBilling = billingItems.reduce((s, b) => s + Number(b.amount || 0), 0)
+  const saldoPendiente = totalBilling - spentTotal
+  const avanceFinanciero = totalBilling > 0 ? Math.min(100, Math.round((spentTotal / totalBilling) * 100)) : 0
+
   const startDate = obra.start_date_actual ?? obra.start_date_planned ?? "Sin fecha de inicio"
   const endDate = obra.end_date_actual ?? obra.end_date_planned ?? "Sin fecha de cierre"
 
   const location = obra.location_text ?? "Sin ubicacion registrada"
   const clientName = obra.client_name ?? "Cliente no especificado"
+
+  // ===== CRUD Functions for Billing Items =====
+
+  async function handleSaveBillingItem() {
+    if (!obra) return
+    const amount = parseFloat(billingForm.amount.replace(/[^0-9.]/g, ""))
+    if (isNaN(amount) || amount <= 0) {
+      setBillingError("Ingresa un monto valido.")
+      return
+    }
+    if (billingForm.type === "cotizacion" && !editingBillingItem) {
+      const hasCotizacion = billingItems.some((b) => b.type === "cotizacion")
+      if (hasCotizacion) {
+        setBillingError("Ya existe una cotizacion. Edita la existente.")
+        return
+      }
+    }
+    setSavingBilling(true)
+    setBillingError(null)
+    const { data: authData } = await supabase.auth.getUser()
+    const created_by = authData?.user?.id ?? null
+    if (editingBillingItem) {
+      const { error } = await supabase
+        .from("obra_billing_items")
+        .update({ description: billingForm.description || null, amount, date: billingForm.date })
+        .eq("id", editingBillingItem.id)
+      if (error) { setBillingError("No se pudo actualizar."); setSavingBilling(false); return }
+    } else {
+      const { error } = await supabase.from("obra_billing_items").insert({
+        obra_id: obra.id, type: billingForm.type, description: billingForm.description || null,
+        amount, date: billingForm.date, created_by,
+      })
+      if (error) { setBillingError("No se pudo guardar."); setSavingBilling(false); return }
+    }
+    setBillingDialogOpen(false)
+    setEditingBillingItem(null)
+    setSavingBilling(false)
+    // Reload data to refresh billing items
+    const obraId = params.id as string
+    const { data: billingItemsData, error: billingItemsError } = await supabase
+      .from("obra_billing_items")
+      .select("id, obra_id, type, description, amount, date, created_at")
+      .eq("obra_id", obraId)
+      .order("date", { ascending: true })
+    if (billingItemsError) console.error("billing items error", billingItemsError)
+    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    setBillingItems(loadedBillingItems)
+    const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+    setBudgetTotal(totalBillingAmount)
+  }
+
+  async function handleDeleteBillingItem(item: BillingItem) {
+    const label = item.type === "cotizacion" ? "la cotizacion" : `el aditivo`
+    const ok = window.confirm(`Eliminar ${label}?`)
+    if (!ok) return
+    const { error } = await supabase.from("obra_billing_items").delete().eq("id", item.id)
+    if (error) { console.error("delete billing item error:", error); return }
+    // Reload data
+    const obraId = params.id as string
+    const { data: billingItemsData, error: billingItemsError } = await supabase
+      .from("obra_billing_items")
+      .select("id, obra_id, type, description, amount, date, created_at")
+      .eq("obra_id", obraId)
+      .order("date", { ascending: true })
+    if (billingItemsError) console.error("billing items error", billingItemsError)
+    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    setBillingItems(loadedBillingItems)
+    const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+    setBudgetTotal(totalBillingAmount)
+  }
+
+  function openAddBillingItem(type: "cotizacion" | "aditivo") {
+    setEditingBillingItem(null)
+    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10) })
+    setBillingError(null)
+    setBillingDialogOpen(true)
+  }
+
+  function openEditBillingItem(item: BillingItem) {
+    setEditingBillingItem(item)
+    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date })
+    setBillingError(null)
+    setBillingDialogOpen(true)
+  }
 
   return (
     <RoleGuard allowed={["admin"]}>
@@ -1396,37 +1526,154 @@ export default function ProjectDetailPage() {
 
           {/* ESTADO DE CUENTA */}
           <TabsContent value="account" className="space-y-6">
+
+            {/* CARD 1 — Balance General */}
             <Card>
               <CardHeader>
-                <CardTitle>Estado de Cuenta</CardTitle>
+                <CardTitle>Balance General de la Obra</CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                   <div>
-                    <p className="text-sm text-slate-600">Costo de la obra</p>
-                    <p className="text-2xl font-bold text-slate-900 mt-1">{budgetFormatted}</p>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Total a cobrar</p>
+                    <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(totalBilling, budgetCurrency)}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">Cotizacion + Aditivos</p>
                   </div>
                   <div>
-                    <p className="text-sm text-slate-600">Cobrado</p>
-                    <p className="text-xl font-semibold text-green-600 mt-1">{spentFormatted}</p>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Cobrado</p>
+                    <p className="text-2xl font-bold text-green-600 mt-1">{spentFormatted}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-slate-600">Restante por cobrar</p>
-                    <p className="text-xl font-semibold text-slate-900 mt-1">{remainingFormatted}</p>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Saldo pendiente</p>
+                    <p className={`text-2xl font-bold mt-1 ${saldoPendiente < 0 ? "text-red-600" : "text-slate-900"}`}>
+                      {formatCurrency(saldoPendiente, budgetCurrency)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Avance financiero</p>
+                    <p className="text-2xl font-bold text-slate-900 mt-1">{avanceFinanciero}%</p>
+                    <div className="mt-2">
+                      <Progress value={avanceFinanciero} className="h-2" />
+                    </div>
                   </div>
                 </div>
               </CardContent>
             </Card>
 
+            {/* CARD 2 — Cotizacion y Aditivos */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Cotizacion y Aditivos</CardTitle>
+                <Button size="sm" onClick={() => openAddBillingItem("aditivo")}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Nuevo aditivo
+                </Button>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {/* Cotizacion base */}
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                  <div className="flex items-start justify-between flex-wrap gap-3">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cotizacion base</p>
+                      {cotizacion ? (
+                        <>
+                          <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(Number(cotizacion.amount), budgetCurrency)}</p>
+                          {cotizacion.description && (
+                            <p className="text-xs text-slate-500 mt-0.5">{cotizacion.description}</p>
+                          )}
+                          <p className="text-xs text-slate-400 mt-0.5">{cotizacion.date}</p>
+                        </>
+                      ) : (
+                        <p className="text-sm text-slate-400 mt-1">Sin cotizacion registrada</p>
+                      )}
+                    </div>
+                    <div className="flex gap-2 shrink-0">
+                      {cotizacion ? (
+                        <>
+                          <Button size="sm" variant="outline" onClick={() => openEditBillingItem(cotizacion)}>
+                            Editar
+                          </Button>
+                          <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDeleteBillingItem(cotizacion)}>
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </>
+                      ) : (
+                        <Button size="sm" onClick={() => openAddBillingItem("cotizacion")}>
+                          <Plus className="w-4 h-4 mr-1" />
+                          Registrar cotizacion
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Tabla de aditivos */}
+                {aditivos.length > 0 ? (
+                  <div className="rounded-md border overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Fecha</TableHead>
+                          <TableHead>Descripcion</TableHead>
+                          <TableHead className="text-right">Monto</TableHead>
+                          <TableHead className="text-right">Acciones</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {aditivos.map((item) => (
+                          <TableRow key={item.id}>
+                            <TableCell className="text-sm">{item.date}</TableCell>
+                            <TableCell className="text-sm">{item.description || "-"}</TableCell>
+                            <TableCell className="text-right font-medium">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-1">
+                                <Button size="sm" variant="ghost" onClick={() => openEditBillingItem(item)}>Editar</Button>
+                                <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDeleteBillingItem(item)}>
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow className="bg-slate-50 font-semibold">
+                          <TableCell colSpan={2} className="text-slate-700">Total aditivos</TableCell>
+                          <TableCell className="text-right font-bold text-slate-900">
+                            {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
+                          </TableCell>
+                          <TableCell />
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-400 text-center py-2">No hay aditivos registrados aun.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARD 3 — Pagos y Movimientos */}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Pagos y movimientos</CardTitle>
-                <Button size="sm" onClick={() => setNewPaymentOpen(true)}>
-                  + Nuevo deposito
-                </Button>
+                <div className="flex gap-2">
+                  {stateAccounts.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setSelectedPaymentIds(new Set())
+                        setEditPaymentsOpen(true)
+                      }}
+                    >
+                      Editar
+                    </Button>
+                  )}
+                  <Button size="sm" onClick={() => setNewPaymentOpen(true)}>
+                    + Nuevo deposito
+                  </Button>
+                </div>
               </CardHeader>
               <CardContent>
-                {/* Input oculto para subir evidencia */}
                 <input
                   ref={evidenceInputRef}
                   type="file"
@@ -1443,7 +1690,6 @@ export default function ProjectDetailPage() {
                     }
                   }}
                 />
-
                 {stateAccounts.length === 0 ? (
                   <p className="text-sm text-slate-500">Aun no hay movimientos registrados para esta obra.</p>
                 ) : (
@@ -1469,22 +1715,10 @@ export default function ProjectDetailPage() {
                             <TableRow key={m.id}>
                               <TableCell>{m.date}</TableCell>
                               <TableCell>
-                                {m.concept === "deposit"
-                                  ? "Deposito"
-                                  : m.concept === "advance"
-                                  ? "Anticipo"
-                                  : m.concept === "retention"
-                                  ? "Retencion"
-                                  : "Devolucion"}
+                                {m.concept === "deposit" ? "Deposito" : m.concept === "advance" ? "Anticipo" : m.concept === "retention" ? "Retencion" : "Devolucion"}
                               </TableCell>
                               <TableCell>
-                                {m.method === "transfer"
-                                  ? "Transferencia"
-                                  : m.method === "cash"
-                                  ? "Efectivo"
-                                  : m.method === "check"
-                                  ? "Cheque"
-                                  : "Otro"}
+                                {m.method === "transfer" ? "Transferencia" : m.method === "cash" ? "Efectivo" : m.method === "check" ? "Cheque" : "Otro"}
                               </TableCell>
                               <TableCell>{m.bank_ref || "-"}</TableCell>
                               <TableCell className="max-w-xs truncate">{m.note || "-"}</TableCell>
@@ -1495,25 +1729,12 @@ export default function ProjectDetailPage() {
                                     Subiendo...
                                   </span>
                                 ) : evidence ? (
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    className="text-xs h-7 cursor-pointer gap-1"
-                                    onClick={() => handleViewEvidence(evidence)}
-                                  >
+                                  <Button size="sm" variant="outline" className="text-xs h-7 cursor-pointer gap-1" onClick={() => handleViewEvidence(evidence)}>
                                     <Eye className="w-3 h-3" />
                                     Visualizar
                                   </Button>
                                 ) : (
-                                  <Button
-                                    size="sm"
-                                    variant="ghost"
-                                    className="text-xs h-7 cursor-pointer text-slate-500 hover:text-slate-900"
-                                    onClick={() => {
-                                      setPendingEvidenceAccountId(m.id)
-                                      evidenceInputRef.current?.click()
-                                    }}
-                                  >
+                                  <Button size="sm" variant="ghost" className="text-xs h-7 cursor-pointer text-slate-500 hover:text-slate-900" onClick={() => { setPendingEvidenceAccountId(m.id); evidenceInputRef.current?.click() }}>
                                     + Agregar
                                   </Button>
                                 )}
@@ -1783,6 +2004,176 @@ export default function ProjectDetailPage() {
                 onClick={() => setEvidenceViewOpen(false)}
               >
                 Cerrar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Editar / Eliminar pagos */}
+      <Dialog open={editPaymentsOpen} onOpenChange={(v) => (deletingPayments ? null : setEditPaymentsOpen(v))}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Editar pagos y movimientos</DialogTitle>
+          </DialogHeader>
+
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-slate-500">
+              Selecciona los movimientos que deseas eliminar y confirma.
+            </p>
+
+            <div className="rounded-md border overflow-hidden max-h-96 overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-10">
+                      <input
+                        type="checkbox"
+                        className="rounded border-slate-300"
+                        checked={selectedPaymentIds.size === stateAccounts.length && stateAccounts.length > 0}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedPaymentIds(new Set(stateAccounts.map((a) => a.id)))
+                          } else {
+                            setSelectedPaymentIds(new Set())
+                          }
+                        }}
+                      />
+                    </TableHead>
+                    <TableHead>Fecha</TableHead>
+                    <TableHead>Concepto</TableHead>
+                    <TableHead>Metodo</TableHead>
+                    <TableHead className="text-right">Monto</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {stateAccounts.map((m) => {
+                    const amountNumber = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+                    const checked = selectedPaymentIds.has(m.id)
+                    return (
+                      <TableRow
+                        key={m.id}
+                        className={`cursor-pointer ${checked ? "bg-red-50" : "hover:bg-slate-50"}`}
+                        onClick={() =>
+                          setSelectedPaymentIds((prev) => {
+                            const next = new Set(prev)
+                            if (next.has(m.id)) next.delete(m.id)
+                            else next.add(m.id)
+                            return next
+                          })
+                        }
+                      >
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            className="rounded border-slate-300"
+                            checked={checked}
+                            onChange={() =>
+                              setSelectedPaymentIds((prev) => {
+                                const next = new Set(prev)
+                                if (next.has(m.id)) next.delete(m.id)
+                                else next.add(m.id)
+                                return next
+                              })
+                            }
+                          />
+                        </TableCell>
+                        <TableCell className="text-sm">{m.date}</TableCell>
+                        <TableCell className="text-sm">
+                          {m.concept === "deposit" ? "Deposito" : m.concept === "advance" ? "Anticipo" : m.concept === "retention" ? "Retencion" : "Devolucion"}
+                        </TableCell>
+                        <TableCell className="text-sm">
+                          {m.method === "transfer" ? "Transferencia" : m.method === "cash" ? "Efectivo" : m.method === "check" ? "Cheque" : "Otro"}
+                        </TableCell>
+                        <TableCell className="text-right font-medium">{formatCurrency(Number(amountNumber || 0), budgetCurrency)}</TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {selectedPaymentIds.size > 0 && (
+              <p className="text-sm text-red-600 font-medium">
+                {selectedPaymentIds.size} movimiento{selectedPaymentIds.size > 1 ? "s" : ""} seleccionado{selectedPaymentIds.size > 1 ? "s" : ""} para eliminar.
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setEditPaymentsOpen(false)} disabled={deletingPayments}>
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={selectedPaymentIds.size === 0 || deletingPayments}
+                onClick={async () => {
+                  const ok = window.confirm(`Eliminar ${selectedPaymentIds.size} movimiento${selectedPaymentIds.size > 1 ? "s" : ""}? Esta accion no se puede deshacer.`)
+                  if (!ok) return
+                  setDeletingPayments(true)
+                  const ids = Array.from(selectedPaymentIds)
+                  const { error } = await supabase
+                    .from("obra_state_accounts")
+                    .delete()
+                    .in("id", ids)
+                  if (error) {
+                    console.error("delete payments error:", error)
+                  } else {
+                    setStateAccounts((prev) => prev.filter((a) => !selectedPaymentIds.has(a.id)))
+                    setEvidenceMap((prev) => {
+                      const next = { ...prev }
+                      ids.forEach((id) => delete next[id])
+                      return next
+                    })
+                    setSelectedPaymentIds(new Set())
+                    setEditPaymentsOpen(false)
+                    await loadData()
+                  }
+                  setDeletingPayments(false)
+                }}
+              >
+                {deletingPayments ? "Eliminando..." : `Eliminar${selectedPaymentIds.size > 0 ? ` (${selectedPaymentIds.size})` : ""}`}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Cotizacion / Aditivo */}
+      <Dialog open={billingDialogOpen} onOpenChange={(v) => (savingBilling ? null : setBillingDialogOpen(v))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {editingBillingItem
+                ? editingBillingItem.type === "cotizacion" ? "Editar cotizacion" : "Editar aditivo"
+                : billingForm.type === "cotizacion" ? "Registrar cotizacion" : "Nuevo aditivo"}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-600">Fecha</label>
+              <Input type="date" value={billingForm.date} onChange={(e) => setBillingForm((f) => ({ ...f, date: e.target.value }))} />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-600">
+                {billingForm.type === "cotizacion" ? "Descripcion (opcional)" : "Descripcion del aditivo"}
+              </label>
+              <Input
+                value={billingForm.description}
+                onChange={(e) => setBillingForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder={billingForm.type === "cotizacion" ? "Cotizacion inicial..." : "Trabajo extra, material adicional..."}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-600">Monto *</label>
+              <Input value={billingForm.amount} onChange={(e) => setBillingForm((f) => ({ ...f, amount: e.target.value }))} placeholder="0.00" />
+            </div>
+            {billingError && (
+              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{billingError}</div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setBillingDialogOpen(false)} disabled={savingBilling}>Cancelar</Button>
+              <Button onClick={handleSaveBillingItem} disabled={savingBilling}>
+                {savingBilling ? "Guardando..." : "Guardar"}
               </Button>
             </div>
           </div>

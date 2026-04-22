@@ -245,8 +245,8 @@ export default function AdminProjectsPage() {
 
       const obraIds = obras.map((o) => o.id)
 
-      // 2) En paralelo: director assignments, team count, site_reports, contracts, state_accounts
-      const [assignRes, teamRes, siteRes, contractsRes, accountsRes] =
+      // 2) En paralelo: director assignments, team count, site_reports, obra_billing_items, state_accounts
+      const [assignRes, teamRes, siteRes, billingItemsRes, accountsRes] =
         await Promise.all([
           supabase
             .from("obra_assignments")
@@ -264,8 +264,8 @@ export default function AdminProjectsPage() {
             .select("obra_id, progress_percent, report_date")
             .in("obra_id", obraIds),
           supabase
-            .from("contracts")
-            .select("obra_id, contract_amount")
+            .from("obra_billing_items")
+            .select("obra_id, amount")
             .in("obra_id", obraIds),
           supabase
             .from("obra_state_accounts")
@@ -276,13 +276,13 @@ export default function AdminProjectsPage() {
       const { data: assignments, error: assignError } = assignRes
       const { data: teamRows,    error: teamError }   = teamRes
       const { data: siteReports, error: siteError }   = siteRes
-      const { data: contracts,   error: contractsError } = contractsRes
+      const { data: billingItems, error: billingItemsError } = billingItemsRes
       const { data: accounts,    error: accountsError }  = accountsRes
 
       if (assignError)    console.error("Error fetching obra_assignments:", assignError)
       if (teamError)      console.error("Error fetching team count:", teamError)
       if (siteError)      console.error("Error fetching site_reports:", siteError)
-      if (contractsError) console.error("Error fetching contracts:", contractsError)
+      if (billingItemsError) console.error("Error fetching obra_billing_items:", billingItemsError)
       if (accountsError)  console.error("Error fetching obra_state_accounts:", accountsError)
 
       // --- Team size map (obra_id -> cantidad de asignaciones activas) ---
@@ -329,15 +329,15 @@ export default function AdminProjectsPage() {
         })
       }
 
-      // --- Budget map (obra_id -> suma contract_amount) ---
+      // --- Budget map (obra_id -> suma amount from obra_billing_items) ---
       const budgetMap: Record<string, number> = {}
 
-      if (contracts) {
-        ;(contracts as ContractRow[]).forEach((c) => {
-          const amount = c.contract_amount ?? 0
+      if (billingItems) {
+        ;(billingItems as { obra_id: string; amount: number }[]).forEach((item) => {
+          const amount = item.amount ?? 0
           if (!amount) return
-          budgetMap[c.obra_id] =
-            (budgetMap[c.obra_id] || 0) + Number(amount)
+          budgetMap[item.obra_id] =
+            (budgetMap[item.obra_id] || 0) + Number(amount)
         })
       }
 
@@ -494,7 +494,6 @@ export default function AdminProjectsPage() {
       const managerEmployeeId = data.manager || null
 
       const progressValue = data.progress ?? 0
-      const budgetAmount = parseMoney(data.budget)
 
       // 1) Creamos la obra base
       const payloadObra = {
@@ -570,27 +569,7 @@ export default function AdminProjectsPage() {
         }
       }
 
-      // 4) Si hay presupuesto, creamos un contrato manual
-      if (budgetAmount > 0) {
-        const { error: contractError } = await supabase
-          .from("contracts")
-          .insert({
-            obra_id: obra.id,
-            contract_amount: budgetAmount,
-            currency: "MXN",
-            file_url: "manual://new-project-form",
-            file_name: "Presupuesto manual",
-          })
-
-        if (contractError) {
-          console.error(
-            "Error creating contract from budget:",
-            contractError,
-          )
-        }
-      }
-
-      // 5) Actualizamos la lista en memoria (sin recomputar agregados; se veran al recargar)
+      // 4) Actualizamos la lista en memoria (sin recomputar agregados; se veran al recargar)
       setProjects((prev) => [mapObraToProject(obra), ...prev])
       setOpenDialog(false)
     } catch (e) {
@@ -822,8 +801,8 @@ function ProjectForm({
     progress: initialData?.progress ?? 0,
     startDate: initialData?.startDate ?? "",
     endDate: initialData?.endDate ?? "",
-    budget: initialData?.budget ?? "",
-    spent: initialData?.spent ?? "",
+    budget: "-",
+    spent: "-",
     manager: "",
     teamSize: initialData?.teamSize ?? 0,
   }))
@@ -893,17 +872,6 @@ function ProjectForm({
               <SelectItem value="On Hold">En pausa</SelectItem>
             </SelectContent>
           </Select>
-        </div>
-
-        <div className="flex flex-col gap-1.5 md:col-span-2">
-          <label className="text-xs font-medium text-slate-600">
-            Presupuesto
-          </label>
-          <Input
-            value={form.budget}
-            onChange={(e) => handleChange("budget", e.target.value)}
-            placeholder="$0.00"
-          />
         </div>
 
         {/* Director de Obra */}
