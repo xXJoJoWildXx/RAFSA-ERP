@@ -38,6 +38,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
+import { ProjectCarpetaSuaTab } from "@/components/projectCarpetaSuaTab"
 
 // ---------- Tipos DB basicos ----------
 
@@ -1235,6 +1236,7 @@ export default function ProjectDetailPage() {
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="milestones">Documents</TabsTrigger>
+            <TabsTrigger value="carpeta-sua">Carpeta SUA</TabsTrigger>
             <TabsTrigger value="account">Estado de Cuenta</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
@@ -1385,6 +1387,11 @@ export default function ProjectDetailPage() {
           <TabsContent value="milestones" forceMount className="space-y-6">
             {/* Header */}
             <ProjectDocumentsTab obraId={obra.id}/>
+          </TabsContent>
+
+          {/* CARPETA SUA */}
+          <TabsContent value="carpeta-sua" className="space-y-6">
+            <ProjectCarpetaSuaTab obraId={obra.id} />
           </TabsContent>
 
           {/* ESTADO DE CUENTA */}
