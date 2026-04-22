@@ -242,7 +242,7 @@ export function ProjectCarpetaSuaTab({ obraId }: Props) {
   async function handleDownload(file: SuaFile) {
     const { data, error: urlErr } = await supabase.storage
       .from(SUA_BUCKET)
-      .createSignedUrl(file.file_url, 300)
+      .createSignedUrl(file.file_url, 300, { download: file.file_name })
 
     if (urlErr || !data?.signedUrl) {
       setError("No se pudo generar el enlace de descarga.")
