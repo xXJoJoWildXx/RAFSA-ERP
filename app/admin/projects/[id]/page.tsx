@@ -1375,23 +1375,23 @@ export default function ProjectDetailPage() {
         {/* Tabs + contenido */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList>
-            <TabsTrigger value="overview">Overview</TabsTrigger>
-            <TabsTrigger value="milestones">Documents</TabsTrigger>
+            <TabsTrigger value="overview">Resumen</TabsTrigger>
+            <TabsTrigger value="milestones">Documentos</TabsTrigger>
             <TabsTrigger value="account">Estado de Cuenta</TabsTrigger>
-            <TabsTrigger value="team">Team</TabsTrigger>
-            <TabsTrigger value="activity">Activity</TabsTrigger>
+            <TabsTrigger value="team">Equipo</TabsTrigger>
+            <TabsTrigger value="activity">Actividad</TabsTrigger>
           </TabsList>
 
           {/* OVERVIEW */}
           <TabsContent value="overview" className="space-y-6">
             {/* Overview cards (Status / Progress / Budget / Team) */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              {/* Status */}
+              {/* Estatus */}
               <Card>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Status</p>
+                      <p className="text-sm font-medium text-slate-600">Estatus</p>
                       <Badge className={`${statusUi.className} mt-2`}>{statusUi.label}</Badge>
                       <p className="text-xs text-slate-500 mt-2">
                         Inicio: {startDate}
@@ -1406,12 +1406,12 @@ export default function ProjectDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Progress */}
+              {/* Avance */}
               <Card>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Progress</p>
+                      <p className="text-sm font-medium text-slate-600">Avance</p>
                       <p className="text-2xl font-bold text-slate-900 mt-2">{displayedProgress}%</p>
                       <p className="text-xs text-slate-500 mt-1">Basado en el ultimo reporte de obra</p>
                     </div>
@@ -1422,14 +1422,14 @@ export default function ProjectDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Budget - clickable */}
+              {/* Financiero */}
               <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("account")}>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Budget</p>
+                      <p className="text-sm font-medium text-slate-600">Cotizacion</p>
                       <p className="text-2xl font-bold text-slate-900 mt-2">{budgetFormatted}</p>
-                      <p className="text-xs text-slate-500 mt-1">Spent: {spentFormatted}</p>
+                      <p className="text-xs text-slate-500 mt-1">Cobrado: {spentFormatted}</p>
                     </div>
                     <div className="p-3 bg-purple-50 rounded-lg">
                       <DollarSign className="w-5 h-5 text-purple-600" />
@@ -1438,12 +1438,12 @@ export default function ProjectDetailPage() {
                 </CardContent>
               </Card>
 
-              {/* Team size - clickable */}
+              {/* Equipo */}
               <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("team")}>
                 <CardContent className="p-6">
                   <div className="flex items-start justify-between">
                     <div>
-                      <p className="text-sm font-medium text-slate-600">Team Size</p>
+                      <p className="text-sm font-medium text-slate-600">Equipo</p>
                       <p className="text-xs text-slate-500 mt-1">
                         Director de Obra:{" "}
                         <span className="font-medium text-slate-900">{managerName ?? "Sin asignar"}</span>
@@ -1458,47 +1458,47 @@ export default function ProjectDetailPage() {
               </Card>
             </div>
 
-            {/* Project Details */}
+            {/* Detalles de la obra */}
             <Card>
               <CardHeader>
-                <CardTitle>Project Details</CardTitle>
+                <CardTitle>Detalles de la obra</CardTitle>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <p className="text-sm font-medium text-slate-600">Description / Notes</p>
+                  <p className="text-sm font-medium text-slate-600">Notas</p>
                   <p className="text-sm text-slate-900 mt-1">{obra.notes || "No hay notas registradas aun para esta obra."}</p>
                 </div>
                 <div className="grid grid-cols-2 gap-4 pt-4 border-t">
                   <div>
-                    <p className="text-sm font-medium text-slate-600">Start Date (planned / actual)</p>
+                    <p className="text-sm font-medium text-slate-600">Fecha de inicio</p>
                     <p className="text-sm text-slate-900 mt-1">{startDate}</p>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-600">End Date (planned / actual)</p>
+                    <p className="text-sm font-medium text-slate-600">Fecha de cierre</p>
                     <p className="text-sm text-slate-900 mt-1">{endDate}</p>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-600">Client</p>
+                    <p className="text-sm font-medium text-slate-600">Cliente</p>
                     <p className="text-sm text-slate-900 mt-1">{clientName}</p>
                   </div>
                   <div>
-                    <p className="text-sm font-medium text-slate-600">Location</p>
+                    <p className="text-sm font-medium text-slate-600">Ubicacion</p>
                     <p className="text-sm text-slate-900 mt-1">{location}</p>
                   </div>
                 </div>
               </CardContent>
             </Card>
 
-            {/* Budget Breakdown */}
+            {/* Resumen financiero */}
             <Card>
               <CardHeader>
-                <CardTitle>Budget Breakdown</CardTitle>
+                <CardTitle>Resumen financiero</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
                   <div>
                     <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm font-medium text-slate-600">Total Spent</span>
+                      <span className="text-sm font-medium text-slate-600">Avance financiero</span>
                       <span className="text-sm font-bold text-slate-900">
                         {budgetTotal > 0 ? `${Math.round((spentTotal / budgetTotal) * 100)}%` : "0%"}
                       </span>
@@ -1510,11 +1510,11 @@ export default function ProjectDetailPage() {
                   </div>
                   <div className="grid grid-cols-2 gap-4 pt-4 border-t">
                     <div>
-                      <p className="text-sm text-slate-600">Total Budget</p>
+                      <p className="text-sm text-slate-600">Total cotizado</p>
                       <p className="text-lg font-bold text-slate-900">{budgetFormatted}</p>
                     </div>
                     <div>
-                      <p className="text-sm text-slate-600">Remaining</p>
+                      <p className="text-sm text-slate-600">Saldo pendiente</p>
                       <p className="text-lg font-bold text-green-600">{remainingFormatted}</p>
                     </div>
                   </div>
