@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Settings,
   Search,
+  Truck,
 } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
@@ -44,8 +45,8 @@ type NavItem = {
 const navigation: NavItem[] = [
   { name: "Dashboard", href: "/admin", icon: LayoutDashboard, badgeKey: null },
   { name: "Obras", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
-  { name: "Documentos", href: "/admin/documents", icon: FileText, badgeKey: null },
   { name: "Empleados", href: "/admin/employees", icon: Users, badgeKey: "empleados" },
+  { name: "Proveedores", href: "/admin/documents", icon: Truck, badgeKey: null },
 ]
 
 /* ───────────────────────────────────────────
