@@ -17,6 +17,7 @@ import {
   ArrowLeft,
   Edit,
   CheckCircle2,
+  XCircle,
   Upload,
   FileText,
   FileCheck2,
@@ -38,7 +39,6 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
-import { ProjectCarpetaSuaTab } from "@/components/projectCarpetaSuaTab"
 
 // ---------- Tipos DB basicos ----------
 
@@ -56,6 +56,7 @@ type ObraRow = {
   end_date_planned: string | null
   end_date_actual: string | null
   notes: string | null
+  iva_included: boolean
 }
 
 type ContractRow = {
@@ -252,6 +253,7 @@ export default function ProjectDetailPage() {
   const [budgetTotal, setBudgetTotal] = useState<number>(0)
   const [budgetCurrency, setBudgetCurrency] = useState<string>("MXN")
   const [spentTotal, setSpentTotal] = useState<number>(0)
+  const [ivaIncluded, setIvaIncluded] = useState<boolean>(true)
 
   // Team info
   const [teamSize, setTeamSize] = useState<number>(0)
@@ -1057,7 +1059,8 @@ export default function ProjectDetailPage() {
             start_date_actual,
             end_date_planned,
             end_date_actual,
-            notes
+            notes,
+            iva_included
           `,
           )
           .eq("id", obraId)
@@ -1070,7 +1073,9 @@ export default function ProjectDetailPage() {
           return
         }
 
-        setObra(obraData as ObraRow)
+        const obraRow = obraData as ObraRow
+        setObra(obraRow)
+        setIvaIncluded(obraRow.iva_included ?? true)
 
         setEditForm({
           name: obraData.name,
@@ -1282,6 +1287,12 @@ export default function ProjectDetailPage() {
     setBudgetTotal(totalBillingAmount)
   }
 
+  async function handleIvaChange(value: boolean) {
+    setIvaIncluded(value)
+    if (!obra) return
+    await supabase.from("obras").update({ iva_included: value }).eq("id", obra.id)
+  }
+
   async function handleDeleteBillingItem(item: BillingItem) {
     const label = item.type === "cotizacion" ? "la cotizacion" : `el aditivo`
     const ok = window.confirm(`Eliminar ${label}?`)
@@ -1366,7 +1377,6 @@ export default function ProjectDetailPage() {
           <TabsList>
             <TabsTrigger value="overview">Overview</TabsTrigger>
             <TabsTrigger value="milestones">Documents</TabsTrigger>
-            <TabsTrigger value="carpeta-sua">Carpeta SUA</TabsTrigger>
             <TabsTrigger value="account">Estado de Cuenta</TabsTrigger>
             <TabsTrigger value="team">Team</TabsTrigger>
             <TabsTrigger value="activity">Activity</TabsTrigger>
@@ -1519,18 +1529,46 @@ export default function ProjectDetailPage() {
             <ProjectDocumentsTab obraId={obra.id}/>
           </TabsContent>
 
-          {/* CARPETA SUA */}
-          <TabsContent value="carpeta-sua" className="space-y-6">
-            <ProjectCarpetaSuaTab obraId={obra.id} />
-          </TabsContent>
-
           {/* ESTADO DE CUENTA */}
           <TabsContent value="account" className="space-y-6">
 
             {/* CARD 1 — Balance General */}
             <Card>
-              <CardHeader>
+              <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle>Balance General de la Obra</CardTitle>
+                <Select
+                  value={ivaIncluded ? "con_iva" : "sin_iva"}
+                  onValueChange={(v) => handleIvaChange(v === "con_iva")}
+                >
+                  <SelectTrigger
+                    className={`w-36 h-9 cursor-pointer border-2 font-bold text-base ${
+                      ivaIncluded
+                        ? "bg-green-50 border-green-400 text-green-700 hover:bg-green-100"
+                        : "bg-red-50 border-red-400 text-red-700 hover:bg-red-100"
+                    }`}
+                  >
+                    <div className="flex items-center gap-1.5">
+                      {ivaIncluded
+                        ? <CheckCircle2 className="w-4 h-4 shrink-0" />
+                        : <XCircle className="w-4 h-4 shrink-0" />}
+                      <span>{ivaIncluded ? "Con IVA" : "Sin IVA"}</span>
+                    </div>
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="con_iva">
+                      <div className="flex items-center gap-2 font-semibold text-green-700">
+                        <CheckCircle2 className="w-4 h-4" />
+                        Con IVA
+                      </div>
+                    </SelectItem>
+                    <SelectItem value="sin_iva">
+                      <div className="flex items-center gap-2 font-semibold text-red-600">
+                        <XCircle className="w-4 h-4" />
+                        Sin IVA
+                      </div>
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-6">

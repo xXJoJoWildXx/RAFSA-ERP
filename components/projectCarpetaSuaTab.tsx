@@ -415,20 +415,20 @@ export function ProjectCarpetaSuaTab({ obraId }: Props) {
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Archivo</TableHead>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>Tamano</TableHead>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead className="text-right">Acciones</TableHead>
+                    <TableHead className="w-full min-w-0">Archivo</TableHead>
+                    <TableHead className="w-20 shrink-0">Tipo</TableHead>
+                    <TableHead className="w-20 shrink-0">Tamano</TableHead>
+                    <TableHead className="w-24 shrink-0">Fecha</TableHead>
+                    <TableHead className="w-24 shrink-0 text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((f) => (
                     <TableRow key={f.id}>
-                      <TableCell>
+                      <TableCell className="max-w-0 w-full">
                         <div className="flex items-center gap-2 min-w-0">
                           <FileIcon mime={f.mime_type} />
-                          <span className="font-medium text-slate-800 truncate max-w-xs">
+                          <span className="font-medium text-slate-800 truncate block min-w-0" title={f.file_name}>
                             {f.file_name}
                           </span>
                         </div>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { ProjectCarpetaSuaTab } from "@/components/projectCarpetaSuaTab"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -22,6 +23,7 @@ import {
   ShieldCheck,
   FileWarning,
   Plus,
+  FolderOpen,
 } from "lucide-react"
 
 type DocStatus = "missing" | "uploaded" | "processing" | "approved" | "rejected"
@@ -130,6 +132,8 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
   const [docSearch, setDocSearch] = useState("")
   const [docTypeFilter, setDocTypeFilter] = useState<"all" | DocType>("all")
   const [docStatusFilter, setDocStatusFilter] = useState<"all" | Exclude<DocStatus, "missing">>("all")
+
+  const [suaOpen, setSuaOpen] = useState(false)
 
   const [uploadOpen, setUploadOpen] = useState(false)
   const [uploadSaving, setUploadSaving] = useState(false)
@@ -505,6 +509,10 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </div>
 
         <div className="flex gap-2">
+          <Button size="lg" variant="outline" className="font-semibold" onClick={() => setSuaOpen(true)}>
+            <FolderOpen className="w-5 h-5 mr-2" />
+            Carpeta SUA
+          </Button>
           <Button variant="outline" onClick={() => openUploadModal("other")}>
             <Plus className="w-4 h-4 mr-2" />
             Subir anexo
@@ -821,6 +829,18 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Dialog: Carpeta SUA */}
+      <Dialog open={suaOpen} onOpenChange={setSuaOpen}>
+        <DialogContent className="!max-w-7xl !w-[95vw] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Carpeta SUA</DialogTitle>
+          </DialogHeader>
+          <div className="mt-2">
+            <ProjectCarpetaSuaTab obraId={obraId} />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   )
-}
+}
