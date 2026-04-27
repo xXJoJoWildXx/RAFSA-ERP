@@ -133,8 +133,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
   const [docTypeFilter, setDocTypeFilter] = useState<"all" | DocType>("all")
   const [docStatusFilter, setDocStatusFilter] = useState<"all" | Exclude<DocStatus, "missing">>("all")
 
-  const [suaOpen, setSuaOpen] = useState(false)
-
   const [uploadOpen, setUploadOpen] = useState(false)
   const [uploadSaving, setUploadSaving] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
@@ -509,10 +507,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </div>
 
         <div className="flex gap-2">
-          <Button size="lg" variant="outline" className="font-semibold" onClick={() => setSuaOpen(true)}>
-            <FolderOpen className="w-5 h-5 mr-2" />
-            Carpeta SUA
-          </Button>
           <Button variant="outline" onClick={() => openUploadModal("other")}>
             <Plus className="w-4 h-4 mr-2" />
             Subir anexo
@@ -722,6 +716,9 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </CardContent>
       </Card>
 
+      {/* Carpeta SUA */}
+      <ProjectCarpetaSuaTab obraId={obraId} compact />
+
       {/* Panel “próximo” */}
       <Card>
         <CardHeader>
@@ -830,17 +827,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </DialogContent>
       </Dialog>
 
-      {/* Dialog: Carpeta SUA */}
-      <Dialog open={suaOpen} onOpenChange={setSuaOpen}>
-        <DialogContent className="!max-w-7xl !w-[95vw] max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>Carpeta SUA</DialogTitle>
-          </DialogHeader>
-          <div className="mt-2">
-            <ProjectCarpetaSuaTab obraId={obraId} />
-          </div>
-        </DialogContent>
-      </Dialog>
     </div>
   )
 }

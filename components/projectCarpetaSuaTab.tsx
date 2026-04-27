@@ -96,9 +96,10 @@ function isPreviewable(mime: string | null) {
 
 type Props = {
   obraId: string
+  compact?: boolean
 }
 
-export function ProjectCarpetaSuaTab({ obraId }: Props) {
+export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
   const [files, setFiles] = useState<SuaFile[]>([])
   const [loading, setLoading] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -289,6 +290,133 @@ export function ProjectCarpetaSuaTab({ obraId }: Props) {
   const filtered = files.filter((f) =>
     !search.trim() || f.file_name.toLowerCase().includes(search.trim().toLowerCase()),
   )
+
+  // ── Modo compacto: card simple con lista y un botón de subir ──
+  if (compact) {
+    return (
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div className="flex items-center gap-2">
+            <FolderOpen className="w-5 h-5 text-slate-500" />
+            <CardTitle>Carpeta SUA</CardTitle>
+          </div>
+          <Button size="sm" onClick={() => inputRef.current?.click()} disabled={uploading}>
+            {uploading ? (
+              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+            ) : (
+              <Upload className="w-4 h-4 mr-2" />
+            )}
+            {uploading ? "Subiendo..." : "Subir archivo"}
+          </Button>
+        </CardHeader>
+        <CardContent>
+          <input ref={inputRef} type="file" className="hidden" onChange={handleFileInputChange} />
+          {error && (
+            <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+          )}
+          {loading ? (
+            <div className="py-6 flex items-center justify-center gap-2 text-slate-400 text-sm">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Cargando...
+            </div>
+          ) : files.length === 0 ? (
+            <div className="py-6 text-center">
+              <FolderOpen className="w-8 h-8 text-slate-200 mx-auto mb-2" />
+              <p className="text-sm text-slate-400">No hay archivos en la Carpeta SUA todavia.</p>
+            </div>
+          ) : (
+            <div className="rounded-md border overflow-hidden">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-full min-w-0">Archivo</TableHead>
+                    <TableHead className="w-20 shrink-0">Tipo</TableHead>
+                    <TableHead className="w-24 shrink-0">Fecha</TableHead>
+                    <TableHead className="w-24 shrink-0 text-right">Acciones</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {files.map((f) => (
+                    <TableRow key={f.id}>
+                      <TableCell className="max-w-0 w-full">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <FileIcon mime={f.mime_type} />
+                          <span className="font-medium text-slate-800 truncate block min-w-0" title={f.file_name}>
+                            {f.file_name}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={`text-xs ${getMimeBadgeClass(f.mime_type)}`}>
+                          {getMimeLabel(f.mime_type, f.file_name)}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-sm text-slate-500">{formatDate(f.uploaded_at)}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          {isPreviewable(f.mime_type) && (
+                            <Button size="sm" variant="ghost" onClick={() => handleView(f)} title="Visualizar">
+                              <Eye className="w-4 h-4" />
+                            </Button>
+                          )}
+                          <Button size="sm" variant="ghost" onClick={() => handleDownload(f)} title="Descargar">
+                            <Download className="w-4 h-4" />
+                          </Button>
+                          <Button
+                            size="sm" variant="ghost"
+                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                            onClick={() => handleDelete(f)}
+                            disabled={deletingId === f.id}
+                            title="Eliminar"
+                          >
+                            {deletingId === f.id ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
+        </CardContent>
+
+        {/* Visor inline (reutilizado) */}
+        <Dialog open={viewOpen} onOpenChange={(v) => { if (!viewingLoading) { setViewOpen(v); if (!v) setViewingUrl(null) } }}>
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+            <DialogHeader>
+              <DialogTitle className="truncate pr-8">{viewingFile?.file_name}</DialogTitle>
+            </DialogHeader>
+            <div className="flex-1 overflow-hidden mt-2 min-h-[400px] flex items-center justify-center">
+              {viewingLoading ? (
+                <div className="flex flex-col items-center gap-2 text-slate-500">
+                  <Loader2 className="w-8 h-8 animate-spin" />
+                  <p className="text-sm">Generando enlace seguro...</p>
+                </div>
+              ) : viewingUrl ? (
+                viewingFile?.mime_type?.startsWith("image/") ? (
+                  <img src={viewingUrl} alt={viewingFile?.file_name} className="max-w-full max-h-[65vh] object-contain rounded-md shadow" />
+                ) : (
+                  <iframe src={viewingUrl} className="w-full h-[65vh] rounded-md border" title={viewingFile?.file_name} />
+                )
+              ) : (
+                <p className="text-sm text-slate-500">No se pudo cargar la vista previa.</p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 pt-3 border-t mt-3">
+              {viewingFile && (
+                <Button variant="outline" onClick={() => handleDownload(viewingFile)}>
+                  <Download className="w-4 h-4 mr-2" />
+                  Descargar
+                </Button>
+              )}
+              <Button variant="outline" onClick={() => { setViewOpen(false); setViewingUrl(null) }}>Cerrar</Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      </Card>
+    )
+  }
 
   return (
     <div className="space-y-6">
