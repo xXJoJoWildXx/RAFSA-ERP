@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Search, Plus, MapPin, Calendar } from "lucide-react"
+import { Search, Plus, MapPin, ChevronRight, Building2 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
 // ----- Tipos -----
@@ -584,22 +584,22 @@ export default function AdminProjectsPage() {
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-6 text-white flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold text-slate-900">
+            <h1 className="text-2xl font-bold text-white">
               Gestion de Obras
             </h1>
-            <p className="text-slate-600 mt-1">
+            <p className="text-slate-400 text-sm mt-1">
               Administra y da seguimiento a todas las obras
             </p>
           </div>
-          <Button onClick={handleNewProject}>
+          <Button onClick={handleNewProject} className="bg-white text-slate-900 hover:bg-slate-100 font-semibold">
             <Plus className="w-4 h-4 mr-2" />
             Nueva Obra
           </Button>
         </div>
 
-        <Card>
+        <Card className="border-0 shadow-sm">
           <CardHeader>
             <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
               <CardTitle>Todas las Obras</CardTitle>
@@ -610,14 +610,14 @@ export default function AdminProjectsPage() {
                     placeholder="Buscar obras..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10"
+                    className="pl-10 transition-shadow focus:shadow-md"
                   />
                 </div>
                 <Select
                   value={statusFilter}
                   onValueChange={(v) => setStatusFilter(v as any)}
                 >
-                  <SelectTrigger className="w-full sm:w-40">
+                  <SelectTrigger className="w-full sm:w-40 transition-shadow focus:shadow-md">
                     <SelectValue placeholder="Filtrar por estado" />
                   </SelectTrigger>
                   <SelectContent>
@@ -634,8 +634,9 @@ export default function AdminProjectsPage() {
 
           <CardContent>
             {loading && (
-              <div className="py-10 text-center text-slate-500 text-sm">
-                Cargando obras...
+              <div className="py-16 flex flex-col items-center gap-3 text-slate-400">
+                <div className="w-8 h-8 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
+                <span className="text-sm">Cargando obras...</span>
               </div>
             )}
 
@@ -646,13 +647,15 @@ export default function AdminProjectsPage() {
             )}
 
             {!loading && !error && filteredProjects.length === 0 && (
-              <div className="py-10 text-center text-slate-500 text-sm">
-                No se encontraron obras con los filtros actuales.
+              <div className="py-16 flex flex-col items-center gap-2 text-slate-400">
+                <Building2 className="w-10 h-10 text-slate-200" />
+                <p className="text-sm font-medium">No se encontraron obras</p>
+                <p className="text-xs text-slate-300">Ajusta los filtros o crea una nueva obra</p>
               </div>
             )}
 
             {!loading && !error && filteredProjects.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
                 {filteredProjects.map((project) => (
                   <Link
                     key={project.id}
@@ -708,68 +711,59 @@ type ProjectCardProps = {
 
 function ProjectCard({ project, statusClass }: ProjectCardProps) {
   return (
-    <Card className="flex flex-col justify-between hover:shadow-md transition-shadow cursor-pointer">
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <CardTitle className="text-base font-semibold text-slate-900">
-              {project.name}
-            </CardTitle>
-            <div className="mt-1 flex items-center gap-1 text-xs text-slate-500">
-              <Calendar className="w-3 h-3" />
-              <span>
-                {project.startDate || "Sin fecha inicio"} -{" "}
-                {project.endDate || "Sin fecha fin"}
-              </span>
-            </div>
-          </div>
-          <Badge className={statusClass}>{getStatusLabel(project.status)}</Badge>
-        </div>
-      </CardHeader>
+    <div className="group relative bg-white rounded-2xl border border-slate-200 p-5 flex flex-col gap-4 hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-1 transition-all duration-300 cursor-pointer overflow-hidden">
+      {/* Top accent line that animates on hover */}
+      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-blue-500 to-blue-700 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
 
-      <CardContent className="space-y-3">
-        <div className="flex items-center gap-1 text-sm text-slate-600">
-          <MapPin className="w-4 h-4" />
-          <span>{project.location}</span>
+      {/* Header row */}
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-bold text-slate-900 text-base leading-tight truncate group-hover:text-blue-700 transition-colors duration-200">
+            {project.name}
+          </h3>
+          <div className="flex items-center gap-1 mt-1.5 text-xs text-slate-400">
+            <MapPin className="w-3 h-3 shrink-0" />
+            <span className="truncate">{project.location}</span>
+          </div>
         </div>
+        <Badge className={`${statusClass} shrink-0 text-xs font-semibold`}>
+          {getStatusLabel(project.status)}
+        </Badge>
+      </div>
 
-        <div className="space-y-1">
-          <div className="flex items-center justify-between text-xs">
-            <span className="text-slate-500">Avance</span>
-            <span className="text-slate-700 font-medium">
-              {project.progress}%
-            </span>
-          </div>
-          <div className="w-full bg-slate-200 rounded-full h-2">
-            <div
-              className="bg-blue-600 h-2 rounded-full transition-all"
-              style={{ width: `${project.progress}%` }}
-            />
-          </div>
+      {/* Progress bar */}
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-slate-500">Avance financiero</span>
+          <span className="text-xs font-bold text-slate-700">{project.progress}%</span>
         </div>
+        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+          <div
+            className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-700"
+            style={{ width: `${project.progress}%` }}
+          />
+        </div>
+      </div>
 
-        <div className="flex items-center justify-between text-sm">
-          <div>
-            <p className="text-xs text-slate-500">Cotizacion</p>
-            <p className="text-sm font-medium text-slate-900">
-              {project.budget}
-            </p>
-            <p className="text-xs text-slate-500">
-              Cobrado: {project.spent}
-            </p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs text-slate-500">Director de Obra</p>
-            <p className="text-sm font-medium text-slate-900">
-              {project.manager}
-            </p>
-            <p className="text-xs text-slate-500">
-              Equipo: {project.teamSize}
-            </p>
-          </div>
+      {/* Stats row */}
+      <div className="grid grid-cols-2 gap-3 pt-1">
+        <div className="bg-slate-50 rounded-xl p-3">
+          <p className="text-xs text-slate-400 mb-0.5">Cotizacion</p>
+          <p className="text-sm font-bold text-slate-900 truncate">{project.budget}</p>
+          <p className="text-xs text-slate-400 mt-0.5">Cobrado: {project.spent}</p>
         </div>
-      </CardContent>
-    </Card>
+        <div className="bg-slate-50 rounded-xl p-3">
+          <p className="text-xs text-slate-400 mb-0.5">Director</p>
+          <p className="text-sm font-bold text-slate-900 truncate">{project.manager}</p>
+          <p className="text-xs text-slate-400 mt-0.5">Equipo: {project.teamSize}</p>
+        </div>
+      </div>
+
+      {/* Hover arrow indicator */}
+      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 translate-x-1 group-hover:translate-x-0">
+        <ChevronRight className="w-4 h-4 text-blue-500" />
+      </div>
+    </div>
   )
 }
 
