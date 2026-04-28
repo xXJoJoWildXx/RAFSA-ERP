@@ -29,6 +29,11 @@ import {
   ShieldCheck,
   FileWarning,
   Plus,
+  LayoutDashboard,
+  FolderOpen,
+  CreditCard,
+  Activity,
+  AlertTriangle,
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
@@ -263,6 +268,8 @@ export default function ProjectDetailPage() {
   const [editOpen, setEditOpen] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
   const [editForm, setEditForm] = useState({
     name: "",
     client_name: "",
@@ -273,6 +280,10 @@ export default function ProjectDetailPage() {
     notes: "",
   })
   const [activeTab, setActiveTab] = useState("overview")
+
+  // Sliding tab indicator
+  const tabNavRef = useRef<HTMLDivElement>(null)
+  const [indicatorStyle, setIndicatorStyle] = useState({ left: 0, width: 0, ready: false })
 
   // Estado de cuenta
   const [stateAccounts, setStateAccounts] = useState<ObraStateAccountRow[]>([])
@@ -739,9 +750,6 @@ export default function ProjectDetailPage() {
 
   async function handleDeleteObra() {
     if (!obra) return
-    const ok = window.confirm("Seguro que deseas eliminar esta obra? Esta accion no se puede deshacer.")
-    if (!ok) return
-
     setDeleteLoading(true)
     const { error } = await supabase.from("obras").delete().eq("id", obra.id)
 
@@ -999,12 +1007,6 @@ export default function ProjectDetailPage() {
     { id: 5, name: "James Wilson", role: "Quality Control", avatar: "JW" },
   ]
 
-  const recentActivities = [
-    { id: 1, action: "Milestone completed", detail: "Foundation Work finished ahead of schedule", time: "2 days ago" },
-    { id: 2, action: "Document uploaded", detail: "Updated structural plans v2.1", time: "5 days ago" },
-    { id: 3, action: "Team member added", detail: "Emily Davis joined as Safety Officer", time: "1 week ago" },
-    { id: 4, action: "Budget updated", detail: "Additional $200,000 allocated for materials", time: "2 weeks ago" },
-  ]
 
   // Aplica las stats de equipo desde un array ya cargado
   function applyTeamStats(assignments: ObraAssignmentRow[], today: string) {
@@ -1187,6 +1189,20 @@ export default function ProjectDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id])
 
+  // Move sliding indicator to the active tab
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const nav = tabNavRef.current
+      if (!nav) return
+      const activeEl = nav.querySelector('[role="tab"][data-state="active"]') as HTMLElement | null
+      if (!activeEl) return
+      const navRect = nav.getBoundingClientRect()
+      const elRect = activeEl.getBoundingClientRect()
+      setIndicatorStyle({ left: elRect.left - navRect.left, width: elRect.width, ready: true })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [activeTab])
+
   if (loading) {
     return (
       <AdminLayout>
@@ -1330,132 +1346,149 @@ export default function ProjectDetailPage() {
   return (
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
-      <div className="space-y-6">
+      <div className="space-y-8">
         {/* Header */}
-        <div className="flex items-center justify-between">
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
           <div className="flex items-center gap-4">
             <Link href="/admin/projects">
-              <Button variant="ghost" size="icon">
+              <button className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors duration-200 text-white">
                 <ArrowLeft className="w-5 h-5" />
-              </Button>
+              </button>
             </Link>
             <div>
-              <h1 className="text-3xl font-bold text-slate-900">{obra.name}</h1>
-              <div className="flex flex-wrap items-center gap-2 mt-1 text-sm">
-                <MapPin className="w-4 h-4 text-slate-500" />
-                <span className="text-slate-600">{location}</span>
-                <span className="text-slate-400 mx-2">-</span>
-                <span className="text-slate-500">
-                  Cliente: <span className="font-medium">{clientName}</span>
+              <h1 className="text-2xl font-bold text-white leading-tight">{obra.name}</h1>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                <span className="flex items-center gap-1 text-slate-400 text-sm">
+                  <MapPin className="w-3.5 h-3.5" />
+                  {location}
+                </span>
+                <span className="text-slate-600 text-sm">·</span>
+                <span className="text-slate-400 text-sm">
+                  Cliente: <span className="text-slate-200 font-medium">{clientName}</span>
                 </span>
                 {obra.code && (
                   <>
-                    <span className="text-slate-400 mx-2">-</span>
-                    <span className="text-slate-500">
-                      Clave: <span className="font-mono text-xs">{obra.code}</span>
-                    </span>
+                    <span className="text-slate-600 text-sm">·</span>
+                    <span className="text-slate-400 text-sm font-mono text-xs">{obra.code}</span>
                   </>
                 )}
               </div>
             </div>
           </div>
 
-          <div className="flex gap-2">
-            <Button variant="outline" onClick={() => setEditOpen(true)}>
+          <div className="flex gap-2 shrink-0">
+            <Button
+              variant="outline"
+              onClick={() => setEditOpen(true)}
+              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:border-white/30 transition-all duration-200"
+            >
               <Edit className="w-4 h-4 mr-2" />
-              Edit Project
+              Editar
             </Button>
-
-            <Button variant="destructive" onClick={handleDeleteObra} disabled={deleteLoading}>
-              {deleteLoading ? "Deleting..." : "Delete"}
+            <Button
+              variant="destructive"
+              onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true) }}
+              disabled={deleteLoading}
+              className="bg-red-500/80 hover:bg-red-500 border-0 transition-all duration-200"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {deleteLoading ? "Eliminando..." : "Eliminar"}
             </Button>
           </div>
         </div>
 
         {/* Tabs + contenido */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="overview">Resumen</TabsTrigger>
-            <TabsTrigger value="milestones">Documentos</TabsTrigger>
-            <TabsTrigger value="account">Estado de Cuenta</TabsTrigger>
-            <TabsTrigger value="team">Equipo</TabsTrigger>
-            <TabsTrigger value="activity">Actividad</TabsTrigger>
-          </TabsList>
+          <div className="relative" ref={tabNavRef}>
+            {/* Static track line */}
+            <div className="absolute bottom-0 left-0 right-0 h-px bg-slate-200" />
+            {/* Sliding active indicator */}
+            <div
+              className="absolute bottom-0 h-0.5 bg-slate-900 z-10"
+              style={{
+                left: indicatorStyle.left,
+                width: indicatorStyle.width,
+                opacity: indicatorStyle.ready ? 1 : 0,
+                transition: indicatorStyle.ready
+                  ? "left 280ms cubic-bezier(0.4,0,0.2,1), width 280ms cubic-bezier(0.4,0,0.2,1), opacity 150ms"
+                  : "none",
+              }}
+            />
+            <TabsList className="flex items-end gap-0 bg-transparent rounded-none p-0 h-auto border-0 w-full justify-start overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              {[
+                { value: "overview",   icon: <LayoutDashboard className="w-4 h-4" />, label: "Resumen" },
+                { value: "milestones", icon: <FolderOpen className="w-4 h-4" />,      label: "Documentos" },
+                { value: "account",    icon: <CreditCard className="w-4 h-4" />,      label: "Estado de Cuenta" },
+                { value: "team",       icon: <Users className="w-4 h-4" />,            label: "Equipo" },
+                { value: "activity",   icon: <Activity className="w-4 h-4" />,         label: "Actividad" },
+              ].map(({ value, icon, label }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className={[
+                    "flex items-center gap-2 px-5 py-3 rounded-none border-0 shadow-none bg-transparent",
+                    "text-sm font-medium text-slate-500 hover:text-slate-800",
+                    "transition-colors duration-200 whitespace-nowrap",
+                    "data-[state=active]:text-slate-900 data-[state=active]:bg-transparent data-[state=active]:shadow-none",
+                  ].join(" ")}
+                >
+                  {icon}
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
 
           {/* OVERVIEW */}
           <TabsContent value="overview" className="space-y-6">
             {/* Overview cards (Status / Progress / Budget / Team) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {/* Estatus */}
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">Estatus</p>
-                      <Badge className={`${statusUi.className} mt-2`}>{statusUi.label}</Badge>
-                      <p className="text-xs text-slate-500 mt-2">
-                        Inicio: {startDate}
-                        <br />
-                        Fin: {endDate}
-                      </p>
-                    </div>
-                    <div className="p-3 bg-blue-50 rounded-lg">
-                      <Clock className="w-5 h-5 text-blue-600" />
-                    </div>
+              <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Estatus</p>
+                    <Badge className={`${statusUi.className} mt-2`}>{statusUi.label}</Badge>
+                    <p className="text-xs text-slate-400 mt-2 leading-relaxed">
+                      Inicio: {startDate}<br />Fin: {endDate}
+                    </p>
                   </div>
-                </CardContent>
-              </Card>
-
-              {/* Avance */}
-              <Card>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">Avance</p>
-                      <p className="text-2xl font-bold text-slate-900 mt-2">{displayedProgress}%</p>
-                      <p className="text-xs text-slate-500 mt-1">Basado en el ultimo reporte de obra</p>
-                    </div>
-                    <div className="p-3 bg-green-50 rounded-lg">
-                      <CheckCircle2 className="w-5 h-5 text-green-600" />
-                    </div>
+                  <div className="p-2.5 bg-blue-50 rounded-xl">
+                    <Clock className="w-5 h-5 text-blue-600" />
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
 
               {/* Financiero */}
-              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("account")}>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">Cotizacion</p>
-                      <p className="text-2xl font-bold text-slate-900 mt-2">{budgetFormatted}</p>
-                      <p className="text-xs text-slate-500 mt-1">Cobrado: {spentFormatted}</p>
-                    </div>
-                    <div className="p-3 bg-purple-50 rounded-lg">
-                      <DollarSign className="w-5 h-5 text-purple-600" />
-                    </div>
+              <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer" onClick={() => setActiveTab("account")}>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Cotizacion</p>
+                    <p className="text-2xl font-bold text-slate-900 mt-2">{budgetFormatted}</p>
+                    <p className="text-xs text-slate-400 mt-1">Cobrado: {spentFormatted}</p>
                   </div>
-                </CardContent>
-              </Card>
+                  <div className="p-2.5 bg-purple-50 rounded-xl">
+                    <DollarSign className="w-5 h-5 text-purple-600" />
+                  </div>
+                </div>
+              </div>
 
               {/* Equipo */}
-              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setActiveTab("team")}>
-                <CardContent className="p-6">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <p className="text-sm font-medium text-slate-600">Equipo</p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Director de Obra:{" "}
-                        <span className="font-medium text-slate-900">{managerName ?? "Sin asignar"}</span>
-                      </p>
-                      <p className="text-2xl font-bold text-slate-900 mt-3">{teamSize}</p>
-                    </div>
-                    <div className="p-3 bg-orange-50 rounded-lg">
-                      <Users className="w-5 h-5 text-orange-600" />
-                    </div>
+              <div className="bg-white rounded-2xl border border-slate-100 p-5 shadow-sm hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer" onClick={() => setActiveTab("team")}>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Equipo</p>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Director de Obra:{" "}
+                      <span className="font-medium text-slate-900">{managerName ?? "Sin asignar"}</span>
+                    </p>
+                    <p className="text-2xl font-bold text-slate-900 mt-3">{teamSize}</p>
                   </div>
-                </CardContent>
-              </Card>
+                  <div className="p-2.5 bg-orange-50 rounded-xl">
+                    <Users className="w-5 h-5 text-orange-600" />
+                  </div>
+                </div>
+              </div>
             </div>
 
             {/* Detalles de la obra */}
@@ -1490,7 +1523,7 @@ export default function ProjectDetailPage() {
             </Card>
 
             {/* Resumen financiero */}
-            <Card>
+            <Card className="border-slate-100 shadow-sm hover:shadow-md transition-shadow duration-200">
               <CardHeader>
                 <CardTitle>Resumen financiero</CardTitle>
               </CardHeader>
@@ -1794,27 +1827,71 @@ export default function ProjectDetailPage() {
             <ProjectTeamTab obraId={obra.id} allowManage onTeamChange={() => fetchTeamStats(obra.id)} />
           </TabsContent>
 
-          {/* ACTIVITY (mock) */}
+          {/* ACTIVIDAD — en desarrollo */}
           <TabsContent value="activity">
-            <Card>
-              <CardHeader>
-                <CardTitle>Recent Activity</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
-                  {recentActivities.map((activity) => (
-                    <div key={activity.id} className="flex items-start gap-4 pb-4 border-b last:border-0">
-                      <div className="w-2 h-2 bg-blue-600 rounded-full mt-2" />
-                      <div className="flex-1">
-                        <p className="text-sm font-medium text-slate-900">{activity.action}</p>
-                        <p className="text-sm text-slate-600 mt-1">{activity.detail}</p>
-                        <p className="text-xs text-slate-500 mt-1">{activity.time}</p>
-                      </div>
-                    </div>
-                  ))}
+            <div className="min-h-[55vh] flex flex-col items-center justify-center select-none py-16">
+
+              {/* Animated icon */}
+              <div className="relative mb-8">
+                <span className="absolute inset-0 rounded-full bg-slate-400/15 animate-ping" />
+                <span className="absolute inset-3 rounded-full bg-slate-400/10 animate-ping [animation-delay:400ms]" />
+                <div className="relative w-24 h-24 rounded-full bg-gradient-to-br from-slate-900 to-slate-700 border border-slate-600 flex items-center justify-center shadow-2xl">
+                  <svg viewBox="0 0 64 64" className="w-12 h-12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    {/* Timeline vertical line */}
+                    <line x1="20" y1="10" x2="20" y2="54" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+                    {/* Dots on timeline */}
+                    <circle cx="20" cy="16" r="4" fill="#38bdf8" />
+                    <circle cx="20" cy="32" r="4" fill="#818cf8" />
+                    <circle cx="20" cy="48" r="4" fill="#34d399" opacity="0.5" />
+                    {/* Horizontal lines (log entries) */}
+                    <line x1="28" y1="16" x2="52" y2="16" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="28" y1="20" x2="44" y2="20" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
+                    <line x1="28" y1="32" x2="52" y2="32" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="28" y1="36" x2="40" y2="36" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
+                    <line x1="28" y1="48" x2="48" y2="48" stroke="#64748b" strokeWidth="2" strokeLinecap="round" opacity="0.4" />
+                    {/* Sparkles */}
+                    <circle cx="56" cy="10" r="1.5" fill="#38bdf8" />
+                    <circle cx="8"  cy="30" r="1"   fill="#818cf8" />
+                    <circle cx="58" cy="40" r="1"   fill="#34d399" />
+                  </svg>
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+
+              {/* Label */}
+              <h2 className="text-2xl font-bold text-slate-900 mb-2 tracking-tight">Actividad de la Obra</h2>
+
+              {/* Badge */}
+              <div className="flex items-center gap-2 mb-4">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 border border-amber-300 px-3 py-1 text-sm font-semibold text-amber-700">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block" />
+                  En desarrollo
+                </span>
+              </div>
+
+              {/* Description */}
+              <p className="text-slate-500 text-sm text-center max-w-sm leading-relaxed">
+                Aqui podras ver el historial completo de movimientos de la obra: documentos subidos, cambios de estatus, pagos registrados, asignaciones de equipo y mas.
+              </p>
+
+              {/* Shimmer bar */}
+              <div className="mt-8 w-40 h-1 bg-slate-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    background: "linear-gradient(90deg, #93c5fd 0%, #2563eb 50%, #93c5fd 100%)",
+                    backgroundSize: "200% 100%",
+                    animation: "shimmer 2s ease-in-out infinite",
+                  }}
+                />
+              </div>
+
+              <style>{`
+                @keyframes shimmer {
+                  0%   { background-position: 200% center; }
+                  100% { background-position: -200% center; }
+                }
+              `}</style>
+            </div>
           </TabsContent>
         </Tabs>
       </div>
@@ -2172,6 +2249,83 @@ export default function ProjectDetailPage() {
                 {deletingPayments ? "Eliminando..." : `Eliminar${selectedPaymentIds.size > 0 ? ` (${selectedPaymentIds.size})` : ""}`}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Confirmacion de eliminacion de obra */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={(v) => (deleteLoading ? null : setDeleteConfirmOpen(v))}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-600">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
+              Eliminar obra permanentemente
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-1">
+            {/* Warning box */}
+            <div className="bg-red-50 border border-red-200 rounded-xl p-4 space-y-1.5">
+              <p className="text-sm font-semibold text-red-700">⚠️ Esta accion no tiene vuelta atras</p>
+              <p className="text-sm text-red-600">
+                Se eliminara permanentemente la obra{" "}
+                <span className="font-bold">"{obra?.name}"</span>{" "}
+                junto con toda su informacion asociada.
+              </p>
+            </div>
+
+            {/* Confirmation input */}
+            <div className="space-y-2">
+              <p className="text-sm text-slate-600">
+                Para confirmar, escribe{" "}
+                <span className="font-bold text-slate-900 font-mono tracking-wide">ELIMINAR</span>{" "}
+                en el campo:
+              </p>
+              <Input
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder="Escribe ELIMINAR"
+                className="font-mono tracking-wider"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && deleteConfirmText === "ELIMINAR" && !deleteLoading) {
+                    setDeleteConfirmOpen(false)
+                    handleDeleteObra()
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 justify-end pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={deleteLoading}
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteConfirmText !== "ELIMINAR" || deleteLoading}
+              onClick={() => {
+                setDeleteConfirmOpen(false)
+                handleDeleteObra()
+              }}
+              className="bg-red-600 hover:bg-red-700 transition-all duration-200"
+            >
+              {deleteLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Eliminando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Confirmar eliminacion
+                </>
+              )}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
