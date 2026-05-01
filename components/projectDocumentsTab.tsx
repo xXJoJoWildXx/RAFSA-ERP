@@ -5,7 +5,7 @@ import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog"
 import { ProjectCarpetaSuaTab } from "@/components/projectCarpetaSuaTab"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -24,6 +24,7 @@ import {
   FileWarning,
   Plus,
   FolderOpen,
+  Pencil,
 } from "lucide-react"
 
 type DocStatus = "missing" | "uploaded" | "processing" | "approved" | "rejected"
@@ -149,16 +150,71 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
     notes: "",
   })
 
-  function openUploadModal(prefillType?: DocType) {
+  // Preview dialog
+  const [previewOpen, setPreviewOpen]       = useState(false)
+  const [previewDoc,  setPreviewDoc]        = useState<UiObraDocument | null>(null)
+  const [previewUrl,  setPreviewUrl]        = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+
+  function openUploadModal(prefillType?: DocType, prefillVersion?: number) {
     setUploadError(null)
     setSelectedFile(null)
     setUploadForm((f) => ({
       doc_type: prefillType ?? f.doc_type,
       title: "",
-      version: "1",
+      version: String(prefillVersion ?? 1),
       notes: "",
     }))
     setUploadOpen(true)
+  }
+
+  async function openDocPreview(doc: UiObraDocument) {
+    setPreviewDoc(doc)
+    setPreviewUrl(null)
+    setPreviewLoading(true)
+    setPreviewOpen(true)
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 600)
+      setPreviewUrl(url)
+    } catch {
+      setPreviewUrl(null)
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
+  function handleCardDrop(e: DragEvent<HTMLDivElement>, docType: DocType) {
+    e.preventDefault()
+    e.stopPropagation()
+    const file = e.dataTransfer.files?.[0]
+    if (!file) return
+    // Open modal pre-filled for this type, then set the dropped file
+    openUploadModal(docType)
+    setFile(file)
+  }
+
+  function handleEditVersion() {
+    if (!previewDoc) return
+    setPreviewOpen(false)
+    openUploadModal(previewDoc.doc_type, previewDoc.version + 1)
+  }
+
+  async function handleDownloadPreview() {
+    if (!previewDoc) return
+    try {
+      const { data, error } = await supabase.storage
+        .from(previewDoc.bucket)
+        .createSignedUrl(previewDoc.object_path, 180, { download: previewDoc.file_name })
+      if (error || !data?.signedUrl) throw new Error()
+      const a = document.createElement("a")
+      a.href = data.signedUrl
+      a.download = previewDoc.file_name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } catch {
+      alert("No se pudo descargar el archivo.")
+    }
   }
 
   function onPickFile() {
@@ -497,6 +553,12 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
     return quoteDocs[0].status
   }, [docs])
 
+  const currentContract = useMemo(() =>
+    docs.find((d) => d.doc_type === "contract" && d.is_current) ?? null, [docs])
+
+  const currentQuote = useMemo(() =>
+    docs.find((d) => d.doc_type === "quote" && d.is_current) ?? null, [docs])
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -506,20 +568,12 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
           <p className="text-sm text-slate-600">Administra el contrato, la cotización y anexos.</p>
         </div>
 
-        <div className="flex gap-2">
-          <Button variant="outline" onClick={() => openUploadModal("other")}>
-            <Plus className="w-4 h-4 mr-2" />
-            Subir anexo
-          </Button>
-          <Button onClick={() => openUploadModal()}>
-            <Upload className="w-4 h-4 mr-2" />
-            Subir documento
-          </Button>
-        </div>
       </div>
 
-      {/* Quick upload: Contrato + Cotización */}
+      {/* Contrato + Cotización */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+        {/* ── CONTRATO ── */}
         <Card className="hover:shadow-md transition-shadow">
           <CardContent className="p-5 space-y-3">
             <div className="flex items-start justify-between gap-3">
@@ -530,27 +584,51 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               <Badge className={statusBadge(contractStatus).className}>{statusBadge(contractStatus).label}</Badge>
             </div>
 
-            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-md bg-white border">{docTypeIcon("contract")}</div>
-                <div className="flex-1">
-                  <p className="text-sm text-slate-800">
-                    Sube el contrato aquí o{" "}
-                    <button
-                      type="button"
-                      onClick={() => openUploadModal("contract")}
-                      className="text-blue-600 font-medium hover:underline"
-                    >
-                      selecciónalo
-                    </button>
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">PDF recomendado. Máx. 25MB.</p>
+            {currentContract ? (
+              /* Documento existente — clickable */
+              <div
+                className="rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer hover:bg-blue-50 hover:border-blue-200 transition-all duration-150 group"
+                onClick={() => openDocPreview(currentContract)}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-md bg-white border group-hover:border-blue-200 transition-colors shrink-0">
+                    {docTypeIcon("contract")}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 truncate">{currentContract.title}</p>
+                    <p className="text-xs text-slate-500 truncate">{currentContract.file_name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      v{currentContract.version} · {new Date(currentContract.uploaded_at).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
+                    </p>
+                  </div>
+                  <Eye className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors shrink-0" />
                 </div>
               </div>
-            </div>
+            ) : (
+              /* Sin documento — zona de subida */
+              <div
+                className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-150 group"
+                onClick={() => openUploadModal("contract")}
+                onDrop={(e) => handleCardDrop(e, "contract")}
+                onDragOver={handleDragOver}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-md bg-white border group-hover:border-blue-200 transition-colors">
+                    {docTypeIcon("contract")}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-slate-800 group-hover:text-blue-700 transition-colors">
+                      Arrastra el contrato aquí o <span className="text-blue-600 font-medium">selecciónalo</span>
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">PDF recomendado. Máx. 25MB.</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
 
+        {/* ── COTIZACIÓN ── */}
         <Card className="hover:shadow-md transition-shadow">
           <CardContent className="p-5 space-y-3">
             <div className="flex items-start justify-between gap-3">
@@ -561,32 +639,59 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               <Badge className={statusBadge(quoteStatus).className}>{statusBadge(quoteStatus).label}</Badge>
             </div>
 
-            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4">
-              <div className="flex items-center gap-3">
-                <div className="p-2 rounded-md bg-white border">{docTypeIcon("quote")}</div>
-                <div className="flex-1">
-                  <p className="text-sm text-slate-800">
-                    Sube la cotización aquí o{" "}
-                    <button
-                      type="button"
-                      onClick={() => openUploadModal("quote")}
-                      className="text-blue-600 font-medium hover:underline"
-                    >
-                      selecciónala
-                    </button>
-                  </p>
-                  <p className="text-xs text-slate-500 mt-1">PDF/Excel recomendado. Máx. 25MB.</p>
+            {currentQuote ? (
+              /* Documento existente — clickable */
+              <div
+                className="rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer hover:bg-purple-50 hover:border-purple-200 transition-all duration-150 group"
+                onClick={() => openDocPreview(currentQuote)}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-md bg-white border group-hover:border-purple-200 transition-colors shrink-0">
+                    {docTypeIcon("quote")}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-slate-900 truncate">{currentQuote.title}</p>
+                    <p className="text-xs text-slate-500 truncate">{currentQuote.file_name}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      v{currentQuote.version} · {new Date(currentQuote.uploaded_at).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
+                    </p>
+                  </div>
+                  <Eye className="w-4 h-4 text-slate-300 group-hover:text-purple-500 transition-colors shrink-0" />
                 </div>
               </div>
-            </div>
+            ) : (
+              /* Sin documento — zona de subida */
+              <div
+                className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 cursor-pointer hover:bg-purple-50 hover:border-purple-300 transition-all duration-150 group"
+                onClick={() => openUploadModal("quote")}
+                onDrop={(e) => handleCardDrop(e, "quote")}
+                onDragOver={handleDragOver}
+              >
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-md bg-white border group-hover:border-purple-200 transition-colors">
+                    {docTypeIcon("quote")}
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-sm text-slate-800 group-hover:text-purple-700 transition-colors">
+                      Arrastra la cotización aquí o <span className="text-purple-600 font-medium">selecciónala</span>
+                    </p>
+                    <p className="text-xs text-slate-500 mt-1">PDF/Excel recomendado. Máx. 25MB.</p>
+                  </div>
+                </div>
+              </div>
+            )}
           </CardContent>
         </Card>
+
       </div>
+
+      {/* Carpeta SUA */}
+      <ProjectCarpetaSuaTab obraId={obraId} compact />
 
       {/* Lista */}
       <Card>
         <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <CardTitle>Historial de documentos</CardTitle>
+          <CardTitle>Historial de Contratos y Cotizaciones</CardTitle>
 
           <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
             <Input
@@ -716,9 +821,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </CardContent>
       </Card>
 
-      {/* Carpeta SUA */}
-      <ProjectCarpetaSuaTab obraId={obraId} compact />
-
       {/* Panel “próximo” */}
       <Card>
         <CardHeader>
@@ -736,6 +838,104 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
 
       {/* Input file oculto */}
       <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+
+      {/* ── Preview Dialog ── */}
+      <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
+        <DialogContent className="max-w-4xl w-full p-0 overflow-hidden">
+          {/* Header */}
+          <DialogHeader className="flex flex-row items-center gap-3 px-5 pt-5 pb-3 border-b">
+            <div className="p-2 rounded-md bg-slate-100 shrink-0">
+              {previewDoc ? docTypeIcon(previewDoc.doc_type) : <FileText className="w-5 h-5 text-slate-500" />}
+            </div>
+            <div className="flex-1 min-w-0">
+              <DialogTitle className="text-base font-semibold text-slate-900 truncate">
+                {previewDoc?.title ?? "Documento"}
+              </DialogTitle>
+              <p className="text-xs text-slate-500 truncate mt-0.5">{previewDoc?.file_name}</p>
+            </div>
+            {previewDoc && (
+              <Badge className="shrink-0 bg-slate-100 text-slate-700 font-mono text-xs">
+                v{previewDoc.version}
+              </Badge>
+            )}
+          </DialogHeader>
+
+          {/* Preview area */}
+          <div className="relative bg-slate-100" style={{ height: "60vh" }}>
+            {previewLoading && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-100">
+                <Loader2 className="w-8 h-8 text-slate-400 animate-spin" />
+                <p className="text-sm text-slate-500">Cargando previsualización…</p>
+              </div>
+            )}
+
+            {!previewLoading && previewUrl && previewDoc && (() => {
+              const mime = previewDoc.mime_type || ""
+              const isPdf  = mime === "application/pdf" || previewDoc.file_name.toLowerCase().endsWith(".pdf")
+              const isImg  = mime.startsWith("image/")
+
+              if (isPdf) {
+                return (
+                  <iframe
+                    src={previewUrl}
+                    className="w-full h-full border-0"
+                    title={previewDoc.title}
+                  />
+                )
+              }
+              if (isImg) {
+                return (
+                  <div className="w-full h-full flex items-center justify-center p-4">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={previewUrl}
+                      alt={previewDoc.title}
+                      className="max-w-full max-h-full object-contain rounded shadow-sm"
+                    />
+                  </div>
+                )
+              }
+              return (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-500">
+                  <FolderOpen className="w-12 h-12 text-slate-300" />
+                  <p className="text-sm font-medium">Vista previa no disponible para este tipo de archivo.</p>
+                  <p className="text-xs text-slate-400">Descarga el archivo para abrirlo.</p>
+                </div>
+              )
+            })()}
+
+            {!previewLoading && !previewUrl && !previewLoading && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-500">
+                <FileWarning className="w-10 h-10 text-slate-300" />
+                <p className="text-sm">No se pudo cargar la previsualización.</p>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <DialogFooter className="flex flex-row items-center justify-between gap-2 px-5 py-3 border-t bg-white">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadPreview}
+              disabled={!previewUrl}
+              className="gap-1.5"
+            >
+              <Download className="w-4 h-4" />
+              Descargar
+            </Button>
+
+            <Button
+              size="sm"
+              onClick={handleEditVersion}
+              className="gap-1.5 bg-slate-900 hover:bg-slate-700 text-white"
+            >
+              <Pencil className="w-4 h-4" />
+              {previewDoc ? `Subir v${previewDoc.version + 1}` : "Editar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Modal */}
       <Dialog open={uploadOpen} onOpenChange={(v) => (uploadSaving ? null : setUploadOpen(v))}>
