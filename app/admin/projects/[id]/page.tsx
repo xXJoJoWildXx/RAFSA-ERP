@@ -79,6 +79,7 @@ type ObraStateAccountRow = {
   method: "transfer" | "cash" | "check" | "other" | null
   date: string
   bank_ref: string | null
+  invoice_number: string | null
   note: string | null
 }
 
@@ -312,6 +313,7 @@ export default function ProjectDetailPage() {
     method: "transfer" as ObraStateAccountRow["method"],
     date: new Date().toISOString().slice(0, 10),
     bank_ref: "",
+    invoice_number: "",
     note: "",
   })
 
@@ -951,13 +953,14 @@ export default function ProjectDetailPage() {
       method: newPaymentForm.method,
       date: newPaymentForm.date,
       bank_ref: newPaymentForm.bank_ref || null,
+      invoice_number: newPaymentForm.invoice_number || null,
       note: newPaymentForm.note || null,
     }
 
     const { data, error } = await supabase
       .from("obra_state_accounts")
       .insert(payload)
-      .select("id, obra_id, amount, concept, method, date, bank_ref, note")
+      .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, note")
       .single()
 
     if (error || !data) {
@@ -981,6 +984,7 @@ export default function ProjectDetailPage() {
     setNewPaymentForm({
       concept: "deposit",
       amount: "",
+      invoice_number: "",
       method: "transfer",
       date: new Date().toISOString().slice(0, 10),
       bank_ref: "",
@@ -1099,7 +1103,7 @@ export default function ProjectDetailPage() {
           supabase.from("contracts").select("id, obra_id, contract_amount, currency").eq("obra_id", obraId),
           supabase
             .from("obra_state_accounts")
-            .select("id, obra_id, amount, concept, method, date, bank_ref, note")
+            .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, note")
             .eq("obra_id", obraId),
           supabase
             .from("site_reports")
@@ -1631,21 +1635,22 @@ export default function ProjectDetailPage() {
               </CardContent>
             </Card>
 
-            {/* CARD 2 — Cotizacion y Aditivos */}
+            {/* CARD 2 — Cotización */}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle>Cotizacion y Aditivos</CardTitle>
-                <Button size="sm" onClick={() => openAddBillingItem("aditivo")}>
-                  <Plus className="w-4 h-4 mr-1" />
-                  Nuevo aditivo
-                </Button>
+                <CardTitle>Cotización</CardTitle>
+                {!cotizacion && (
+                  <Button size="sm" onClick={() => openAddBillingItem("cotizacion")}>
+                    <Plus className="w-4 h-4 mr-1" />
+                    Registrar cotización
+                  </Button>
+                )}
               </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Cotizacion base */}
+              <CardContent>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
                   <div className="flex items-start justify-between flex-wrap gap-3">
                     <div>
-                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cotizacion base</p>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cotización base</p>
                       {cotizacion ? (
                         <>
                           <p className="text-2xl font-bold text-slate-900 mt-1">{formatCurrency(Number(cotizacion.amount), budgetCurrency)}</p>
@@ -1655,30 +1660,34 @@ export default function ProjectDetailPage() {
                           <p className="text-xs text-slate-400 mt-0.5">{cotizacion.date}</p>
                         </>
                       ) : (
-                        <p className="text-sm text-slate-400 mt-1">Sin cotizacion registrada</p>
+                        <p className="text-sm text-slate-400 mt-1">Sin cotización registrada</p>
                       )}
                     </div>
-                    <div className="flex gap-2 shrink-0">
-                      {cotizacion ? (
-                        <>
-                          <Button size="sm" variant="outline" onClick={() => openEditBillingItem(cotizacion)}>
-                            Editar
-                          </Button>
-                          <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDeleteBillingItem(cotizacion)}>
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </>
-                      ) : (
-                        <Button size="sm" onClick={() => openAddBillingItem("cotizacion")}>
-                          <Plus className="w-4 h-4 mr-1" />
-                          Registrar cotizacion
+                    {cotizacion && (
+                      <div className="flex gap-2 shrink-0">
+                        <Button size="sm" variant="outline" onClick={() => openEditBillingItem(cotizacion)}>
+                          Editar
                         </Button>
-                      )}
-                    </div>
+                        <Button size="sm" variant="ghost" className="text-red-500 hover:text-red-700 hover:bg-red-50" onClick={() => handleDeleteBillingItem(cotizacion)}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
+              </CardContent>
+            </Card>
 
-                {/* Tabla de aditivos */}
+            {/* CARD 3 — Aditivos */}
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle>Aditivos</CardTitle>
+                <Button size="sm" onClick={() => openAddBillingItem("aditivo")}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Nuevo aditivo
+                </Button>
+              </CardHeader>
+              <CardContent>
                 {aditivos.length > 0 ? (
                   <div className="rounded-md border overflow-hidden">
                     <Table>
@@ -1772,6 +1781,7 @@ export default function ProjectDetailPage() {
                           <TableHead>Concepto</TableHead>
                           <TableHead>Metodo</TableHead>
                           <TableHead>Referencia</TableHead>
+                          <TableHead>No. Factura</TableHead>
                           <TableHead>Nota</TableHead>
                           <TableHead>Evidencia</TableHead>
                           <TableHead className="text-right">Monto</TableHead>
@@ -1792,6 +1802,7 @@ export default function ProjectDetailPage() {
                                 {m.method === "transfer" ? "Transferencia" : m.method === "cash" ? "Efectivo" : m.method === "check" ? "Cheque" : "Otro"}
                               </TableCell>
                               <TableCell>{m.bank_ref || "-"}</TableCell>
+                              <TableCell>{m.invoice_number || "-"}</TableCell>
                               <TableCell className="max-w-xs truncate">{m.note || "-"}</TableCell>
                               <TableCell>
                                 {isUploading ? (
@@ -1900,62 +1911,62 @@ export default function ProjectDetailPage() {
       <Dialog open={editOpen} onOpenChange={setEditOpen}>
         <DialogContent className="max-w-xl">
           <DialogHeader>
-            <DialogTitle>Edit Obra</DialogTitle>
+            <DialogTitle>Editar obra</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 mt-2">
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Name *</label>
+              <label className="text-xs font-medium text-slate-600">Nombre *</label>
               <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Client Name</label>
+              <label className="text-xs font-medium text-slate-600">Cliente</label>
               <Input value={editForm.client_name} onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Location</label>
+              <label className="text-xs font-medium text-slate-600">Ubicación</label>
               <Input value={editForm.location_text} onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))} />
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Status</label>
+              <label className="text-xs font-medium text-slate-600">Estatus</label>
               <Select value={editForm.status} onValueChange={(v) => setEditForm((f) => ({ ...f, status: v as DbObraStatus }))}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="planned">Planned</SelectItem>
-                  <SelectItem value="in_progress">In Progress</SelectItem>
-                  <SelectItem value="paused">Paused</SelectItem>
-                  <SelectItem value="closed">Closed</SelectItem>
+                  <SelectItem value="planned">Planeada</SelectItem>
+                  <SelectItem value="in_progress">En progreso</SelectItem>
+                  <SelectItem value="paused">Pausada</SelectItem>
+                  <SelectItem value="closed">Cerrada</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Planned Start</label>
+                <label className="text-xs font-medium text-slate-600">Inicio planeado</label>
                 <Input type="date" value={editForm.start_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))} />
               </div>
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Planned End</label>
+                <label className="text-xs font-medium text-slate-600">Fin planeado</label>
                 <Input type="date" value={editForm.end_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))} />
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Notes</label>
+              <label className="text-xs font-medium text-slate-600">Notas</label>
               <Textarea value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} rows={3} />
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
               <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
-                Cancel
+                Cancelar
               </Button>
               <Button onClick={handleUpdateObra} disabled={savingEdit}>
-                {savingEdit ? "Saving..." : "Save changes"}
+                {savingEdit ? "Guardando..." : "Guardar cambios"}
               </Button>
             </div>
           </div>
@@ -2019,9 +2030,16 @@ export default function ProjectDetailPage() {
               </div>
             </div>
 
-            <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Referencia bancaria</label>
-              <Input value={newPaymentForm.bank_ref} onChange={(e) => setNewPaymentForm((f) => ({ ...f, bank_ref: e.target.value }))} placeholder="Referencia / folio / recibo" />
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-600">Referencia bancaria</label>
+                <Input value={newPaymentForm.bank_ref} onChange={(e) => setNewPaymentForm((f) => ({ ...f, bank_ref: e.target.value }))} placeholder="Referencia / folio / recibo" />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-600">No. de Factura</label>
+                <Input value={newPaymentForm.invoice_number} onChange={(e) => setNewPaymentForm((f) => ({ ...f, invoice_number: e.target.value }))} placeholder="Ej. FAC-2025-0042" />
+              </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
