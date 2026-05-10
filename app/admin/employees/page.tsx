@@ -150,13 +150,13 @@ function mapDbStatusToUi(status: string): Employee["status"] {
 function getStatusColor(status: Employee["status"]) {
   switch (status) {
     case "Activo":
-      return "bg-green-100 text-green-700"
+      return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
     case "De permiso":
-      return "bg-yellow-100 text-yellow-700"
+      return "bg-amber-500/15 text-amber-300 border border-amber-500/25"
     case "Inactivo":
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
     default:
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
   }
 }
 
@@ -313,6 +313,12 @@ async function uploadEmployeeFileDirect(args: {
     fileSize: file.size ?? null,
   }
 }
+
+// ----- Clases reutilizables -----
+const inputCls = "bg-slate-900 border-slate-700 text-slate-200 focus:border-[#0174bd]/60 placeholder:text-slate-500"
+const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
+const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
+const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
 // ----- Página principal -----
 
@@ -722,7 +728,6 @@ export default function AdminEmployeesPage() {
     try {
       const ids = employees.map((e) => e.id)
 
-      // Fetch termination_date for all employees
       const { data: empExtra } = await supabase
         .from("employees")
         .select("id, termination_date")
@@ -733,7 +738,6 @@ export default function AdminEmployeesPage() {
         terminationMap[e.id] = e.termination_date ?? null
       })
 
-      // Fetch latest salary record per employee (most recent valid_from)
       const { data: salaryData } = await supabase
         .from("employee_salary_history")
         .select("employee_id, real_salary, payroll_salary, bonus_amount, overtime_hour_cost, viatics_amount, valid_from, valid_to")
@@ -742,7 +746,6 @@ export default function AdminEmployeesPage() {
 
       const salaryMap: Record<string, SalaryPdfData> = {}
       ;(salaryData || []).forEach((row: any) => {
-        // Keep only the first (most recent) record per employee
         if (!salaryMap[row.employee_id]) {
           salaryMap[row.employee_id] = {
             real_salary: row.real_salary,
@@ -780,185 +783,205 @@ export default function AdminEmployeesPage() {
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
       <div className="space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-slate-900">Directorio de empleados</h1>
-            <p className="text-slate-600 mt-1">
-              Administra y visualiza a todos los empleados de la empresa
-            </p>
-          </div>
+        {/* ── Header ── */}
+        <div
+          className="rounded-2xl border border-slate-700/60 p-6"
+          style={{
+            background: "linear-gradient(135deg, #1e293b 0%, #0f1e2e 50%, #162438 100%)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.3)",
+          }}
+        >
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-bold text-slate-100">Directorio de empleados</h1>
+              <p className="text-slate-400 mt-1">
+                Administra y visualiza a todos los empleados de la empresa
+              </p>
+            </div>
 
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              onClick={handleExportPdf}
-              disabled={generatingPdf || employees.length === 0}
-              className="cursor-pointer"
-            >
-              <FileDown className={`w-4 h-4 mr-2 ${generatingPdf ? "animate-pulse" : ""}`} />
-              {generatingPdf ? "Generando PDF..." : "Exportar PDF"}
-            </Button>
-
-          <Dialog
-            open={showCreateForm}
-            onOpenChange={(open) => {
-              setShowCreateForm(open)
-              if (!open) {
-                setShowDocsPopup(false)
-              }
-            }}
-          >
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                Agregar empleado
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                onClick={handleExportPdf}
+                disabled={generatingPdf || employees.length === 0}
+                className={`cursor-pointer ${btnOutlineCls}`}
+              >
+                <FileDown className={`w-4 h-4 mr-2 ${generatingPdf ? "animate-pulse" : ""}`} />
+                {generatingPdf ? "Generando PDF..." : "Exportar PDF"}
               </Button>
-            </DialogTrigger>
 
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>Agregar empleado</DialogTitle>
-                <DialogDescription>
-                  Registra un nuevo empleado en el directorio.
-                </DialogDescription>
-              </DialogHeader>
+              <Dialog
+                open={showCreateForm}
+                onOpenChange={(open) => {
+                  setShowCreateForm(open)
+                  if (!open) {
+                    setShowDocsPopup(false)
+                  }
+                }}
+              >
+                <DialogTrigger asChild>
+                  <Button className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Agregar empleado
+                  </Button>
+                </DialogTrigger>
 
-              <div className="space-y-6 py-2">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <Label htmlFor="full_name">Nombre completo</Label>
-                    <Input
-                      id="full_name"
-                      value={newEmployee.full_name}
-                      onChange={(e) => handleChangeNewEmployee("full_name", e.target.value)}
-                    />
-                  </div>
+                <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
+                  <DialogHeader>
+                    <DialogTitle className="text-slate-100">Agregar empleado</DialogTitle>
+                    <DialogDescription className="text-slate-400">
+                      Registra un nuevo empleado en el directorio.
+                    </DialogDescription>
+                  </DialogHeader>
 
-                  <div className="space-y-2">
-                    <Label>Roles</Label>
-                    <Select value={rolePickerValue} onValueChange={(v) => addRole(v)}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecciona uno o más roles" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {availableRolesForPicker.length === 0 ? (
-                          <SelectItem value="__empty__" disabled>
-                            No hay más roles disponibles
-                          </SelectItem>
-                        ) : (
-                          availableRolesForPicker.map((role) => (
-                            <SelectItem key={role.id} value={role.id}>
-                              {role.name}
-                            </SelectItem>
-                          ))
-                        )}
-                      </SelectContent>
-                    </Select>
-
-                    {selectedRoleChips.length === 0 ? (
-                      <p className="text-xs text-slate-500">
-                        Selecciona uno o más roles.
-                      </p>
-                    ) : (
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {selectedRoleChips.map((role) => (
-                          <span
-                            key={role.id}
-                            className="inline-flex items-center justify-between rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
-                          >
-                            <span className="truncate">{role.name}</span>
-                            <button
-                              type="button"
-                              className="ml-2 rounded-full p-1 hover:bg-slate-100 flex-shrink-0"
-                              onClick={() => removeRole(role.id)}
-                              aria-label={`Quitar rol ${role.name}`}
-                            >
-                              <X className="w-3 h-3 text-slate-500" />
-                            </button>
-                          </span>
-                        ))}
+                  <div className="space-y-6 py-2">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-2">
+                        <Label htmlFor="full_name" className="text-slate-300">Nombre completo</Label>
+                        <Input
+                          id="full_name"
+                          value={newEmployee.full_name}
+                          onChange={(e) => handleChangeNewEmployee("full_name", e.target.value)}
+                          className={inputCls}
+                        />
                       </div>
-                    )}
-                  </div>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="phone">Teléfono</Label>
-                    <Input
-                      id="phone"
-                      value={newEmployee.phone}
-                      onChange={(e) => handleChangeNewEmployee("phone", e.target.value)}
-                    />
-                  </div>
+                      <div className="space-y-2">
+                        <Label className="text-slate-300">Roles</Label>
+                        <Select value={rolePickerValue} onValueChange={(v) => addRole(v)}>
+                          <SelectTrigger className={selectTriggerCls}>
+                            <SelectValue placeholder="Selecciona uno o más roles" />
+                          </SelectTrigger>
+                          <SelectContent className={selectContentCls}>
+                            {availableRolesForPicker.length === 0 ? (
+                              <SelectItem value="__empty__" disabled>
+                                No hay más roles disponibles
+                              </SelectItem>
+                            ) : (
+                              availableRolesForPicker.map((role) => (
+                                <SelectItem key={role.id} value={role.id}>
+                                  {role.name}
+                                </SelectItem>
+                              ))
+                            )}
+                          </SelectContent>
+                        </Select>
 
-                  <div className="space-y-2">
-                    <Label htmlFor="hire_date">Fecha de contratación</Label>
-                    <Input
-                      id="hire_date"
-                      type="date"
-                      value={newEmployee.hire_date}
-                      onChange={(e) => handleChangeNewEmployee("hire_date", e.target.value)}
-                    />
-                  </div>
+                        {selectedRoleChips.length === 0 ? (
+                          <p className="text-xs text-slate-500">
+                            Selecciona uno o más roles.
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap gap-2 pt-1">
+                            {selectedRoleChips.map((role) => (
+                              <span
+                                key={role.id}
+                                className="inline-flex items-center justify-between rounded-full border border-slate-600 bg-slate-700 px-3 py-1 text-xs text-slate-200"
+                              >
+                                <span className="truncate">{role.name}</span>
+                                <button
+                                  type="button"
+                                  className="ml-2 rounded-full p-1 hover:bg-slate-600 flex-shrink-0"
+                                  onClick={() => removeRole(role.id)}
+                                  aria-label={`Quitar rol ${role.name}`}
+                                >
+                                  <X className="w-3 h-3 text-slate-400" />
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
 
-                  <div className="space-y-2">
-                    <Label>Estatus</Label>
-                    <Select
-                      value={newEmployee.status}
-                      onValueChange={(value) =>
-                        handleChangeNewEmployee("status", value as NewEmployeeForm["status"])
-                      }
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Selecciona un estatus" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="active">Activo</SelectItem>
-                        <SelectItem value="inactive">Inactivo</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="phone" className="text-slate-300">Teléfono</Label>
+                        <Input
+                          id="phone"
+                          value={newEmployee.phone}
+                          onChange={(e) => handleChangeNewEmployee("phone", e.target.value)}
+                          className={inputCls}
+                        />
+                      </div>
 
-                  <div className="md:col-span-2 flex items-center justify-between gap-3 border-t pt-4">
-                    <div>
-                      <p className="text-sm font-medium text-slate-900">Documentos del empleado</p>
-                      <p className="text-xs text-slate-500">
-                        Súbelos ahora o después, en el perfil del empleado.
-                      </p>
+                      <div className="space-y-2">
+                        <Label htmlFor="hire_date" className="text-slate-300">Fecha de contratación</Label>
+                        <Input
+                          id="hire_date"
+                          type="date"
+                          value={newEmployee.hire_date}
+                          onChange={(e) => handleChangeNewEmployee("hire_date", e.target.value)}
+                          className={inputCls}
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-slate-300">Estatus</Label>
+                        <Select
+                          value={newEmployee.status}
+                          onValueChange={(value) =>
+                            handleChangeNewEmployee("status", value as NewEmployeeForm["status"])
+                          }
+                        >
+                          <SelectTrigger className={selectTriggerCls}>
+                            <SelectValue placeholder="Selecciona un estatus" />
+                          </SelectTrigger>
+                          <SelectContent className={selectContentCls}>
+                            <SelectItem value="active">Activo</SelectItem>
+                            <SelectItem value="inactive">Inactivo</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+
+                      <div className="md:col-span-2 flex items-center justify-between gap-3 border-t border-slate-700 pt-4">
+                        <div>
+                          <p className="text-sm font-medium text-slate-200">Documentos del empleado</p>
+                          <p className="text-xs text-slate-500">
+                            Súbelos ahora o después, en el perfil del empleado.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => setShowDocsPopup(true)}
+                          className={btnOutlineCls}
+                        >
+                          Agregar documentos +
+                        </Button>
+                      </div>
                     </div>
+                  </div>
+
+                  <DialogFooter>
                     <Button
                       type="button"
                       variant="outline"
-                      onClick={() => setShowDocsPopup(true)}
+                      onClick={resetCreateForm}
+                      disabled={creating}
+                      className={btnOutlineCls}
                     >
-                      Agregar documentos +
+                      Cancelar
                     </Button>
-                  </div>
-                </div>
-              </div>
-
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={resetCreateForm}
-                  disabled={creating}
-                >
-                  Cancelar
-                </Button>
-                <Button type="button" onClick={handleCreateEmployee} disabled={creating}>
-                  {creating ? "Guardando..." : "Crear empleado"}
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-          </div>{/* end flex gap-2 */}
+                    <Button
+                      type="button"
+                      onClick={handleCreateEmployee}
+                      disabled={creating}
+                      className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                    >
+                      {creating ? "Guardando..." : "Crear empleado"}
+                    </Button>
+                  </DialogFooter>
+                </DialogContent>
+              </Dialog>
+            </div>
+          </div>
         </div>
 
+        {/* ── Docs popup dialog ── */}
         <Dialog open={showDocsPopup} onOpenChange={setShowDocsPopup}>
-          <DialogContent className="max-w-3xl">
+          <DialogContent className="max-w-3xl bg-slate-800 border-slate-700 text-slate-100">
             <DialogHeader>
-              <DialogTitle>Documentos del empleado</DialogTitle>
-              <DialogDescription>
+              <DialogTitle className="text-slate-100">Documentos del empleado</DialogTitle>
+              <DialogDescription className="text-slate-400">
                 Selecciona los archivos que deseas subir para este empleado.
               </DialogDescription>
             </DialogHeader>
@@ -975,8 +998,8 @@ export default function AdminEmployeesPage() {
                   "profile_photo",
                 ] as EmployeeDocType[]
               ).map((docType) => (
-                <div key={docType} className="space-y-1 px-2 border border-slate-200 rounded-lg p-3">
-                  <Label>{DOC_LABELS[docType]}</Label>
+                <div key={docType} className="space-y-1 px-2 border border-slate-700 rounded-lg p-3 bg-slate-900/60">
+                  <Label className="text-slate-300">{DOC_LABELS[docType]}</Label>
                   <Input
                     type="file"
                     accept={docType === "profile_photo" ? "image/*" : ".pdf,image/*"}
@@ -984,42 +1007,49 @@ export default function AdminEmployeesPage() {
                       const file = e.target.files?.[0] ?? null
                       handleChangeNewEmployeeFile(docType, file)
                     }}
+                    className={inputCls}
                   />
                   {newEmployeeFiles[docType] ? (
-                    <p className="text-xs text-slate-500 truncate">
+                    <p className="text-xs text-slate-400 truncate">
                       Seleccionado: {newEmployeeFiles[docType]?.name}
                     </p>
                   ) : (
-                    <p className="text-xs text-slate-400">Sin archivo</p>
+                    <p className="text-xs text-slate-500">Sin archivo</p>
                   )}
                 </div>
               ))}
             </div>
 
             <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => setShowDocsPopup(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setShowDocsPopup(false)}
+                className={btnOutlineCls}
+              >
                 Cerrar
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
 
+        {/* ── Filtros ── */}
         <div className="flex flex-col md:flex-row gap-4">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
             <Input
               placeholder="Buscar empleados..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
+              className={`pl-10 ${inputCls}`}
             />
           </div>
 
           <Select value={roleFilter} onValueChange={setRoleFilter}>
-            <SelectTrigger className="w-full md:w-64">
+            <SelectTrigger className={`w-full md:w-64 ${selectTriggerCls}`}>
               <SelectValue placeholder="Rol / Puesto" />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className={selectContentCls}>
               <SelectItem value="all">Todos los roles</SelectItem>
               {rolesCatalog.map((role) => (
                 <SelectItem key={role.id} value={role.id}>
@@ -1030,10 +1060,10 @@ export default function AdminEmployeesPage() {
           </Select>
 
           <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className="w-full md:w-40">
+            <SelectTrigger className={`w-full md:w-40 ${selectTriggerCls}`}>
               <SelectValue placeholder="Estatus" />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent className={selectContentCls}>
               <SelectItem value="all">Todos</SelectItem>
               <SelectItem value="activo">Activo</SelectItem>
               <SelectItem value="de-permiso">De permiso</SelectItem>
@@ -1047,7 +1077,7 @@ export default function AdminEmployeesPage() {
         )}
 
         {!loading && error && (
-          <div className="text-center py-12 text-sm text-red-500">{error}</div>
+          <div className="text-center py-12 text-sm text-red-400">{error}</div>
         )}
 
         {!loading && !error && (
@@ -1056,11 +1086,21 @@ export default function AdminEmployeesPage() {
               {filteredEmployees.map((employee) => {
                 return (
                   <Link key={employee.id} href={`/admin/employees/${employee.id}`}>
-                    <Card className="hover:shadow-lg transition-shadow cursor-pointer h-full">
-                      <CardContent className="p-6">
+                    <div
+                      className="group relative rounded-2xl border border-slate-700/60 overflow-hidden cursor-pointer transition-all duration-200 hover:border-[#0174bd]/40 h-full"
+                      style={{
+                        background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+                        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                      }}
+                    >
+                      {/* Top accent on hover */}
+                      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+
+                      <div className="p-6">
                         <div className="flex flex-col items-center text-center space-y-4">
-                          <div className="w-20 h-20 rounded-full bg-blue-100 flex items-center justify-center overflow-hidden relative">
-                            <span className="text-2xl font-bold text-blue-600 select-none">
+                          {/* Avatar */}
+                          <div className="w-20 h-20 rounded-full bg-[#0174bd]/15 border border-[#0174bd]/20 flex items-center justify-center overflow-hidden relative">
+                            <span className="text-2xl font-bold text-[#4da8e8] select-none">
                               {employee.avatar}
                             </span>
 
@@ -1078,16 +1118,16 @@ export default function AdminEmployeesPage() {
                           </div>
 
                           <div className="space-y-1 w-full">
-                            <h3 className="font-semibold text-slate-900 text-lg">{employee.name}</h3>
-                            <p className="text-sm text-slate-600">{employee.position}</p>
+                            <h3 className="font-semibold text-slate-100 text-lg">{employee.name}</h3>
+                            <p className="text-sm text-slate-400">{employee.position}</p>
                             <Badge className={getStatusColor(employee.status)}>{employee.status}</Badge>
                           </div>
 
-                          <div className="w-full space-y-2 pt-4 border-t">
+                          <div className="w-full space-y-2 pt-4 border-t border-slate-700/60">
                             {/* Edad */}
-                            <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <User className="w-4 h-4 flex-shrink-0" />
-                              <span className="text-slate-400 mr-1">Edad</span>
+                            <div className="flex items-center gap-2 text-sm text-slate-400">
+                              <User className="w-4 h-4 flex-shrink-0 text-slate-500" />
+                              <span className="text-slate-500 mr-1">Edad</span>
                               <span className="truncate">
                                 {calculateAge(employee.birth_date) !== null
                                   ? `${calculateAge(employee.birth_date)} años`
@@ -1095,16 +1135,16 @@ export default function AdminEmployeesPage() {
                               </span>
                             </div>
                             {/* Teléfono */}
-                            <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <Phone className="w-4 h-4 flex-shrink-0" />
-                              <span className="text-slate-400 mr-1">Teléfono</span>
+                            <div className="flex items-center gap-2 text-sm text-slate-400">
+                              <Phone className="w-4 h-4 flex-shrink-0 text-slate-500" />
+                              <span className="text-slate-500 mr-1">Tel.</span>
                               <span className="truncate">{employee.phone}</span>
                             </div>
-                            {/* Separador Contratación */}
-                            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide pt-1">Contratación</p>
+                            {/* Contratación label */}
+                            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide pt-1">Contratación</p>
                             {/* Fecha */}
-                            <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <Calendar className="w-4 h-4 flex-shrink-0" />
+                            <div className="flex items-center gap-2 text-sm text-slate-400">
+                              <Calendar className="w-4 h-4 flex-shrink-0 text-slate-500" />
                               <span className="truncate">
                                 {employee.joinDate
                                   ? new Date(employee.joinDate + "T12:00:00").toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })
@@ -1112,21 +1152,21 @@ export default function AdminEmployeesPage() {
                               </span>
                             </div>
                             {/* Tiempo */}
-                            <div className="flex items-center gap-2 text-sm text-slate-600">
-                              <Clock className="w-4 h-4 flex-shrink-0" />
+                            <div className="flex items-center gap-2 text-sm text-slate-400">
+                              <Clock className="w-4 h-4 flex-shrink-0 text-slate-500" />
                               <span className="truncate">{calculateTenure(employee.joinDate)}</span>
                             </div>
                           </div>
 
-                          <div className="w-full pt-4 border-t">
+                          <div className="w-full pt-4 border-t border-slate-700/60">
                             <div className="flex items-center justify-between text-sm">
-                              <span className="text-slate-600">Obras activas</span>
-                              <span className="font-semibold text-slate-900">{employee.projects}</span>
+                              <span className="text-slate-500">Obras activas</span>
+                              <span className="font-semibold text-slate-100">{employee.projects}</span>
                             </div>
                           </div>
                         </div>
-                      </CardContent>
-                    </Card>
+                      </div>
+                    </div>
                   </Link>
                 )
               })}
@@ -1134,7 +1174,7 @@ export default function AdminEmployeesPage() {
 
             {filteredEmployees.length === 0 && (
               <div className="text-center py-12">
-                <p className="text-slate-600">
+                <p className="text-slate-500">
                   No se encontraron empleados con los filtros actuales.
                 </p>
               </div>

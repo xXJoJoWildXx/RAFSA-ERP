@@ -1,927 +1,427 @@
 "use client"
 
-import { useState, useMemo, useEffect, FormEvent } from "react"
+import { useState, useEffect, FormEvent } from "react"
 import Link from "next/link"
 import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Search, Plus, MapPin, ChevronRight, Building2 } from "lucide-react"
+import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
-// ----- Tipos -----
-
-type DbObraStatus = "planned" | "in_progress" | "paused" | "closed"
-type ProjectStatus = "Planning" | "In Progress" | "Completed" | "On Hold"
-
-type ObraRow = {
-  id: string
-  code: string | null
-  name: string
-  client_name: string | null
-  location_text: string | null
-  status: DbObraStatus
-  start_date_planned: string | null
-  start_date_actual: string | null
-  end_date_planned: string | null
-  end_date_actual: string | null
-}
-
-type Project = {
+type Empresa = {
   id: string
   name: string
-  location: string
-  status: ProjectStatus
-  progress: number
-  startDate: string
-  endDate: string
-  budget: string
-  spent: string
-  manager: string
-  teamSize: number
-  code?: string | null
+  created_at: string
+  obra_count: number
 }
 
-// Directores de obra activos (para el form)
-type EmployeeManager = {
-  id: string
-  full_name: string
-  status: string
-}
+export default function EmpresasPage() {
+  const [empresas, setEmpresas]   = useState<Empresa[]>([])
+  const [loading, setLoading]     = useState(true)
+  const [error, setError]         = useState<string | null>(null)
 
-// Tipo flexible para que TS acepte tanto objeto como arreglo
-type ObraAssignmentWithEmployee = {
-  obra_id: string
-  employee_id: string
-  employees:
-    | { full_name: string }
-    | { full_name: string }[]
-    | null
-}
+  const [editMode, setEditMode]   = useState(false)
+  const [selected, setSelected]   = useState<Set<string>>(new Set())
+  const [deleting, setDeleting]   = useState(false)
 
-type SiteReportRow = {
-  obra_id: string
-  progress_percent: number | null
-  report_date: string | null
-}
+  const [createOpen, setCreateOpen] = useState(false)
+  const [nombre, setNombre]         = useState("")
+  const [saving, setSaving]         = useState(false)
+  const [saveError, setSaveError]   = useState<string | null>(null)
 
-type ContractRow = {
-  obra_id: string
-  contract_amount: number | null
-}
+  const [editOpen, setEditOpen]             = useState(false)
+  const [editingEmpresa, setEditingEmpresa] = useState<Empresa | null>(null)
+  const [editNombre, setEditNombre]         = useState("")
+  const [editSaving, setEditSaving]         = useState(false)
+  const [editError, setEditError]           = useState<string | null>(null)
 
-type ObraStateAccountRow = {
-  obra_id: string
-  amount: number | null
-  concept: string
-}
+  const [deleteDialogOpen, setDeleteDialogOpen]   = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [deleteObrasMap, setDeleteObrasMap]       = useState<Record<string, { id: string; name: string }[]>>({})
+  const [expandedEmpresas, setExpandedEmpresas]   = useState<Set<string>>(new Set())
+  const [loadingDeleteInfo, setLoadingDeleteInfo] = useState(false)
 
-// ----- Helpers de mapping / parsing -----
+  async function fetchEmpresas() {
+    setLoading(true)
+    setError(null)
+    const { data, error } = await supabase
+      .from("empresas")
+      .select("id, name, created_at")
+      .order("name", { ascending: true })
 
-function mapDbStatusToUi(status: DbObraStatus): ProjectStatus {
-  switch (status) {
-    case "planned":     return "Planning"
-    case "in_progress": return "In Progress"
-    case "paused":      return "On Hold"
-    case "closed":      return "Completed"
-    default:            return "Planning"
-  }
-}
+    if (error) { setError(error.message); setLoading(false); return }
 
-function mapUiStatusToDb(status: ProjectStatus): DbObraStatus {
-  switch (status) {
-    case "Planning":    return "planned"
-    case "In Progress": return "in_progress"
-    case "On Hold":     return "paused"
-    case "Completed":   return "closed"
-    default:            return "planned"
-  }
-}
+    const rows = (data || []) as { id: string; name: string; created_at: string }[]
+    if (rows.length === 0) { setEmpresas([]); setLoading(false); return }
 
-function getStatusLabel(status: ProjectStatus): string {
-  switch (status) {
-    case "Planning":    return "Planeacion"
-    case "In Progress": return "En progreso"
-    case "Completed":   return "Completada"
-    case "On Hold":     return "En pausa"
-    default:            return status
-  }
-}
+    const { data: obraData } = await supabase
+      .from("obras").select("empresa_id").in("empresa_id", rows.map((r) => r.id))
 
-// Formato de dinero para la UI
-function formatCurrency(amount: number | null | undefined): string {
-  if (amount == null || Number.isNaN(amount)) return "-"
-  if (amount === 0) return "$0.00"
-  return amount.toLocaleString("es-MX", {
-    style: "currency",
-    currency: "MXN",
-    maximumFractionDigits: 2,
-  })
-}
-
-// Ahora acepta extras (managerName, progress, budget, spent, teamSize)
-function mapObraToProject(
-  obra: ObraRow,
-  opts?: {
-    managerName?: string
-    progress?: number
-    budget?: string
-    spent?: string
-    teamSize?: number
-  },
-): Project {
-  const startDate =
-    obra.start_date_actual ??
-    obra.start_date_planned ??
-    ""
-
-  const endDate =
-    obra.end_date_actual ??
-    obra.end_date_planned ??
-    ""
-
-  return {
-    id: obra.id,
-    code: obra.code,
-    name: obra.name,
-    location: obra.location_text ?? "Sin ubicacion",
-    status: mapDbStatusToUi(obra.status),
-    progress: opts?.progress ?? 0,
-    startDate,
-    endDate,
-    budget: opts?.budget ?? "-",
-    spent: opts?.spent ?? "-",
-    manager: opts?.managerName || "Sin asignar",
-    teamSize: opts?.teamSize ?? 0,
-  }
-}
-
-// Parseo de dinero: "$1,200.50" -> 1200.5
-function parseMoney(value: string): number {
-  if (!value) return 0
-  const normalized = value
-    .replace(/[,$]/g, "")
-    .replace(/[^\d.-]/g, "")
-  const n = parseFloat(normalized)
-  return Number.isNaN(n) ? 0 : n
-}
-
-// ----- Pagina principal -----
-
-export default function AdminProjectsPage() {
-  const [projects, setProjects] = useState<Project[]>([])
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const [searchQuery, setSearchQuery] = useState("")
-  const [statusFilter, setStatusFilter] = useState<
-    "all" | "in-progress" | "planning" | "completed" | "on-hold"
-  >("all")
-
-  const [openDialog, setOpenDialog] = useState(false)
-  const [editingProject, setEditingProject] = useState<Project | null>(null)
-
-  // Directores de obra activos (para el form)
-  const [managers, setManagers] = useState<EmployeeManager[]>([])
-  const [loadingManagers, setLoadingManagers] = useState(false)
-
-  // ----- READ de Supabase -----
-
-  useEffect(() => {
-    const fetchObras = async () => {
-      setLoading(true)
-      setError(null)
-
-      // 1) Obtenemos las obras
-      const { data, error } = await supabase
-        .from("obras")
-        .select(
-          `
-          id,
-          code,
-          name,
-          client_name,
-          location_text,
-          status,
-          start_date_planned,
-          start_date_actual,
-          end_date_planned,
-          end_date_actual
-        `,
-        )
-        .order("created_at", { ascending: false })
-
-      if (error) {
-        console.error("Error fetching obras:", error)
-        setError(error.message)
-        setProjects([])
-        setLoading(false)
-        return
-      }
-
-      const obras = (data as ObraRow[]) || []
-
-      if (obras.length === 0) {
-        setProjects([])
-        setLoading(false)
-        return
-      }
-
-      const obraIds = obras.map((o) => o.id)
-
-      // 2) En paralelo: director assignments, team count, site_reports, obra_billing_items, state_accounts
-      const [assignRes, teamRes, siteRes, billingItemsRes, accountsRes] =
-        await Promise.all([
-          supabase
-            .from("obra_assignments")
-            .select("obra_id, employee_id, employees(full_name)")
-            .in("obra_id", obraIds)
-            .eq("role_on_site", "director_obra")
-            .is("assigned_to", null),
-          supabase
-            .from("obra_assignments")
-            .select("obra_id")
-            .in("obra_id", obraIds)
-            .is("assigned_to", null),
-          supabase
-            .from("site_reports")
-            .select("obra_id, progress_percent, report_date")
-            .in("obra_id", obraIds),
-          supabase
-            .from("obra_billing_items")
-            .select("obra_id, amount")
-            .in("obra_id", obraIds),
-          supabase
-            .from("obra_state_accounts")
-            .select("obra_id, amount, concept")
-            .in("obra_id", obraIds),
-        ])
-
-      const { data: assignments, error: assignError } = assignRes
-      const { data: teamRows,    error: teamError }   = teamRes
-      const { data: siteReports, error: siteError }   = siteRes
-      const { data: billingItems, error: billingItemsError } = billingItemsRes
-      const { data: accounts,    error: accountsError }  = accountsRes
-
-      if (assignError)    console.error("Error fetching obra_assignments:", assignError)
-      if (teamError)      console.error("Error fetching team count:", teamError)
-      if (siteError)      console.error("Error fetching site_reports:", siteError)
-      if (billingItemsError) console.error("Error fetching obra_billing_items:", billingItemsError)
-      if (accountsError)  console.error("Error fetching obra_state_accounts:", accountsError)
-
-      // --- Team size map (obra_id -> cantidad de asignaciones activas) ---
-      const teamSizeMap: Record<string, number> = {}
-      if (teamRows) {
-        ;(teamRows as { obra_id: string }[]).forEach((r) => {
-          teamSizeMap[r.obra_id] = (teamSizeMap[r.obra_id] || 0) + 1
-        })
-      }
-
-      // --- Director map (obra_id -> full_name) ---
-      const managerMap: Record<string, string> = {}
-
-      if (assignments) {
-        ;(assignments as ObraAssignmentWithEmployee[]).forEach((a) => {
-          const emp = a.employees
-          let fullName: string | undefined
-
-          if (Array.isArray(emp)) {
-            fullName = emp[0]?.full_name
-          } else {
-            fullName = emp?.full_name
-          }
-
-          if (fullName) {
-            managerMap[a.obra_id] = fullName
-          }
-        })
-      }
-
-      // --- Progress map (obra_id -> ultimo progress_percent) ---
-      const progressMap: Record<string, number> = {}
-      const lastDateMap: Record<string, string> = {}
-
-      if (siteReports) {
-        ;(siteReports as SiteReportRow[]).forEach((r) => {
-          if (r.progress_percent == null) return
-          if (!r.report_date) return
-          const currentDate = lastDateMap[r.obra_id]
-          if (!currentDate || r.report_date > currentDate) {
-            lastDateMap[r.obra_id] = r.report_date
-            progressMap[r.obra_id] = Number(r.progress_percent)
-          }
-        })
-      }
-
-      // --- Budget map (obra_id -> suma amount from obra_billing_items) ---
-      const budgetMap: Record<string, number> = {}
-
-      if (billingItems) {
-        ;(billingItems as { obra_id: string; amount: number }[]).forEach((item) => {
-          const amount = item.amount ?? 0
-          if (!amount) return
-          budgetMap[item.obra_id] =
-            (budgetMap[item.obra_id] || 0) + Number(amount)
-        })
-      }
-
-      // --- Spent map (obra_id -> suma monto segun concept) ---
-      const spentMap: Record<string, number> = {}
-
-      if (accounts) {
-        ;(accounts as ObraStateAccountRow[]).forEach((a) => {
-          const amt = a.amount ?? 0
-          if (!amt) return
-
-          // deposit / advance / retention -> +amount
-          // return -> -amount
-          let sign = 1
-          const concept = (a.concept || "").toLowerCase()
-          if (concept === "return") {
-            sign = -1
-          }
-
-          spentMap[a.obra_id] =
-            (spentMap[a.obra_id] || 0) + sign * Number(amt)
-        })
-      }
-
-      // 3) Mapeamos obras -> projects usando datos agregados
-      const mapped = obras.map((obra) => {
-        const budgetNumber = budgetMap[obra.id] ?? 0
-        const spentNumber = spentMap[obra.id] ?? 0
-
-        // Avance financiero: lo cobrado / cotizacion, expresado en porcentaje
-        const financialProgress =
-          budgetNumber > 0
-            ? Math.min(100, Math.round((spentNumber / budgetNumber) * 100))
-            : 0
-
-        return mapObraToProject(obra, {
-          managerName: managerMap[obra.id],
-          progress: financialProgress,
-          budget: formatCurrency(budgetNumber),
-          spent: formatCurrency(spentNumber),
-          teamSize: teamSizeMap[obra.id] ?? 0,
-        })
-      })
-
-      setProjects(mapped)
-      setLoading(false)
-    }
-
-    fetchObras()
-  }, [])
-
-  // ----- READ de directores de obra (para el form) -----
-
-  useEffect(() => {
-    const fetchDirectores = async () => {
-      setLoadingManagers(true)
-
-      const { data, error } = await supabase
-        .from("employees")
-        .select(`
-          id,
-          full_name,
-          status,
-          employee_roles(
-            employee_roles_catalog(code)
-          )
-        `)
-        .eq("status", "active")
-        .order("full_name", { ascending: true })
-
-      if (error) {
-        console.error("Error fetching directores:", error)
-        setManagers([])
-        setLoadingManagers(false)
-        return
-      }
-
-      // Filtrar solo empleados con rol director_obra en el catalogo
-      const filtered = (data || []).filter((emp: any) =>
-        (emp.employee_roles || []).some(
-          (er: any) => er.employee_roles_catalog?.code === "director_obra"
-        )
-      )
-
-      setManagers(
-        filtered.map((e: any) => ({
-          id: e.id,
-          full_name: e.full_name,
-          status: e.status,
-        }))
-      )
-      setLoadingManagers(false)
-    }
-
-    fetchDirectores()
-  }, [])
-
-  // ----- Filtros / busqueda -----
-
-  const filteredProjects = useMemo(() => {
-    return projects.filter((project) => {
-      const matchesSearch =
-        project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        project.location.toLowerCase().includes(searchQuery.toLowerCase())
-
-      const normalizedStatus = project.status
-        .toLowerCase()
-        .replace(" ", "-") as
-        | "in-progress"
-        | "planning"
-        | "completed"
-        | "on-hold"
-
-      const matchesStatus =
-        statusFilter === "all" ? true : normalizedStatus === statusFilter
-
-      return matchesSearch && matchesStatus
+    const countMap: Record<string, number> = {}
+    ;(obraData || []).forEach((o: { empresa_id: string }) => {
+      countMap[o.empresa_id] = (countMap[o.empresa_id] || 0) + 1
     })
-  }, [projects, searchQuery, statusFilter])
 
-  const getStatusColor = (status: ProjectStatus) => {
-    switch (status) {
-      case "In Progress":
-        return "bg-blue-100 text-blue-700"
-      case "Planning":
-        return "bg-yellow-100 text-yellow-700"
-      case "Completed":
-        return "bg-green-100 text-green-700"
-      case "On Hold":
-        return "bg-slate-100 text-slate-700"
-      default:
-        return "bg-slate-100 text-slate-700"
-    }
+    setEmpresas(rows.map((r) => ({ ...r, obra_count: countMap[r.id] ?? 0 })))
+    setLoading(false)
   }
 
-  function handleNewProject() {
-    setEditingProject(null)
-    setOpenDialog(true)
+  useEffect(() => { fetchEmpresas() }, [])
+
+  function openCreate() { setNombre(""); setSaveError(null); setCreateOpen(true) }
+
+  async function handleCreate(e: FormEvent) {
+    e.preventDefault()
+    if (!nombre.trim()) return
+    setSaving(true); setSaveError(null)
+    const { error } = await supabase.from("empresas").insert({ name: nombre.trim() })
+    if (error) { setSaveError("No se pudo crear la empresa. Intenta de nuevo."); setSaving(false); return }
+    setCreateOpen(false); setSaving(false); await fetchEmpresas()
   }
 
-  const [saving, setSaving] = useState(false)
-  const [formError, setFormError] = useState<string | null>(null)
+  function enterEditMode() { setSelected(new Set()); setEditMode(true) }
+  function exitEditMode()  { setEditMode(false); setSelected(new Set()) }
 
-  // ----- CREATE de obra + registros relacionados -----
-
-  async function handleSaveProject(
-    data: Omit<Project, "id"> & { id?: string },
-  ) {
-    try {
-      setSaving(true)
-      setFormError(null)
-
-      // En el form, `manager` es el employee_id seleccionado (o "")
-      const managerEmployeeId = data.manager || null
-
-      const progressValue = data.progress ?? 0
-
-      // 1) Creamos la obra base
-      const payloadObra = {
-        name: data.name,
-        client_name: null as string | null,
-        location_text: data.location || null,
-        status: mapUiStatusToDb(data.status),
-        notes: null as string | null,
-      }
-
-      const { data: inserted, error } = await supabase
-        .from("obras")
-        .insert(payloadObra)
-        .select(
-          `
-          id,
-          code,
-          name,
-          client_name,
-          location_text,
-          status,
-          start_date_planned,
-          start_date_actual,
-          end_date_planned,
-          end_date_actual,
-          notes
-        `,
-        )
-        .single()
-
-      if (error || !inserted) {
-        console.error("Error inserting obra:", error)
-        setFormError("No se pudo crear la obra, intenta de nuevo.")
-        return
-      }
-
-      const obra = inserted as ObraRow
-
-      // 2) Si hay director seleccionado, creamos assignment como director_obra
-      if (managerEmployeeId) {
-        const { error: assignError } = await supabase
-          .from("obra_assignments")
-          .insert({
-            obra_id: obra.id,
-            employee_id: managerEmployeeId,
-            role_on_site: "director_obra",
-          })
-
-        if (assignError) {
-          console.error(
-            "Error creating obra_assignment:",
-            assignError,
-          )
-        }
-      }
-
-      // 3) Si hay progress > 0 y director, creamos site_report inicial
-      if (progressValue > 0 && managerEmployeeId) {
-        const { error: reportError } = await supabase
-          .from("site_reports")
-          .insert({
-            obra_id: obra.id,
-            reported_by: managerEmployeeId,
-            progress_percent: progressValue,
-            summary: "Avance inicial desde formulario de nueva obra",
-          })
-
-        if (reportError) {
-          console.error(
-            "Error creating initial site_report:",
-            reportError,
-          )
-        }
-      }
-
-      // 4) Actualizamos la lista en memoria (sin recomputar agregados; se veran al recargar)
-      setProjects((prev) => [mapObraToProject(obra), ...prev])
-      setOpenDialog(false)
-    } catch (e) {
-      console.error(e)
-      setFormError("Error inesperado al crear la obra.")
-    } finally {
-      setSaving(false)
-    }
+  function toggleSelect(id: string) {
+    setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
   }
+
+  async function openDeleteDialog() {
+    if (selected.size === 0) return
+    setDeleteConfirmText(""); setLoadingDeleteInfo(true); setDeleteDialogOpen(true)
+
+    const { data } = await supabase.from("obras").select("id, name, empresa_id").in("empresa_id", Array.from(selected))
+    const map: Record<string, { id: string; name: string }[]> = {}
+    Array.from(selected).forEach((id) => { map[id] = [] })
+    ;(data || []).forEach((o: { id: string; name: string; empresa_id: string }) => {
+      map[o.empresa_id] = [...(map[o.empresa_id] || []), { id: o.id, name: o.name }]
+    })
+    setDeleteObrasMap(map)
+    setExpandedEmpresas(new Set(Object.entries(map).filter(([, obras]) => obras.length > 0).map(([id]) => id)))
+    setLoadingDeleteInfo(false)
+  }
+
+  async function handleDelete() {
+    if (deleteConfirmText !== "ELIMINAR") return
+    setDeleting(true)
+    const ids = Array.from(selected)
+    const { error: obrasErr } = await supabase.from("obras").delete().in("empresa_id", ids)
+    if (obrasErr) { alert("No se pudieron eliminar las obras asociadas."); setDeleting(false); return }
+    const { error: empErr } = await supabase.from("empresas").delete().in("id", ids)
+    if (empErr)  { alert("No se pudieron eliminar las empresas."); setDeleting(false); return }
+    setDeleting(false); setDeleteDialogOpen(false); exitEditMode(); await fetchEmpresas()
+  }
+
+  function toggleExpanded(id: string) {
+    setExpandedEmpresas((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  function openEdit(empresa: Empresa, e: React.MouseEvent) {
+    e.preventDefault(); e.stopPropagation()
+    setEditingEmpresa(empresa); setEditNombre(empresa.name); setEditError(null); setEditOpen(true)
+  }
+
+  async function handleEditSave(e: FormEvent) {
+    e.preventDefault()
+    if (!editNombre.trim() || !editingEmpresa) return
+    setEditSaving(true); setEditError(null)
+    const { error } = await supabase.from("empresas").update({ name: editNombre.trim() }).eq("id", editingEmpresa.id)
+    if (error) { setEditError("No se pudo actualizar el nombre."); setEditSaving(false); return }
+    setEditOpen(false); setEditSaving(false); await fetchEmpresas()
+  }
+
+  // ── Clases reutilizables ──
+  const inputCls   = "bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-600 focus:border-[#0174bd]/60 focus:ring-0"
+  const btnOutline = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 hover:border-slate-600"
 
   return (
     <RoleGuard allowed={["admin"]}>
-    <AdminLayout>
-      <div className="space-y-6">
-        <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-6 text-white flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-white">
-              Gestion de Obras
-            </h1>
-            <p className="text-slate-400 text-sm mt-1">
-              Administra y da seguimiento a todas las obras
-            </p>
-          </div>
-          <Button onClick={handleNewProject} className="bg-white text-slate-900 hover:bg-slate-100 font-semibold">
-            <Plus className="w-4 h-4 mr-2" />
-            Nueva Obra
-          </Button>
-        </div>
+      <AdminLayout>
+        <div className="space-y-6">
 
-        <Card className="border-0 shadow-sm">
-          <CardHeader>
-            <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
-              <CardTitle>Todas las Obras</CardTitle>
-              <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
-                <div className="relative flex-1 md:w-64">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <Input
-                    placeholder="Buscar obras..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    className="pl-10 transition-shadow focus:shadow-md"
-                  />
-                </div>
-                <Select
-                  value={statusFilter}
-                  onValueChange={(v) => setStatusFilter(v as any)}
-                >
-                  <SelectTrigger className="w-full sm:w-40 transition-shadow focus:shadow-md">
-                    <SelectValue placeholder="Filtrar por estado" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Todos</SelectItem>
-                    <SelectItem value="in-progress">En progreso</SelectItem>
-                    <SelectItem value="planning">Planeacion</SelectItem>
-                    <SelectItem value="completed">Completada</SelectItem>
-                    <SelectItem value="on-hold">En pausa</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-          </CardHeader>
-
-          <CardContent>
-            {loading && (
-              <div className="py-16 flex flex-col items-center gap-3 text-slate-400">
-                <div className="w-8 h-8 border-2 border-slate-200 border-t-blue-500 rounded-full animate-spin" />
-                <span className="text-sm">Cargando obras...</span>
-              </div>
-            )}
-
-            {!loading && error && (
-              <div className="py-10 text-center text-red-500 text-sm">
-                Error al cargar obras: {error}
-              </div>
-            )}
-
-            {!loading && !error && filteredProjects.length === 0 && (
-              <div className="py-16 flex flex-col items-center gap-2 text-slate-400">
-                <Building2 className="w-10 h-10 text-slate-200" />
-                <p className="text-sm font-medium">No se encontraron obras</p>
-                <p className="text-xs text-slate-300">Ajusta los filtros o crea una nueva obra</p>
-              </div>
-            )}
-
-            {!loading && !error && filteredProjects.length > 0 && (
-              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
-                {filteredProjects.map((project) => (
-                  <Link
-                    key={project.id}
-                    href={`/admin/projects/${project.id}`}
-                    className="block"
-                  >
-                    <ProjectCard
-                      project={project}
-                      statusClass={getStatusColor(project.status)}
-                    />
-                  </Link>
-                ))}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        {/* Dialog Crear Obra */}
-        <Dialog open={openDialog} onOpenChange={setOpenDialog}>
-          <DialogContent className="max-w-xl">
-            <DialogHeader>
-              <DialogTitle>
-                {editingProject ? "Editar Obra" : "Nueva Obra"}
-              </DialogTitle>
-              <DialogDescription>
-                Define la informacion principal de esta obra.
-              </DialogDescription>
-            </DialogHeader>
-
-            <ProjectForm
-              initialData={editingProject ?? undefined}
-              onCancel={() => setOpenDialog(false)}
-              onSubmit={handleSaveProject}
-              loading={saving}
-              error={formError}
-              managers={managers}
-              loadingManagers={loadingManagers}
-            />
-          </DialogContent>
-        </Dialog>
-      </div>
-    </AdminLayout>
-    </RoleGuard>
-  )
-}
-
-// ---------- CARD DE CADA PROYECTO ----------
-
-type ProjectCardProps = {
-  project: Project
-  statusClass: string
-}
-
-function ProjectCard({ project, statusClass }: ProjectCardProps) {
-  return (
-    <div className="group relative bg-white rounded-2xl border border-slate-200 p-5 flex flex-col gap-4 hover:shadow-xl hover:shadow-slate-200/60 hover:-translate-y-1 transition-all duration-300 cursor-pointer overflow-hidden">
-      {/* Top accent line that animates on hover */}
-      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-blue-500 to-blue-700 opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-
-      {/* Header row */}
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className="font-bold text-slate-900 text-base leading-tight truncate group-hover:text-blue-700 transition-colors duration-200">
-            {project.name}
-          </h3>
-          <div className="flex items-center gap-1 mt-1.5 text-xs text-slate-400">
-            <MapPin className="w-3 h-3 shrink-0" />
-            <span className="truncate">{project.location}</span>
-          </div>
-        </div>
-        <Badge className={`${statusClass} shrink-0 text-xs font-semibold`}>
-          {getStatusLabel(project.status)}
-        </Badge>
-      </div>
-
-      {/* Progress bar */}
-      <div className="space-y-1.5">
-        <div className="flex items-center justify-between">
-          <span className="text-xs font-medium text-slate-500">Avance financiero</span>
-          <span className="text-xs font-bold text-slate-700">{project.progress}%</span>
-        </div>
-        <div className="w-full bg-slate-100 rounded-full h-1.5 overflow-hidden">
+          {/* ── Header ── */}
           <div
-            className="h-full rounded-full bg-gradient-to-r from-blue-500 to-blue-600 transition-all duration-700"
-            style={{ width: `${project.progress}%` }}
-          />
-        </div>
-      </div>
-
-      {/* Stats row */}
-      <div className="grid grid-cols-2 gap-3 pt-1">
-        <div className="bg-slate-50 rounded-xl p-3">
-          <p className="text-xs text-slate-400 mb-0.5">Cotizacion</p>
-          <p className="text-sm font-bold text-slate-900 truncate">{project.budget}</p>
-          <p className="text-xs text-slate-400 mt-0.5">Cobrado: {project.spent}</p>
-        </div>
-        <div className="bg-slate-50 rounded-xl p-3">
-          <p className="text-xs text-slate-400 mb-0.5">Director</p>
-          <p className="text-sm font-bold text-slate-900 truncate">{project.manager}</p>
-          <p className="text-xs text-slate-400 mt-0.5">Equipo: {project.teamSize}</p>
-        </div>
-      </div>
-
-      {/* Hover arrow indicator */}
-      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 translate-x-1 group-hover:translate-x-0">
-        <ChevronRight className="w-4 h-4 text-blue-500" />
-      </div>
-    </div>
-  )
-}
-
-// ---------- FORMULARIO ----------
-
-type ProjectFormProps = {
-  initialData?: Project
-  onSubmit: (data: Omit<Project, "id"> & { id?: string }) => Promise<void> | void
-  onCancel: () => void
-  loading?: boolean
-  error?: string | null
-  managers: EmployeeManager[]
-  loadingManagers?: boolean
-}
-
-function ProjectForm({
-  initialData,
-  onSubmit,
-  onCancel,
-  loading = false,
-  error,
-  managers,
-  loadingManagers = false,
-}: ProjectFormProps) {
-  const [form, setForm] = useState<Omit<Project, "id">>(() => ({
-    name: initialData?.name ?? "",
-    location: initialData?.location ?? "",
-    status: initialData?.status ?? "Planning",
-    progress: initialData?.progress ?? 0,
-    startDate: initialData?.startDate ?? "",
-    endDate: initialData?.endDate ?? "",
-    budget: "-",
-    spent: "-",
-    manager: "",
-    teamSize: initialData?.teamSize ?? 0,
-  }))
-
-  function handleChange<K extends keyof typeof form>(
-    key: K,
-    value: (typeof form)[K],
-  ) {
-    setForm((prev) => ({ ...prev, [key]: value }))
-  }
-
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    if (!form.name.trim()) return
-    if (!form.location.trim()) return
-
-    onSubmit({
-      ...form,
-      id: initialData?.id,
-    })
-  }
-
-  return (
-    <form className="mt-2 space-y-4" onSubmit={handleSubmit}>
-      <div className="grid gap-4 md:grid-cols-2">
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Nombre de la obra *
-          </label>
-          <Input
-            value={form.name}
-            onChange={(e) => handleChange("name", e.target.value)}
-            placeholder="Plaza Centro..."
-            required
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Ubicacion *
-          </label>
-          <Input
-            value={form.location}
-            onChange={(e) => handleChange("location", e.target.value)}
-            placeholder="Ciudad, Estado"
-            required
-          />
-        </div>
-
-        <div className="flex flex-col gap-1.5">
-          <label className="text-xs font-medium text-slate-600">
-            Estado
-          </label>
-          <Select
-            value={form.status}
-            onValueChange={(v) =>
-              handleChange("status", v as ProjectStatus)
-            }
+            className="rounded-2xl border border-slate-700/60 p-6"
+            style={{
+              background: "linear-gradient(135deg, #1e293b 0%, #0f1e2e 50%, #162438 100%)",
+              boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.3)",
+            }}
           >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="Planning">Planeacion</SelectItem>
-              <SelectItem value="In Progress">En progreso</SelectItem>
-              <SelectItem value="Completed">Completada</SelectItem>
-              <SelectItem value="On Hold">En pausa</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+            <div className="flex items-center justify-between">
+              <div>
+                <h1 className="text-2xl font-bold text-slate-100">Empresas</h1>
+                <p className="text-slate-400 text-sm mt-1">
+                  {editMode
+                    ? "Selecciona las empresas que deseas eliminar o edita su información"
+                    : "Selecciona una empresa para ver y gestionar sus obras"}
+                </p>
+              </div>
 
-        {/* Director de Obra */}
-        <div className="flex flex-col gap-1.5 md:col-span-2">
-          <label className="text-xs font-medium text-slate-600">
-            Director de Obra
-          </label>
-          <div className="flex">
-            <div className="w-full md:w-2/3">
-              <Select
-                value={form.manager}
-                onValueChange={(v) => handleChange("manager", v)}
-                disabled={loadingManagers}
-              >
-                <SelectTrigger>
-                  <SelectValue
-                    placeholder={
-                      loadingManagers
-                        ? "Cargando directores..."
-                        : managers.length === 0
-                        ? "Sin directores disponibles"
-                        : "Seleccionar director"
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {managers.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.full_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {!editMode ? (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={enterEditMode} className={`font-semibold ${btnOutline}`}>
+                    <Pencil className="w-4 h-4 mr-2" />Editar
+                  </Button>
+                  <Button onClick={openCreate} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    <Plus className="w-4 h-4 mr-2" />Nueva empresa
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEditMode} disabled={deleting} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
+
+          {/* ── Loading / Error / Empty ── */}
+          {loading && (
+            <div className="py-20 flex flex-col items-center gap-3 text-slate-500">
+              <Loader2 className="w-8 h-8 animate-spin text-[#0174bd]" />
+              <span className="text-sm">Cargando empresas...</span>
+            </div>
+          )}
+          {!loading && error && (
+            <div className="py-10 text-center text-red-400 text-sm">Error al cargar: {error}</div>
+          )}
+          {!loading && !error && empresas.length === 0 && (
+            <div className="py-20 flex flex-col items-center gap-3">
+              <Building2 className="w-12 h-12 text-slate-700" />
+              <p className="text-sm font-medium text-slate-400">No hay empresas registradas</p>
+              <p className="text-xs text-slate-600">Crea la primera empresa para comenzar</p>
+              <Button onClick={openCreate} size="sm" className="mt-2 bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                <Plus className="w-4 h-4 mr-1" />Nueva empresa
+              </Button>
+            </div>
+          )}
+
+          {/* ── Grid ── */}
+          {!loading && !error && empresas.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+              {empresas.map((empresa) => {
+                const isSelected = selected.has(empresa.id)
+
+                const card = (
+                  <div
+                    className={`group relative rounded-2xl border-2 p-6 flex flex-col gap-4 transition-all duration-200 overflow-hidden
+                      ${editMode
+                        ? isSelected
+                          ? "border-red-500/70 shadow-lg shadow-red-950/40 -translate-y-0.5"
+                          : "border-slate-700/60 hover:border-slate-600 cursor-pointer"
+                        : "border-slate-700/60 hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1 cursor-pointer"
+                      }`}
+                    style={{
+                      background: isSelected
+                        ? "linear-gradient(135deg, #2d1515 0%, #1e0e0e 100%)"
+                        : "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+                      boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+                    }}
+                    onClick={editMode ? () => toggleSelect(empresa.id) : undefined}
+                  >
+                    {/* Acento top — solo en hover normal */}
+                    {!editMode && (
+                      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+                    )}
+
+                    {/* Checkbox edición */}
+                    {editMode && (
+                      <div className="absolute top-4 right-4">
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
+                          ${isSelected ? "bg-red-500 border-red-500" : "bg-slate-700 border-slate-600"}`}>
+                          {isSelected && (
+                            <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                              <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex items-start justify-between gap-3">
+                      <div className={`p-3 rounded-xl transition-colors duration-300
+                        ${editMode ? "bg-slate-700/50" : "bg-slate-700/50 group-hover:bg-[#0174bd]/15"}`}>
+                        <Building2 className={`w-6 h-6 transition-colors duration-300
+                          ${editMode ? "text-slate-400" : "text-slate-400 group-hover:text-[#4da8e8]"}`} />
+                      </div>
+                      <span className={`text-xs font-semibold bg-slate-700/60 text-slate-400 px-2.5 py-1 rounded-full ${editMode ? "mr-7" : ""}`}>
+                        {empresa.obra_count} {empresa.obra_count === 1 ? "obra" : "obras"}
+                      </span>
+                    </div>
+
+                    <div>
+                      <h3 className="font-bold text-slate-100 text-lg leading-tight group-hover:text-white transition-colors duration-200">
+                        {empresa.name}
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                        <FolderOpen className="w-3 h-3" />
+                        Registrada el{" "}
+                        {new Date(empresa.created_at).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
+                      </p>
+                    </div>
+
+                    {editMode && (
+                      <button
+                        onClick={(e) => openEdit(empresa, e)}
+                        className="mt-1 flex items-center gap-2 text-xs font-medium text-slate-400 hover:text-slate-100 bg-slate-700/50 hover:bg-slate-700 rounded-lg px-3 py-2 transition-colors w-fit"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                        Editar información
+                      </button>
+                    )}
+
+                    {!editMode && (
+                      <div className="absolute bottom-5 right-5 opacity-0 group-hover:opacity-100 transition-all duration-200 translate-x-1 group-hover:translate-x-0">
+                        <ChevronRight className="w-5 h-5 text-[#4da8e8]" />
+                      </div>
+                    )}
+                  </div>
+                )
+
+                return editMode
+                  ? <div key={empresa.id}>{card}</div>
+                  : <Link key={empresa.id} href={`/admin/projects/${empresa.id}`} className="block">{card}</Link>
+              })}
+            </div>
+          )}
+
+          {/* ── Dialog nueva empresa ── */}
+          <Dialog open={createOpen} onOpenChange={(v) => saving ? null : setCreateOpen(v)}>
+            <DialogContent className="max-w-sm bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="text-slate-100">Nueva empresa</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleCreate} className="space-y-4 mt-2">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-slate-400">Nombre de la empresa *</label>
+                  <Input value={nombre} onChange={(e) => setNombre(e.target.value)}
+                    placeholder="Ej. Constructora Regio S.A." autoFocus required className={inputCls} />
+                </div>
+                {saveError && <p className="text-xs text-red-400">{saveError}</p>}
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button type="button" variant="outline" onClick={() => setCreateOpen(false)} disabled={saving} className={btnOutline}>
+                    Cancelar
+                  </Button>
+                  <Button type="submit" disabled={saving || !nombre.trim()} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    {saving ? "Guardando..." : "Crear empresa"}
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
+
+          {/* ── Dialog eliminar ── */}
+          <Dialog open={deleteDialogOpen} onOpenChange={(v) => deleting ? null : setDeleteDialogOpen(v)}>
+            <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="w-5 h-5" />Confirmar eliminación
+                </DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4 mt-1">
+                <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-300">
+                  Esta acción es <strong>irreversible</strong>. Se eliminarán las empresas y todas sus obras asociadas.
+                </div>
+
+                {loadingDeleteInfo ? (
+                  <div className="flex items-center gap-2 text-slate-400 text-sm py-2">
+                    <Loader2 className="w-4 h-4 animate-spin" />Cargando información...
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {Array.from(selected).map((id) => {
+                      const empresa = empresas.find((e) => e.id === id)
+                      const obras   = deleteObrasMap[id] || []
+                      const isOpen  = expandedEmpresas.has(id)
+                      return (
+                        <div key={id} className="rounded-lg border border-slate-700 overflow-hidden">
+                          <button type="button" onClick={() => toggleExpanded(id)}
+                            className="w-full flex items-center justify-between px-3 py-2.5 bg-slate-700/40 hover:bg-slate-700/70 transition-colors text-left">
+                            <div className="flex items-center gap-2">
+                              <Building2 className="w-4 h-4 text-red-400 shrink-0" />
+                              <span className="text-sm font-semibold text-slate-100">{empresa?.name}</span>
+                              <span className="text-xs text-slate-500">({obras.length} {obras.length === 1 ? "obra" : "obras"})</span>
+                            </div>
+                            <ChevronDown className={`w-4 h-4 text-slate-500 transition-transform duration-200 ${isOpen ? "rotate-180" : ""}`} />
+                          </button>
+                          {isOpen && (
+                            <div className="px-3 py-2 border-t border-slate-700 space-y-1">
+                              {obras.length === 0
+                                ? <p className="text-xs text-slate-600 italic py-1">Sin obras registradas</p>
+                                : obras.map((obra) => (
+                                  <div key={obra.id} className="flex items-center gap-2 text-xs text-slate-400 py-0.5">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-red-500 shrink-0" />
+                                    {obra.name}
+                                  </div>
+                                ))}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )}
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-400">
+                    Escribe <strong className="text-red-400">ELIMINAR</strong> para confirmar
+                  </label>
+                  <Input value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder="ELIMINAR" className={`font-mono ${inputCls}`}
+                    onKeyDown={(e) => e.key === "Enter" && deleteConfirmText === "ELIMINAR" && handleDelete()} />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleting} className={btnOutline}>
+                    Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={handleDelete} disabled={deleteConfirmText !== "ELIMINAR" || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {deleting ? "Eliminando..." : "Confirmar eliminación"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* ── Dialog editar ── */}
+          <Dialog open={editOpen} onOpenChange={(v) => editSaving ? null : setEditOpen(v)}>
+            <DialogContent className="max-w-sm bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="text-slate-100">Editar empresa</DialogTitle>
+              </DialogHeader>
+              <form onSubmit={handleEditSave} className="space-y-4 mt-2">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-slate-400">Nombre de la empresa *</label>
+                  <Input value={editNombre} onChange={(e) => setEditNombre(e.target.value)} autoFocus required className={inputCls} />
+                </div>
+                {editError && <p className="text-xs text-red-400">{editError}</p>}
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button type="button" variant="outline" onClick={() => setEditOpen(false)} disabled={editSaving} className={btnOutline}>
+                    Cancelar
+                  </Button>
+                  <Button type="submit" disabled={editSaving || !editNombre.trim()} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    {editSaving ? "Guardando..." : "Guardar cambios"}
+                  </Button>
+                </div>
+              </form>
+            </DialogContent>
+          </Dialog>
+
         </div>
-      </div>
-
-      {error && (
-        <p className="text-xs text-red-500 mt-1">
-          {error}
-        </p>
-      )}
-
-      <div className="flex justify-end gap-2 mt-4">
-        <Button type="button" variant="outline" onClick={onCancel}>
-          Cancelar
-        </Button>
-        <Button type="submit" disabled={loading}>
-          {loading
-            ? "Guardando..."
-            : initialData
-            ? "Guardar cambios"
-            : "Crear obra"}
-        </Button>
-      </div>
-    </form>
+      </AdminLayout>
+    </RoleGuard>
   )
 }

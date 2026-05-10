@@ -43,13 +43,13 @@ export default function ProveedoresPage() {
           </div>
 
           {/* Title */}
-          <h1 className="text-3xl font-bold text-slate-900 mb-3 tracking-tight">
+          <h1 className="text-3xl font-bold text-slate-100 mb-3 tracking-tight">
             Proveedores
           </h1>
 
           {/* Badge */}
           <div className="flex items-center gap-2 mb-4">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-100 border border-amber-300 px-3 py-1 text-sm font-semibold text-amber-700">
+            <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 px-3 py-1 text-sm font-semibold text-amber-400">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block" />
               En desarrollo
             </span>
@@ -61,7 +61,7 @@ export default function ProveedoresPage() {
           </p>
 
           {/* Shimmer bar */}
-          <div className="mt-8 w-48 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+          <div className="mt-8 w-48 h-1.5 bg-slate-700 rounded-full overflow-hidden">
             <div
               className="h-full rounded-full"
               style={{
