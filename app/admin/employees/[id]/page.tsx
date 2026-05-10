@@ -2,7 +2,7 @@
 
 // Página de detalle de empleado, con tabs para perfil, documentos, DC3, historial salarial, datos bancarios, etc.
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import { useRouter, useParams } from "next/navigation"
 import Link from "next/link"
 
@@ -11,7 +11,8 @@ import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// Card components unused after dark mode refactor — keeping import for stability
+// import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import {
@@ -49,6 +50,7 @@ import {
   CreditCard,
   Wallet,
   X,
+  LayoutDashboard,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 
@@ -284,13 +286,13 @@ function mapUiStatusToDb(
 function getStatusColor(statusUi: EmployeeDetail["statusUi"]) {
   switch (statusUi) {
     case "Activo":
-      return "bg-green-100 text-green-700"
+      return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
     case "De permiso":
-      return "bg-yellow-100 text-yellow-700"
+      return "bg-yellow-500/15 text-yellow-400 border border-yellow-500/25"
     case "Inactivo":
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
     default:
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
   }
 }
 
@@ -444,15 +446,15 @@ function getObraStatusColor(status: string | null) {
   const normalized = status?.toLowerCase() || ""
   switch (normalized) {
     case "planned":
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
     case "in_progress":
-      return "bg-blue-100 text-blue-700"
+      return "bg-[#0174bd]/15 text-[#4da8e8] border border-[#0174bd]/25"
     case "paused":
-      return "bg-yellow-100 text-yellow-700"
+      return "bg-yellow-500/15 text-yellow-400 border border-yellow-500/25"
     case "closed":
-      return "bg-emerald-100 text-emerald-700"
+      return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
     default:
-      return "bg-slate-100 text-slate-700"
+      return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
   }
 }
 
@@ -765,6 +767,35 @@ async function forceDownloadFile(signedUrl: string, fileName: string) {
   window.URL.revokeObjectURL(objectUrl)
 }
 
+// -------------------- Shared class constants --------------------
+
+const inputCls =
+  "bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-500 focus:border-[#0174bd]/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+
+// wrapper div class — handles the neon border hover
+const fileWrapCls =
+  "rounded-md border border-slate-700 transition-all duration-200" +
+  " hover:border-[#38bdf8]/70 hover:shadow-[0_0_0_2px_rgba(56,189,248,0.15),0_0_10px_rgba(56,189,248,0.12)]"
+
+// input inside the wrapper — no border so the wrapper border shows
+const fileInputCls =
+  "w-full bg-slate-900 text-slate-200 rounded-md cursor-pointer" +
+  " border-0 outline-none focus-visible:ring-0 focus-visible:ring-offset-0" +
+  " file:bg-transparent file:border-0 file:border-r file:border-slate-700 file:pr-3 file:mr-3" +
+  " file:text-[#0174bd] file:font-medium file:cursor-pointer" +
+  " hover:file:text-[#38bdf8] hover:file:drop-shadow-[0_0_5px_rgba(56,189,248,0.7)]"
+
+const selectTriggerCls =
+  "bg-slate-900 border-slate-700 text-slate-200 focus:ring-0 focus:border-[#0174bd]/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+
+const selectContentCls =
+  "bg-slate-800 border-slate-700 text-slate-200 [&_[role=option]]:text-slate-200 [&_[role=option]:hover]:bg-slate-700 [&_[role=option][data-highlighted]]:bg-slate-700"
+
+const btnOutlineCls =
+  "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+
+const labelCls = "text-slate-300"
+
 // -------------------- Page --------------------
 
 export default function EmployeeDetailPage() {
@@ -799,6 +830,8 @@ export default function EmployeeDetailPage() {
   const [medicalDialogOpen, setMedicalDialogOpen] = useState(false)
   const [medicalSaving, setMedicalSaving] = useState(false)
   const [medicalFiles, setMedicalFiles] = useState<File[]>([])
+
+  const [fileViewer, setFileViewer] = useState<{ url: string; name: string; isPdf: boolean } | null>(null)
 
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -850,6 +883,45 @@ export default function EmployeeDetailPage() {
 
   const [editRoleIds, setEditRoleIds] = useState<string[]>([])
   const [rolePickerValue, setRolePickerValue] = useState<string>("")
+
+  // ── Sliding tab pill ──
+  const [activeTab, setActiveTab] = useState("overview")
+  const navRef = useRef<HTMLDivElement>(null)
+  const pillReady = useRef(false)
+
+  const employeeTabs = [
+    { value: "overview",  label: "Resumen",    Icon: LayoutDashboard },
+    { value: "banking",   label: "Bancario",   Icon: Landmark        },
+    { value: "documents", label: "Documentos", Icon: FileText        },
+    { value: "dc3",       label: "Docs. Obra", Icon: FolderOpen      },
+    { value: "projects",  label: "Obras",      Icon: Building2       },
+  ] as const
+
+  useLayoutEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+    const pill  = nav.querySelector<HTMLElement>("[data-nav-pill]")
+    const btn   = nav.querySelector<HTMLElement>(`[data-tab-btn="${activeTab}"]`)
+    if (!pill || !btn) return
+    const navRect = nav.getBoundingClientRect()
+    const btnRect = btn.getBoundingClientRect()
+    const left  = btnRect.left - navRect.left + nav.scrollLeft
+    const width = btnRect.width
+    if (!pillReady.current) {
+      // First paint: place instantly, then enable transition
+      pill.style.transition = "none"
+      pill.style.left  = `${left}px`
+      pill.style.width = `${width}px`
+      pillReady.current = true
+      requestAnimationFrame(() => {
+        pill.style.transition =
+          "left 0.3s cubic-bezier(0.4,0,0.2,1), width 0.3s cubic-bezier(0.4,0,0.2,1)"
+      })
+    } else {
+      pill.style.left  = `${left}px`
+      pill.style.width = `${width}px`
+    }
+  }, [activeTab])
 
   useEffect(() => {
     const fetchRolesCatalog = async () => {
@@ -1659,7 +1731,7 @@ export default function EmployeeDetailPage() {
     return (
       <RoleGuard allowed={["admin"]}>
         <AdminLayout>
-          <div className="flex items-center justify-center h-[60vh] text-sm text-slate-500">
+          <div className="flex items-center justify-center h-[60vh] text-sm text-slate-400">
             ID de empleado inválido.
           </div>
         </AdminLayout>
@@ -1670,7 +1742,7 @@ export default function EmployeeDetailPage() {
   if (loading) {
     return (
       <AdminLayout>
-        <div className="flex items-center justify-center h-[60vh] text-sm text-slate-500">
+        <div className="flex items-center justify-center h-[60vh] text-sm text-slate-400">
           Cargando empleado...
         </div>
       </AdminLayout>
@@ -1682,16 +1754,16 @@ export default function EmployeeDetailPage() {
       <AdminLayout>
         <div className="max-w-xl mx-auto mt-10 space-y-4 text-center">
           <div className="flex justify-center">
-            <AlertCircle className="w-10 h-10 text-red-500" />
+            <AlertCircle className="w-10 h-10 text-red-400" />
           </div>
-          <h1 className="text-xl font-semibold text-slate-900">
+          <h1 className="text-xl font-semibold text-slate-100">
             Error al cargar el empleado
           </h1>
-          <p className="text-sm text-slate-600">
+          <p className="text-sm text-slate-400">
             {error ?? "Empleado no encontrado."}
           </p>
           <Button
-            className="mt-4"
+            className="mt-4 bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
             onClick={() => router.push("/admin/employees")}
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
@@ -1713,31 +1785,31 @@ export default function EmployeeDetailPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/admin/employees">
-              <Button variant="ghost" size="icon" aria-label="Volver">
+              <Button variant="ghost" size="icon" aria-label="Volver" className="text-slate-400 hover:text-slate-200 hover:bg-slate-700/60">
                 <ArrowLeft className="w-5 h-5" />
               </Button>
             </Link>
 
             <div>
-              <h1 className="text-3xl font-bold text-slate-900">
+              <h1 className="text-3xl font-bold text-slate-100">
                 {employee.name}
               </h1>
-              <p className="text-slate-600 mt-1">{primaryRoleLabel}</p>
+              <p className="text-slate-400 mt-1">{primaryRoleLabel}</p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <Dialog open={editOpen} onOpenChange={handleOpenChange}>
               <DialogTrigger asChild>
-                <Button>
+                <Button className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
                   <Edit className="w-4 h-4 mr-2" />
                   Editar perfil
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-3xl">
+              <DialogContent className="max-w-3xl bg-slate-800 border-slate-700 text-slate-100">
                 <DialogHeader>
-                  <DialogTitle>Editar empleado</DialogTitle>
-                  <DialogDescription>
+                  <DialogTitle className="text-slate-100">Editar empleado</DialogTitle>
+                  <DialogDescription className="text-slate-400">
                     Actualiza la información general del empleado.
                   </DialogDescription>
                 </DialogHeader>
@@ -1746,9 +1818,10 @@ export default function EmployeeDetailPage() {
                   <div className="space-y-6 py-2">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label htmlFor="full_name">Nombre completo</Label>
+                        <Label htmlFor="full_name" className={labelCls}>Nombre completo</Label>
                         <Input
                           id="full_name"
+                          className={inputCls}
                           value={editForm.full_name}
                           onChange={(e) =>
                             handleEditChange("full_name", e.target.value)
@@ -1757,9 +1830,10 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="phone">Teléfono</Label>
+                        <Label htmlFor="phone" className={labelCls}>Teléfono</Label>
                         <Input
                           id="phone"
+                          className={inputCls}
                           value={editForm.phone}
                           onChange={(e) =>
                             handleEditChange("phone", e.target.value)
@@ -1768,10 +1842,11 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="hire_date">Fecha de contratación</Label>
+                        <Label htmlFor="hire_date" className={labelCls}>Fecha de contratación</Label>
                         <Input
                           id="hire_date"
                           type="date"
+                          className={inputCls}
                           value={editForm.hire_date ?? ""}
                           onChange={(e) =>
                             handleEditChange("hire_date", e.target.value)
@@ -1780,7 +1855,7 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label>Estatus</Label>
+                        <Label className={labelCls}>Estatus</Label>
                         <Select
                           value={editForm.status}
                           onValueChange={(value) =>
@@ -1790,10 +1865,10 @@ export default function EmployeeDetailPage() {
                             )
                           }
                         >
-                          <SelectTrigger>
+                          <SelectTrigger className={selectTriggerCls}>
                             <SelectValue placeholder="Selecciona un estatus" />
                           </SelectTrigger>
-                          <SelectContent>
+                          <SelectContent className={selectContentCls}>
                             <SelectItem value="active">Activo</SelectItem>
                             <SelectItem value="inactive">Inactivo</SelectItem>
                           </SelectContent>
@@ -1801,10 +1876,11 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2">
-                        <Label htmlFor="birth_date">Fecha de nacimiento</Label>
+                        <Label htmlFor="birth_date" className={labelCls}>Fecha de nacimiento</Label>
                         <Input
                           id="birth_date"
                           type="date"
+                          className={inputCls}
                           value={editForm.birth_date ?? ""}
                           onChange={(e) =>
                             handleEditChange("birth_date", e.target.value)
@@ -1813,10 +1889,11 @@ export default function EmployeeDetailPage() {
                       </div>
 
                       <div className="space-y-2 md:col-span-2">
-                        <Label htmlFor="termination_date">Fecha de bajada</Label>
+                        <Label htmlFor="termination_date" className={labelCls}>Fecha de bajada</Label>
                         <Input
                           id="termination_date"
                           type="date"
+                          className={inputCls}
                           value={editForm.termination_date ?? ""}
                           onChange={(e) =>
                             handleEditChange("termination_date", e.target.value)
@@ -1831,12 +1908,13 @@ export default function EmployeeDetailPage() {
                   <Button
                     type="button"
                     variant="outline"
+                    className={btnOutlineCls}
                     onClick={() => setEditOpen(false)}
                     disabled={saving}
                   >
                     Cancelar
                   </Button>
-                  <Button type="button" onClick={handleSave} disabled={saving}>
+                  <Button type="button" className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={handleSave} disabled={saving}>
                     {saving ? "Guardando..." : "Guardar cambios"}
                   </Button>
                 </DialogFooter>
@@ -1856,27 +1934,28 @@ export default function EmployeeDetailPage() {
                   Eliminar
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-xl">
+              <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
                 <DialogHeader>
-                  <DialogTitle>Eliminar empleado</DialogTitle>
-                  <DialogDescription>
-                    Esta acción eliminará a <span className="font-semibold">{employee.name}</span> y
+                  <DialogTitle className="text-slate-100">Eliminar empleado</DialogTitle>
+                  <DialogDescription className="text-slate-400">
+                    Esta acción eliminará a <span className="font-semibold text-slate-200">{employee.name}</span> y
                     todos los registros relacionados que dependan de este empleado.
                     Esta acción no se puede deshacer.
                   </DialogDescription>
                 </DialogHeader>
 
                 <div className="space-y-4 py-2">
-                  <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                  <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-400">
                     ¿Estás seguro de que deseas eliminar permanentemente a este empleado?
                   </div>
 
                   <div className="space-y-2">
-                    <Label htmlFor="delete-confirm-input">
-                      Para confirmar, escribe <span className="font-semibold">ELIMINAR</span>
+                    <Label htmlFor="delete-confirm-input" className={labelCls}>
+                      Para confirmar, escribe <span className="font-semibold text-slate-200">ELIMINAR</span>
                     </Label>
                     <Input
                       id="delete-confirm-input"
+                      className={inputCls}
                       value={deleteConfirmText}
                       onChange={(e) => setDeleteConfirmText(e.target.value)}
                       placeholder='Escribe "ELIMINAR"'
@@ -1889,6 +1968,7 @@ export default function EmployeeDetailPage() {
                   <Button
                     type="button"
                     variant="outline"
+                    className={btnOutlineCls}
                     onClick={() => {
                       setDeleteOpen(false)
                       setDeleteConfirmText("")
@@ -1912,10 +1992,10 @@ export default function EmployeeDetailPage() {
         </div>
 
         <Dialog open={rolesDialogOpen} onOpenChange={setRolesDialogOpen}>
-          <DialogContent className="max-w-2xl">
+          <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
             <DialogHeader>
-              <DialogTitle>Modificar roles</DialogTitle>
-              <DialogDescription>
+              <DialogTitle className="text-slate-100">Modificar roles</DialogTitle>
+              <DialogDescription className="text-slate-400">
                 Agrega o elimina roles. Los roles seleccionados no aparecerán
                 en el dropdown.
               </DialogDescription>
@@ -1923,12 +2003,12 @@ export default function EmployeeDetailPage() {
 
             <div className="space-y-4 py-2">
               <div className="space-y-2">
-                <Label>Agregar rol</Label>
+                <Label className={labelCls}>Agregar rol</Label>
                 <Select value={rolePickerValue} onValueChange={(v) => addRole(v)}>
-                  <SelectTrigger>
+                  <SelectTrigger className={selectTriggerCls}>
                     <SelectValue placeholder="Selecciona un rol..." />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className={selectContentCls}>
                     {availableRolesForPicker.length === 0 ? (
                       <SelectItem value="__empty__" disabled>
                         No hay más roles disponibles
@@ -1945,10 +2025,10 @@ export default function EmployeeDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label>Roles seleccionados</Label>
+                <Label className={labelCls}>Roles seleccionados</Label>
 
                 {selectedRoleChips.length === 0 ? (
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-400">
                     Aún no hay roles seleccionados.
                   </p>
                 ) : (
@@ -1956,16 +2036,16 @@ export default function EmployeeDetailPage() {
                     {selectedRoleChips.map((r) => (
                       <span
                         key={r.id}
-                        className="inline-flex items-center justify-between rounded-full border border-slate-200 bg-white px-3 py-1 text-xs text-slate-700"
+                        className="inline-flex items-center justify-between rounded-full border border-slate-600 bg-slate-700/60 px-3 py-1 text-xs text-slate-300"
                       >
                         <span className="truncate">{r.name}</span>
                         <button
                           type="button"
-                          className="ml-2 rounded-full p-1 hover:bg-slate-100 flex-shrink-0"
+                          className="ml-2 rounded-full p-1 hover:bg-slate-600 flex-shrink-0"
                           onClick={() => removeRole(r.id)}
                           aria-label={`Quitar rol ${r.name}`}
                         >
-                          <span className="text-slate-500 leading-none">×</span>
+                          <span className="text-slate-400 leading-none">×</span>
                         </button>
                       </span>
                     ))}
@@ -1978,12 +2058,13 @@ export default function EmployeeDetailPage() {
               <Button
                 type="button"
                 variant="outline"
+                className={btnOutlineCls}
                 onClick={() => setRolesDialogOpen(false)}
                 disabled={rolesSaving}
               >
                 Cancelar
               </Button>
-              <Button type="button" onClick={saveRoles} disabled={rolesSaving}>
+              <Button type="button" className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={saveRoles} disabled={rolesSaving}>
                 {rolesSaving ? "Guardando..." : "Guardar roles"}
               </Button>
             </DialogFooter>
@@ -1999,12 +2080,12 @@ export default function EmployeeDetailPage() {
             }
           }}
         >
-          <DialogContent className="lg:!w-[calc(100vw-4rem)] lg:!max-w-6xl w-[calc(100vw-1.5rem)] sm:w-[calc(100vw-2rem)] max-w-6xl p-0 overflow-hidden">
+          <DialogContent className="lg:!w-[calc(100vw-4rem)] lg:!max-w-6xl w-[calc(100vw-1.5rem)] sm:w-[calc(100vw-2rem)] max-w-6xl p-0 overflow-hidden bg-slate-800 border-slate-700 text-slate-100">
             <div className="flex flex-col max-h-[85vh]">
-              <div className="sticky top-0 z-10 bg-white px-6 pt-6 pb-4 border-b">
+              <div className="sticky top-0 z-10 bg-slate-800 px-6 pt-6 pb-4 border-b border-slate-700">
                 <DialogHeader>
-                  <DialogTitle>Historial salarial</DialogTitle>
-                  <DialogDescription>
+                  <DialogTitle className="text-slate-100">Historial salarial</DialogTitle>
+                  <DialogDescription className="text-slate-400">
                     Consulta los cambios históricos de sueldo real, bonificación, hora extra y viáticos.
                   </DialogDescription>
                 </DialogHeader>
@@ -2012,49 +2093,49 @@ export default function EmployeeDetailPage() {
 
               <div className="px-6 py-5 overflow-y-auto">
                 {salaryHistoryLoading ? (
-                  <p className="text-sm text-slate-600">Cargando historial...</p>
+                  <p className="text-sm text-slate-400">Cargando historial...</p>
                 ) : salaryHistoryError ? (
-                  <p className="text-sm text-red-500">{salaryHistoryError}</p>
+                  <p className="text-sm text-red-400">{salaryHistoryError}</p>
                 ) : salaryHistoryRows.length === 0 ? (
-                  <p className="text-sm text-slate-600">
+                  <p className="text-sm text-slate-400">
                     No hay registros de historial salarial.
                   </p>
                 ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[1000px] text-sm">
                       <thead>
-                        <tr className="border-b border-slate-200 text-left">
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Vigencia</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Sueldo real</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Bonificación</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Hora extra</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Viáticos</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-700">Modificado por</th>
-                          <th className="py-3 pr-0 font-semibold text-slate-700">Motivo</th>
+                        <tr className="border-b border-slate-700 text-left">
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Vigencia</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Sueldo real</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Bonificación</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Hora extra</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Viáticos</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Modificado por</th>
+                          <th className="py-3 pr-0 font-semibold text-slate-300">Motivo</th>
                         </tr>
                       </thead>
                       <tbody>
                         {salaryHistoryRows.map((row) => (
-                          <tr key={row.id} className="border-b border-slate-100 align-top">
-                            <td className="py-3 pr-4 text-slate-700">
+                          <tr key={row.id} className="border-b border-slate-700/60 align-top hover:bg-slate-700/30 transition-colors">
+                            <td className="py-3 pr-4 text-slate-400">
                               {formatHistoryRange(row.valid_from, row.valid_to)}
                             </td>
-                            <td className="py-3 pr-4 font-medium text-slate-900">
+                            <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.real_salary)}
                             </td>
-                            <td className="py-3 pr-4 font-medium text-slate-900">
+                            <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.bonus_amount)}
                             </td>
-                            <td className="py-3 pr-4 font-medium text-slate-900">
+                            <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.overtime_hour_cost)}
                             </td>
-                            <td className="py-3 pr-4 font-medium text-slate-900">
+                            <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.viatics_amount)}
                             </td>
-                            <td className="py-3 pr-4 text-slate-700">
+                            <td className="py-3 pr-4 text-slate-400">
                               {row.changed_by_name || "No registrado"}
                             </td>
-                            <td className="py-3 pr-0 text-slate-700">
+                            <td className="py-3 pr-0 text-slate-400">
                               {row.change_reason || "Sin motivo"}
                             </td>
                           </tr>
@@ -2065,11 +2146,12 @@ export default function EmployeeDetailPage() {
                 )}
               </div>
 
-              <div className="sticky bottom-0 z-10 bg-white px-6 py-4 border-t">
+              <div className="sticky bottom-0 z-10 bg-slate-800 px-6 py-4 border-t border-slate-700">
                 <DialogFooter>
                   <Button
                     type="button"
                     variant="outline"
+                    className={btnOutlineCls}
                     onClick={() => setSalaryHistoryOpen(false)}
                   >
                     Cerrar
@@ -2089,19 +2171,20 @@ export default function EmployeeDetailPage() {
             }
           }}
         >
-          <DialogContent className="max-w-xl">
+          <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
             <DialogHeader>
-              <DialogTitle>Editar datos bancarios</DialogTitle>
-              <DialogDescription>
+              <DialogTitle className="text-slate-100">Editar datos bancarios</DialogTitle>
+              <DialogDescription className="text-slate-400">
                 Actualiza banco, número de cuenta y clave interbancaria del empleado.
               </DialogDescription>
             </DialogHeader>
 
             <div className="space-y-4 py-2">
               <div className="space-y-2">
-                <Label htmlFor="bank_name">Banco</Label>
+                <Label htmlFor="bank_name" className={labelCls}>Banco</Label>
                 <Input
                   id="bank_name"
+                  className={inputCls}
                   value={bankingForm.bank_name}
                   onChange={(e) =>
                     setBankingForm((prev) => ({ ...prev, bank_name: e.target.value }))
@@ -2111,9 +2194,10 @@ export default function EmployeeDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="account_number">Número de Cuenta</Label>
+                <Label htmlFor="account_number" className={labelCls}>Número de Cuenta</Label>
                 <Input
                   id="account_number"
+                  className={inputCls}
                   value={bankingForm.account_number}
                   onChange={(e) =>
                     setBankingForm((prev) => ({
@@ -2127,9 +2211,10 @@ export default function EmployeeDetailPage() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="interbank_clabe">Clave Interbancaria</Label>
+                <Label htmlFor="interbank_clabe" className={labelCls}>Clave Interbancaria</Label>
                 <Input
                   id="interbank_clabe"
+                  className={inputCls}
                   value={bankingForm.interbank_clabe}
                   onChange={(e) =>
                     setBankingForm((prev) => ({
@@ -2148,6 +2233,7 @@ export default function EmployeeDetailPage() {
               <Button
                 type="button"
                 variant="outline"
+                className={btnOutlineCls}
                 onClick={() => setBankingOpen(false)}
                 disabled={bankingSaving || bankingLoading}
               >
@@ -2155,6 +2241,7 @@ export default function EmployeeDetailPage() {
               </Button>
               <Button
                 type="button"
+                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                 onClick={handleSaveBanking}
                 disabled={bankingSaving || bankingLoading}
               >
@@ -2165,8 +2252,10 @@ export default function EmployeeDetailPage() {
         </Dialog>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 ">
-          <Card>
-            <CardContent className="p-6">
+          <div
+            className="rounded-xl border border-slate-700/60 p-6"
+            style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+          >
               <div className="flex flex-col items-center text-center space-y-4">
                 <button
                   type="button"
@@ -2174,7 +2263,7 @@ export default function EmployeeDetailPage() {
                     if (profilePhotoUrl) setImagePreviewOpen(true)
                   }}
                   className={`
-                    w-24 h-24 rounded-full bg-blue-100 overflow-hidden flex items-center justify-center
+                    w-24 h-24 rounded-full bg-[#0174bd]/15 overflow-hidden flex items-center justify-center
                     transition hover:scale-105
                     ${profilePhotoUrl ? "cursor-zoom-in" : "cursor-default"}
                   `}
@@ -2187,14 +2276,14 @@ export default function EmployeeDetailPage() {
                       className="w-full h-full object-cover"
                     />
                   ) : (
-                    <span className="text-3xl font-bold text-blue-600">
+                    <span className="text-3xl font-bold text-[#4da8e8]">
                       {employee.avatar}
                     </span>
                   )}
                 </button>
 
                 <div className="space-y-1 w-full">
-                  <h3 className="font-semibold text-slate-900 text-xl">
+                  <h3 className="font-semibold text-slate-100 text-xl">
                     {employee.name}
                   </h3>
                   <Badge className={getStatusColor(employee.statusUi)}>
@@ -2203,7 +2292,7 @@ export default function EmployeeDetailPage() {
 
                   <div className="mt-3 text-left">
                     {sortedRoles.length === 0 ? (
-                      <p className="text-sm text-slate-600 text-center">
+                      <p className="text-sm text-slate-400 text-center">
                         Sin roles asignados
                       </p>
                     ) : (
@@ -2213,8 +2302,8 @@ export default function EmployeeDetailPage() {
                             key={r.id}
                             className="
                               inline-flex items-center justify-between
-                              rounded-full border border-slate-200 bg-white
-                              px-3 py-1 text-xs text-slate-700
+                              rounded-full border border-slate-600 bg-slate-700/60
+                              px-3 py-1 text-xs text-slate-300
                               min-h-7
                             "
                           >
@@ -2230,10 +2319,10 @@ export default function EmployeeDetailPage() {
                         onClick={openRolesDialog}
                         className="
                           inline-flex items-center gap-2
-                          text-xs text-slate-500
+                          text-xs text-slate-400
                           underline-offset-4
-                          hover:text-slate-800 hover:underline
-                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-300 focus-visible:ring-offset-2
+                          hover:text-[#4da8e8] hover:underline
+                          focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-600 focus-visible:ring-offset-2
                         "
                       >
                         <Edit className="w-3.5 h-3.5" />
@@ -2243,67 +2332,139 @@ export default function EmployeeDetailPage() {
                   </div>
                 </div>
 
-                <div className="w-full space-y-3 pt-4 border-t text-left">
+                <div className="w-full space-y-3 pt-4 border-t border-slate-700/60 text-left">
                   <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
+                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400">
                       Edad: {employeeAge !== null ? `${employeeAge} años` : "No especificada"}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 text-sm">
-                    <Phone className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
+                    <Phone className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400">
                       {employee.phone ?? "Sin teléfono"}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
+                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400">
                       Fecha de contratación: {formatDate(employee.joinDate)}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 text-sm">
-                    <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
+                    <Clock className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400">
                       Tiempo contratado: {calculateTenure(employee.joinDate)}
                     </span>
                   </div>
 
                   <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                    <span className="text-slate-600">
+                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400">
                       Fecha de bajada: {formatDate(employee.terminationDate)}
                     </span>
                   </div>
                 </div>
               </div>
-            </CardContent>
-          </Card>
+          </div>
 
           <div className="lg:col-span-2">
-            <Tabs defaultValue="overview" className="space-y-6">
-              <TabsList>
-                <TabsTrigger value="overview">Resumen</TabsTrigger>
-                <TabsTrigger value="banking">Datos bancarios</TabsTrigger>
-                <TabsTrigger value="documents">Documentos</TabsTrigger>
-                <TabsTrigger value="dc3">Documentos de Obra</TabsTrigger>
-                <TabsTrigger value="projects">Obras</TabsTrigger>
-              </TabsList>
+            <Tabs
+              value={activeTab}
+              onValueChange={setActiveTab}
+              className="space-y-6"
+            >
+              {/* ── Tab nav con pill deslizante ── */}
+              <div
+                ref={navRef}
+                role="tablist"
+                className="
+                  relative flex items-center gap-0 h-auto p-1.5
+                  bg-slate-900/70 border border-slate-700/50
+                  rounded-2xl overflow-x-auto
+                  backdrop-blur-sm
+                  [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]
+                "
+              >
+                {/* ── Pill viajero ── */}
+                <div
+                  data-nav-pill=""
+                  aria-hidden="true"
+                  className="absolute inset-y-1.5 rounded-xl pointer-events-none z-0"
+                  style={{
+                    background: "linear-gradient(135deg, #0174bd 0%, #015fa3 100%)",
+                    boxShadow: "0 4px 14px rgba(1,116,189,0.35), inset 0 1px 0 rgba(255,255,255,0.12)",
+                    left: 0,
+                    width: 0,
+                  }}
+                />
+
+                {/* ── Botones ── */}
+                {employeeTabs.map(({ value, label, Icon }) => {
+                  const isActive = activeTab === value
+                  return (
+                    <button
+                      key={value}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      data-tab-btn={value}
+                      onClick={() => setActiveTab(value)}
+                      className={`
+                        group relative z-10 flex-1 flex items-center justify-center gap-2
+                        px-3 py-2.5 text-xs sm:text-sm font-medium rounded-xl
+                        whitespace-nowrap min-w-fit
+                        focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0174bd]/50
+                        transition-colors duration-150
+                        ${isActive
+                          ? "text-white"
+                          : "text-slate-500 hover:text-slate-300"
+                        }
+                      `}
+                    >
+                      <Icon
+                        className={`
+                          w-3.5 h-3.5 shrink-0
+                          transition-all duration-200
+                          ${isActive
+                            ? "scale-110 drop-shadow-[0_0_8px_rgba(77,168,232,0.7)]"
+                            : "group-hover:scale-105"
+                          }
+                        `}
+                      />
+                      <span>{label}</span>
+
+                      {/* Punto glow debajo del tab activo */}
+                      <span
+                        className={`
+                          absolute -bottom-px left-1/2 -translate-x-1/2
+                          w-1 h-1 rounded-full bg-[#4da8e8]
+                          transition-all duration-300
+                          ${isActive ? "opacity-100 scale-100" : "opacity-0 scale-0"}
+                        `}
+                      />
+                    </button>
+                  )
+                })}
+              </div>
 
               <TabsContent value="overview">
                 <div className="grid grid-cols-1 gap-6">
-                  <Card>
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle>Salarios</CardTitle>
+                  <div
+                    className="rounded-xl border border-slate-700/60"
+                    style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                  >
+                    <div className="flex flex-row items-center justify-between p-6 pb-4">
+                      <h3 className="text-lg font-semibold text-slate-100">Salarios</h3>
 
                       <div className="flex items-center gap-2">
                         <Button
                           type="button"
                           size="sm"
-                          className="bg-slate-900 hover:bg-slate-800 text-white"
+                          className="bg-slate-700 hover:bg-slate-600 text-slate-200"
                           onClick={async () => {
                             setSalaryHistoryOpen(true)
                             await loadSalaryHistory()
@@ -2321,16 +2482,16 @@ export default function EmployeeDetailPage() {
                           }}
                         >
                           <DialogTrigger asChild>
-                            <Button variant="outline" size="sm">
+                            <Button variant="outline" size="sm" className={btnOutlineCls}>
                               <Edit className="w-4 h-4 mr-2" />
                               Editar
                             </Button>
                           </DialogTrigger>
 
-                          <DialogContent className="max-w-xl">
+                          <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
                             <DialogHeader>
-                              <DialogTitle>Editar salarios</DialogTitle>
-                              <DialogDescription>
+                              <DialogTitle className="text-slate-100">Editar salarios</DialogTitle>
+                              <DialogDescription className="text-slate-400">
                                 Actualiza sueldo real, bonificación, hora extra y viáticos.
                               </DialogDescription>
                             </DialogHeader>
@@ -2338,13 +2499,14 @@ export default function EmployeeDetailPage() {
                             {editForm && (
                               <div className="space-y-4 py-2">
                                 <div className="space-y-2">
-                                  <Label htmlFor="real_salary">
+                                  <Label htmlFor="real_salary" className={labelCls}>
                                     Sueldo real (MXN)
                                   </Label>
                                   <Input
                                     id="real_salary"
                                     type="number"
                                     step="0.01"
+                                    className={inputCls}
                                     value={editForm.real_salary}
                                     onChange={(e) =>
                                       handleEditChange("real_salary", e.target.value)
@@ -2353,13 +2515,14 @@ export default function EmployeeDetailPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                  <Label htmlFor="bonus_amount">
+                                  <Label htmlFor="bonus_amount" className={labelCls}>
                                     Bonificación (MXN)
                                   </Label>
                                   <Input
                                     id="bonus_amount"
                                     type="number"
                                     step="0.01"
+                                    className={inputCls}
                                     value={editForm.bonus_amount}
                                     onChange={(e) =>
                                       handleEditChange("bonus_amount", e.target.value)
@@ -2368,13 +2531,14 @@ export default function EmployeeDetailPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                  <Label htmlFor="overtime_hour_cost">
+                                  <Label htmlFor="overtime_hour_cost" className={labelCls}>
                                     Hora extra (MXN)
                                   </Label>
                                   <Input
                                     id="overtime_hour_cost"
                                     type="number"
                                     step="0.01"
+                                    className={inputCls}
                                     value={editForm.overtime_hour_cost}
                                     onChange={(e) =>
                                       handleEditChange(
@@ -2386,13 +2550,14 @@ export default function EmployeeDetailPage() {
                                 </div>
 
                                 <div className="space-y-2">
-                                  <Label htmlFor="viatics_amount">
+                                  <Label htmlFor="viatics_amount" className={labelCls}>
                                     Viáticos (MXN)
                                   </Label>
                                   <Input
                                     id="viatics_amount"
                                     type="number"
                                     step="0.01"
+                                    className={inputCls}
                                     value={editForm.viatics_amount}
                                     onChange={(e) =>
                                       handleEditChange("viatics_amount", e.target.value)
@@ -2406,6 +2571,7 @@ export default function EmployeeDetailPage() {
                               <Button
                                 type="button"
                                 variant="outline"
+                                className={btnOutlineCls}
                                 onClick={() => setPayrollOpen(false)}
                                 disabled={saving}
                               >
@@ -2413,6 +2579,7 @@ export default function EmployeeDetailPage() {
                               </Button>
                               <Button
                                 type="button"
+                                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                                 onClick={handleSavePayroll}
                                 disabled={saving}
                               >
@@ -2422,44 +2589,47 @@ export default function EmployeeDetailPage() {
                           </DialogContent>
                         </Dialog>
                       </div>
-                    </CardHeader>
+                    </div>
 
-                    <CardContent>
+                    <div className="px-6 pb-6">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
                         <div className="space-y-1">
-                          <p className="text-slate-500">Sueldo real</p>
-                          <p className="font-medium text-slate-900 text-2xl">
+                          <p className="text-slate-400">Sueldo real</p>
+                          <p className="font-medium text-slate-100 text-2xl">
                             {formatMoneyMXN(employee.real_salary)}
                           </p>
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Bonificación</p>
-                          <p className="font-medium text-slate-900 text-xl">
+                          <p className="text-slate-400">Bonificación</p>
+                          <p className="font-medium text-slate-100 text-xl">
                             {formatMoneyMXN(employee.bonus_amount)}
                           </p>
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Hora extra</p>
-                          <p className="font-medium text-slate-900 text-xl">
+                          <p className="text-slate-400">Hora extra</p>
+                          <p className="font-medium text-slate-100 text-xl">
                             {formatMoneyMXN(employee.overtime_hour_cost)}
                           </p>
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Viáticos</p>
-                          <p className="font-medium text-slate-900 text-xl">
+                          <p className="text-slate-400">Viáticos</p>
+                          <p className="font-medium text-slate-100 text-xl">
                             {formatMoneyMXN(employee.viatics_amount)}
                           </p>
                         </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
 
-                  <Card>
-                    <CardHeader className="flex flex-row items-center justify-between">
-                      <CardTitle>Información laboral</CardTitle>
+                  <div
+                    className="rounded-xl border border-slate-700/60"
+                    style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                  >
+                    <div className="flex flex-row items-center justify-between p-6 pb-4">
+                      <h3 className="text-lg font-semibold text-slate-100">Información laboral</h3>
 
                       <Dialog
                         open={laborOpen}
@@ -2469,16 +2639,16 @@ export default function EmployeeDetailPage() {
                         }}
                       >
                         <DialogTrigger asChild>
-                          <Button variant="outline" size="sm">
+                          <Button variant="outline" size="sm" className={btnOutlineCls}>
                             <Edit className="w-4 h-4 mr-2" />
                             Editar
                           </Button>
                         </DialogTrigger>
 
-                        <DialogContent className="max-w-xl">
+                        <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
                           <DialogHeader>
-                            <DialogTitle>Editar información laboral</DialogTitle>
-                            <DialogDescription>
+                            <DialogTitle className="text-slate-100">Editar información laboral</DialogTitle>
+                            <DialogDescription className="text-slate-400">
                               Actualiza los datos laborales y de contacto del empleado.
                             </DialogDescription>
                           </DialogHeader>
@@ -2486,9 +2656,10 @@ export default function EmployeeDetailPage() {
                           {editForm && (
                             <div className="space-y-4 py-2">
                               <div className="space-y-2">
-                                <Label htmlFor="imss_number">Número IMSS</Label>
+                                <Label htmlFor="imss_number" className={labelCls}>Número IMSS</Label>
                                 <Input
                                   id="imss_number"
+                                  className={inputCls}
                                   value={editForm.imss_number}
                                   onChange={(e) =>
                                     handleEditChange("imss_number", e.target.value)
@@ -2497,9 +2668,10 @@ export default function EmployeeDetailPage() {
                               </div>
 
                               <div className="space-y-2">
-                                <Label htmlFor="rfc">RFC</Label>
+                                <Label htmlFor="rfc" className={labelCls}>RFC</Label>
                                 <Input
                                   id="rfc"
+                                  className={inputCls}
                                   value={editForm.rfc}
                                   onChange={(e) =>
                                     handleEditChange("rfc", e.target.value)
@@ -2508,11 +2680,12 @@ export default function EmployeeDetailPage() {
                               </div>
 
                               <div className="space-y-2">
-                                <Label htmlFor="emergency_contact">
+                                <Label htmlFor="emergency_contact" className={labelCls}>
                                   Contacto de emergencia
                                 </Label>
                                 <Input
                                   id="emergency_contact"
+                                  className={inputCls}
                                   value={editForm.emergency_contact}
                                   onChange={(e) =>
                                     handleEditChange(
@@ -2529,6 +2702,7 @@ export default function EmployeeDetailPage() {
                             <Button
                               type="button"
                               variant="outline"
+                              className={btnOutlineCls}
                               onClick={() => setLaborOpen(false)}
                               disabled={saving}
                             >
@@ -2536,6 +2710,7 @@ export default function EmployeeDetailPage() {
                             </Button>
                             <Button
                               type="button"
+                              className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                               onClick={async () => {
                                 await handleSave()
                                 setLaborOpen(false)
@@ -2547,44 +2722,48 @@ export default function EmployeeDetailPage() {
                           </DialogFooter>
                         </DialogContent>
                       </Dialog>
-                    </CardHeader>
+                    </div>
 
-                    <CardContent>
+                    <div className="px-6 pb-6">
                       <div className="grid grid-cols-2 gap-4 text-sm">
                         <div className="space-y-1">
-                          <p className="text-slate-500">Número IMSS</p>
-                          <p className="font-medium text-slate-900">
+                          <p className="text-slate-400">Número IMSS</p>
+                          <p className="font-medium text-slate-100">
                             {employee.imss_number ?? "No registrado"}
                           </p>
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">RFC</p>
-                          <p className="font-medium text-slate-900">
+                          <p className="text-slate-400">RFC</p>
+                          <p className="font-medium text-slate-100">
                             {employee.rfc ?? "No registrado"}
                           </p>
                         </div>
 
                         <div className="space-y-1">
-                          <p className="text-slate-500">Contacto de emergencia</p>
-                          <p className="font-medium text-slate-900">
+                          <p className="text-slate-400">Contacto de emergencia</p>
+                          <p className="font-medium text-slate-100">
                             {employee.emergency_contact ?? "No especificado"}
                           </p>
                         </div>
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 </div>
               </TabsContent>
 
               <TabsContent value="banking">
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between">
-                    <CardTitle>Datos bancarios</CardTitle>
+                <div
+                  className="rounded-xl border border-slate-700/60"
+                  style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                >
+                  <div className="flex flex-row items-center justify-between p-6 pb-4">
+                    <h3 className="text-lg font-semibold text-slate-100">Datos bancarios</h3>
 
                     <Button
                       variant="outline"
                       size="sm"
+                      className={btnOutlineCls}
                       onClick={async () => {
                         setBankingOpen(true)
                         await loadBanking()
@@ -2593,63 +2772,66 @@ export default function EmployeeDetailPage() {
                       <Edit className="w-4 h-4 mr-2" />
                       Editar
                     </Button>
-                  </CardHeader>
+                  </div>
 
-                  <CardContent>
+                  <div className="px-6 pb-6">
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
-                        <div className="flex items-center gap-2 text-slate-500">
+                      <div className="border border-slate-700/60 rounded-lg p-4 space-y-2 bg-slate-900/40">
+                        <div className="flex items-center gap-2 text-slate-400">
                           <Landmark className="w-4 h-4" />
                           <span>Banco</span>
                         </div>
-                        <p className="font-medium text-slate-900">
+                        <p className="font-medium text-slate-100">
                           {employee.bank_name ?? "No registrado"}
                         </p>
                       </div>
 
-                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
-                        <div className="flex items-center gap-2 text-slate-500">
+                      <div className="border border-slate-700/60 rounded-lg p-4 space-y-2 bg-slate-900/40">
+                        <div className="flex items-center gap-2 text-slate-400">
                           <CreditCard className="w-4 h-4" />
                           <span>Número de Cuenta</span>
                         </div>
-                        <p className="font-medium text-slate-900 break-all">
+                        <p className="font-medium text-slate-100 break-all">
                           {employee.account_number ?? "No registrado"}
                         </p>
                       </div>
 
-                      <div className="border border-slate-200 rounded-lg p-4 space-y-2">
-                        <div className="flex items-center gap-2 text-slate-500">
+                      <div className="border border-slate-700/60 rounded-lg p-4 space-y-2 bg-slate-900/40">
+                        <div className="flex items-center gap-2 text-slate-400">
                           <Wallet className="w-4 h-4" />
                           <span>Clave Interbancaria</span>
                         </div>
-                        <p className="font-medium text-slate-900 break-all">
+                        <p className="font-medium text-slate-100 break-all">
                           {employee.interbank_clabe ?? "No registrado"}
                         </p>
                       </div>
                     </div>
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               </TabsContent>
 
               <TabsContent value="documents">
-                <Card>
-                  <CardHeader className="flex flex-row items-center justify-between">
-                    <CardTitle>Documentos del empleado</CardTitle>
+                <div
+                  className="rounded-xl border border-slate-700/60"
+                  style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                >
+                  <div className="flex flex-row items-center justify-between p-6 pb-4">
+                    <h3 className="text-lg font-semibold text-slate-100">Documentos del empleado</h3>
 
                     <Dialog open={docsDialogOpen} onOpenChange={setDocsDialogOpen}>
                       <DialogTrigger asChild>
-                        <Button variant="outline">
+                        <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/85 text-white border-0 transition-all duration-150">
                           <Edit className="w-4 h-4 mr-2" />
                           Editar
                         </Button>
                       </DialogTrigger>
 
-                      <DialogContent className="lg:!w-[calc(100vw-4rem)] lg:!max-w-6xl w-[calc(100vw-1.5rem)] sm:w-[calc(100vw-2rem)] max-w-6xl p-0 overflow-hidden">
+                      <DialogContent className="lg:!w-[calc(100vw-4rem)] lg:!max-w-6xl w-[calc(100vw-1.5rem)] sm:w-[calc(100vw-2rem)] max-w-6xl p-0 overflow-hidden bg-slate-800 border-slate-700 text-slate-100">
                         <div className="flex flex-col max-h-[85vh]">
-                          <div className="sticky top-0 z-10 bg-white px-6 pt-6 pb-4 border-b">
+                          <div className="sticky top-0 z-10 bg-slate-800 px-6 pt-6 pb-4 border-b border-slate-700">
                             <DialogHeader>
-                              <DialogTitle>Editar documentos</DialogTitle>
-                              <DialogDescription>
+                              <DialogTitle className="text-slate-100">Editar documentos</DialogTitle>
+                              <DialogDescription className="text-slate-400">
                                 Sube, reemplaza o elimina documentos del
                                 empleado. Los cambios se guardan en Storage y en
                                 la DB.
@@ -2665,18 +2847,18 @@ export default function EmployeeDetailPage() {
                                   return (
                                     <div
                                       key={docType}
-                                      className="border border-slate-200 rounded-lg p-4 space-y-3"
+                                      className="border border-slate-700/60 rounded-lg p-4 space-y-3 bg-slate-900/40"
                                     >
                                       <div className="flex items-start justify-between gap-3">
                                         <div className="space-y-1">
-                                          <p className="text-sm font-medium text-slate-900">
+                                          <p className="text-sm font-medium text-slate-200">
                                             {DOC_LABELS[docType]}
                                           </p>
-                                          <p className="text-xs text-slate-500">
+                                          <p className="text-xs text-slate-400">
                                             {existing ? (
                                               <>
                                                 Subido:{" "}
-                                                <span className="font-medium">
+                                                <span className="font-medium text-slate-300">
                                                   {existing.file_name ?? "Archivo"}
                                                 </span>
                                               </>
@@ -2687,32 +2869,35 @@ export default function EmployeeDetailPage() {
                                         </div>
 
                                         {existing ? (
-                                          <Badge className="bg-green-100 text-green-700">
+                                          <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
                                             Listo
                                           </Badge>
                                         ) : (
-                                          <Badge className="bg-slate-100 text-slate-700">
+                                          <Badge className="bg-slate-500/15 text-slate-400 border border-slate-500/25">
                                             Pendiente
                                           </Badge>
                                         )}
                                       </div>
 
                                       <div className="space-y-2">
-                                        <Label>Seleccionar archivo</Label>
-                                        <Input
-                                          type="file"
-                                          accept=".pdf,image/*"
-                                          onChange={(e) => {
-                                            const file = e.target.files?.[0] ?? null
-                                            handleChangeDocFile(docType, file)
-                                          }}
-                                        />
+                                        <Label className={labelCls}>Seleccionar archivo</Label>
+                                        <div className={fileWrapCls}>
+                                          <Input
+                                            type="file"
+                                            accept=".pdf,image/*"
+                                            className={fileInputCls}
+                                            onChange={(e) => {
+                                              const file = e.target.files?.[0] ?? null
+                                              handleChangeDocFile(docType, file)
+                                            }}
+                                          />
+                                        </div>
                                         {docFiles[docType] ? (
-                                          <p className="text-xs text-slate-600 truncate">
+                                          <p className="text-xs text-slate-300 truncate">
                                             Nuevo: {docFiles[docType]?.name}
                                           </p>
                                         ) : (
-                                          <p className="text-xs text-slate-400">
+                                          <p className="text-xs text-slate-500">
                                             Sin cambios
                                           </p>
                                         )}
@@ -2752,44 +2937,47 @@ export default function EmployeeDetailPage() {
                                 })}
                               </div>
 
-                              <div className="border border-slate-200 rounded-lg p-4 space-y-3">
+                              <div className="border border-slate-700/60 rounded-lg p-4 space-y-3 bg-slate-900/40">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="space-y-1">
-                                    <p className="text-sm font-medium text-slate-900">
+                                    <p className="text-sm font-medium text-slate-200">
                                       Foto de perfil
                                     </p>
-                                    <p className="text-xs text-slate-500">
+                                    <p className="text-xs text-slate-400">
                                       {profilePhotoUrl ? "Subida" : "No subida"}
                                     </p>
                                   </div>
 
                                   {profilePhotoUrl ? (
-                                    <Badge className="bg-green-100 text-green-700">
+                                    <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
                                       Listo
                                     </Badge>
                                   ) : (
-                                    <Badge className="bg-slate-100 text-slate-700">
+                                    <Badge className="bg-slate-500/15 text-slate-400 border border-slate-500/25">
                                       Pendiente
                                     </Badge>
                                   )}
                                 </div>
 
                                 <div className="space-y-2">
-                                  <Label>Seleccionar imagen</Label>
-                                  <Input
-                                    type="file"
-                                    accept="image/*"
-                                    onChange={(e) => {
-                                      const file = e.target.files?.[0] ?? null
-                                      handleChangeDocFile("profile_photo", file)
-                                    }}
-                                  />
+                                  <Label className={labelCls}>Seleccionar imagen</Label>
+                                  <div className={fileWrapCls}>
+                                    <Input
+                                      type="file"
+                                      accept="image/*"
+                                      className={fileInputCls}
+                                      onChange={(e) => {
+                                        const file = e.target.files?.[0] ?? null
+                                        handleChangeDocFile("profile_photo", file)
+                                      }}
+                                    />
+                                  </div>
                                   {docFiles.profile_photo ? (
-                                    <p className="text-xs text-slate-600 truncate">
+                                    <p className="text-xs text-slate-300 truncate">
                                       Nuevo: {docFiles.profile_photo.name}
                                     </p>
                                   ) : (
-                                    <p className="text-xs text-slate-400">
+                                    <p className="text-xs text-slate-500">
                                       Sin cambios
                                     </p>
                                   )}
@@ -2828,11 +3016,12 @@ export default function EmployeeDetailPage() {
                             </div>
                           </div>
 
-                          <div className="sticky bottom-0 z-10 bg-white px-6 py-4 border-t">
+                          <div className="sticky bottom-0 z-10 bg-slate-800 px-6 py-4 border-t border-slate-700">
                             <DialogFooter className="gap-2 sm:gap-3">
                               <Button
                                 type="button"
                                 variant="outline"
+                                className={btnOutlineCls}
                                 onClick={() => setDocsDialogOpen(false)}
                                 disabled={docsSaving}
                               >
@@ -2840,6 +3029,7 @@ export default function EmployeeDetailPage() {
                               </Button>
                               <Button
                                 type="button"
+                                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                                 onClick={handleSaveDocuments}
                                 disabled={docsSaving}
                               >
@@ -2850,17 +3040,17 @@ export default function EmployeeDetailPage() {
                         </div>
                       </DialogContent>
                     </Dialog>
-                  </CardHeader>
+                  </div>
 
-                  <CardContent>
+                  <div className="px-6 pb-6">
                     {docsLoading ? (
-                      <p className="text-sm text-slate-600">
+                      <p className="text-sm text-slate-400">
                         Cargando documentos...
                       </p>
                     ) : docsError ? (
-                      <p className="text-sm text-red-500">{docsError}</p>
+                      <p className="text-sm text-red-400">{docsError}</p>
                     ) : (
-                      <div className="space-y-4">
+                      <div className="space-y-3">
                         {REQUIRED_DOCS.map((docType) => {
                           const doc = docsMap.get(docType)
                           const signedUrl = docSignedUrls[docType]
@@ -2870,21 +3060,21 @@ export default function EmployeeDetailPage() {
                           return (
                             <div
                               key={docType}
-                              className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
+                              className="flex items-center justify-between p-4 border border-slate-700/60 rounded-lg bg-slate-900/30 hover:bg-slate-700/20 transition-colors"
                             >
                               <div className="flex items-start gap-3 flex-1">
-                                <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
+                                <FileText className="w-5 h-5 text-slate-400 mt-0.5" />
                                 <div className="flex-1">
                                   <div className="flex items-center gap-2">
-                                    <h4 className="font-medium text-slate-900">
+                                    <h4 className="font-medium text-slate-200">
                                       {DOC_LABELS[docType]}
                                     </h4>
                                     {isReady ? (
-                                      <Badge className="bg-green-100 text-green-700">
+                                      <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
                                         Subido
                                       </Badge>
                                     ) : (
-                                      <Badge className="bg-slate-100 text-slate-700">
+                                      <Badge className="bg-slate-500/15 text-slate-400 border border-slate-500/25">
                                         Pendiente
                                       </Badge>
                                     )}
@@ -2894,7 +3084,7 @@ export default function EmployeeDetailPage() {
                                     {doc ? (
                                       <>
                                         Archivo:{" "}
-                                        <span className="font-medium">
+                                        <span className="font-medium text-slate-400">
                                           {doc.file_name ?? "Archivo"}
                                         </span>
                                         {doc.file_size ? (
@@ -2914,36 +3104,15 @@ export default function EmployeeDetailPage() {
                                 <Button
                                   type="button"
                                   variant="outline"
+                                  className={`cursor-pointer ${btnOutlineCls}`}
                                   disabled={!isReady || !signedUrl}
-                                  onClick={() =>
-                                    signedUrl &&
-                                    window.open(
-                                      signedUrl,
-                                      "_blank",
-                                      "noopener,noreferrer",
-                                    )
-                                  }
-                                >
-                                  <Eye className="w-4 h-4 mr-2" />
-                                  {isPdf ? "Ver" : "Abrir"}
-                                </Button>
-
-                                <Button
-                                  type="button"
-                                  variant="outline"
-                                  disabled={!isReady || !signedUrl}
-                                  onClick={async () => {
-                                    try {
-                                      if (!signedUrl) return
-                                      await forceDownloadFile(signedUrl, doc?.file_name || "documento")
-                                    } catch (e: any) {
-                                      console.error(e)
-                                      alert(e?.message || "No se pudo descargar el archivo.")
-                                    }
+                                  onClick={() => {
+                                    if (!signedUrl) return
+                                    setFileViewer({ url: signedUrl, name: doc?.file_name || "documento", isPdf })
                                   }}
                                 >
-                                  <Download className="w-4 h-4 mr-2" />
-                                  Descargar
+                                  <Eye className="w-4 h-4 mr-2" />
+                                  Abrir
                                 </Button>
                               </div>
                             </div>
@@ -2951,63 +3120,69 @@ export default function EmployeeDetailPage() {
                         })}
                       </div>
                     )}
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               </TabsContent>
 
               <TabsContent value="dc3">
                 <div className="grid grid-cols-1 gap-6">
-                  <Card>
-                    <CardHeader className="flex flex-row items-center justify-between">
+                  <div
+                    className="rounded-xl border border-slate-700/60"
+                    style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                  >
+                    <div className="flex flex-row items-center justify-between p-6 pb-4">
                       <div className="flex items-center gap-2">
-                        <FolderOpen className="w-5 h-5 text-slate-700" />
-                        <CardTitle>Carpeta DC3</CardTitle>
+                        <FolderOpen className="w-5 h-5 text-slate-400" />
+                        <h3 className="text-lg font-semibold text-slate-100">Carpeta DC3</h3>
                       </div>
 
                       <Dialog open={dc3DialogOpen} onOpenChange={setDc3DialogOpen}>
                         <DialogTrigger asChild>
-                          <Button variant="outline">
+                          <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
                             Agregar archivos
                           </Button>
                         </DialogTrigger>
 
-                        <DialogContent className="max-w-2xl">
+                        <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
                           <DialogHeader>
-                            <DialogTitle>
+                            <DialogTitle className="text-slate-100">
                               Agregar documentos a Carpeta DC3
                             </DialogTitle>
-                            <DialogDescription>
+                            <DialogDescription className="text-slate-400">
                               Sube permisos, licencias u otros documentos adicionales del empleado.
                             </DialogDescription>
                           </DialogHeader>
 
                           <div className="space-y-4 py-2">
                             <div className="space-y-2">
-                              <Label>Seleccionar archivos</Label>
-                              <Input
-                                type="file"
-                                multiple
-                                accept=".pdf,image/*"
-                                onChange={(e) =>
-                                  handleChangeWorkFiles("dc3", e.target.files)
-                                }
-                              />
+                              <Label className={labelCls}>Seleccionar archivos</Label>
+                              <div className={fileWrapCls}>
+                                <Input
+                                  type="file"
+                                  multiple
+                                  accept=".pdf,image/*"
+                                  className={fileInputCls}
+                                  onChange={(e) =>
+                                    handleChangeWorkFiles("dc3", e.target.files)
+                                  }
+                                />
+                              </div>
                             </div>
 
                             {dc3Files.length > 0 ? (
                               <div className="space-y-2">
-                                <p className="text-sm font-medium text-slate-900">
+                                <p className="text-sm font-medium text-slate-300">
                                   Archivos seleccionados
                                 </p>
-                                <div className="space-y-2 max-h-48 overflow-y-auto border rounded-md p-3">
+                                <div className="space-y-2 max-h-48 overflow-y-auto border border-slate-700 rounded-md p-3 bg-slate-900/40">
                                   {dc3Files.map((file, index) => (
                                     <div
                                       key={`${file.name}-${index}`}
-                                      className="flex items-center justify-between text-sm text-slate-700"
+                                      className="flex items-center justify-between text-sm text-slate-300"
                                     >
                                       <span className="truncate">{file.name}</span>
-                                      <span className="text-xs text-slate-400 ml-3">
+                                      <span className="text-xs text-slate-500 ml-3">
                                         {Math.round(file.size / 1024)} KB
                                       </span>
                                     </div>
@@ -3015,7 +3190,7 @@ export default function EmployeeDetailPage() {
                                 </div>
                               </div>
                             ) : (
-                              <p className="text-sm text-slate-500">
+                              <p className="text-sm text-slate-400">
                                 No hay archivos seleccionados.
                               </p>
                             )}
@@ -3025,6 +3200,7 @@ export default function EmployeeDetailPage() {
                             <Button
                               type="button"
                               variant="outline"
+                              className={`cursor-pointer ${btnOutlineCls}`}
                               onClick={() => setDc3DialogOpen(false)}
                               disabled={dc3Saving}
                             >
@@ -3032,6 +3208,7 @@ export default function EmployeeDetailPage() {
                             </Button>
                             <Button
                               type="button"
+                              className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                               onClick={() => handleSaveWorkDocuments("dc3")}
                               disabled={dc3Saving}
                             >
@@ -3040,21 +3217,21 @@ export default function EmployeeDetailPage() {
                           </DialogFooter>
                         </DialogContent>
                       </Dialog>
-                    </CardHeader>
+                    </div>
 
-                    <CardContent>
+                    <div className="px-6 pb-6">
                       {dc3Loading ? (
-                        <p className="text-sm text-slate-600">
+                        <p className="text-sm text-slate-400">
                           Cargando carpeta DC3...
                         </p>
                       ) : dc3Error ? (
-                        <p className="text-sm text-red-500">{dc3Error}</p>
+                        <p className="text-sm text-red-400">{dc3Error}</p>
                       ) : dc3Documents.length === 0 ? (
-                        <p className="text-sm text-slate-600">
+                        <p className="text-sm text-slate-400">
                           Esta carpeta aún no tiene documentos cargados.
                         </p>
                       ) : (
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                           {dc3Documents.map((doc) => {
                             const signedUrl = dc3SignedUrls[doc.id]
                             const isPdf = normalizeMimeIsPdf(doc.mime_type)
@@ -3062,12 +3239,12 @@ export default function EmployeeDetailPage() {
                             return (
                               <div
                                 key={doc.id}
-                                className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
+                                className="flex items-center justify-between p-4 border border-slate-700/60 rounded-lg bg-slate-900/30 hover:bg-slate-700/20 transition-colors"
                               >
                                 <div className="flex items-start gap-3 flex-1">
-                                  <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
+                                  <FileText className="w-5 h-5 text-slate-400 mt-0.5" />
                                   <div className="flex-1">
-                                    <h4 className="font-medium text-slate-900">
+                                    <h4 className="font-medium text-slate-200">
                                       {doc.file_name ?? "Archivo sin nombre"}
                                     </h4>
 
@@ -3088,125 +3265,116 @@ export default function EmployeeDetailPage() {
                                   </div>
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5">
                                   <Button
                                     type="button"
                                     variant="outline"
+                                    size="sm"
+                                    className="cursor-pointer border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
                                     disabled={!signedUrl}
                                     onClick={() => {
                                       if (!signedUrl) return
-                                      window.open(
-                                        signedUrl,
-                                        "_blank",
-                                        "noopener,noreferrer",
-                                      )
+                                      setFileViewer({ url: signedUrl, name: doc.file_name || "documento-dc3", isPdf })
                                     }}
                                   >
-                                    <Eye className="w-4 h-4 mr-2" />
+                                    <Eye className="w-4 h-4 mr-1.5" />
                                     {isPdf ? "Ver" : "Abrir"}
                                   </Button>
 
-                                  <Button
+                                  {/* Eliminar — solo ícono, hover dinámico */}
+                                  <button
                                     type="button"
-                                    variant="outline"
-                                    disabled={!signedUrl}
+                                    title={`Eliminar ${doc.file_name ?? "archivo"}`}
+                                    className="
+                                      cursor-pointer
+                                      group relative flex items-center justify-center
+                                      w-8 h-8 rounded-lg
+                                      text-red-400 border border-red-500/40
+                                      hover:border-transparent hover:bg-red-500/15 hover:text-red-300
+                                      transition-all duration-200
+                                      hover:scale-110
+                                      active:scale-95
+                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40
+                                    "
                                     onClick={async () => {
-                                      try {
-                                        if (!signedUrl) return
-                                        await forceDownloadFile(signedUrl, doc.file_name || "documento-dc3")
-                                      } catch (e: any) {
-                                        console.error(e)
-                                        alert(e?.message || "No se pudo descargar el archivo.")
-                                      }
-                                    }}
-                                  >
-                                    <Download className="w-4 h-4 mr-2" />
-                                    Descargar
-                                  </Button>
-
-                                  <Button
-                                    type="button"
-                                    variant="destructive"
-                                    onClick={async () => {
-                                      const ok = confirm(
-                                        `¿Eliminar "${doc.file_name ?? "este archivo"}"?`,
-                                      )
+                                      const ok = confirm(`¿Eliminar "${doc.file_name ?? "este archivo"}"?`)
                                       if (!ok) return
-
                                       try {
                                         await deleteWorkDocumentByFolder("dc3", doc.id)
                                       } catch (e: any) {
                                         console.error(e)
-                                        alert(
-                                          e?.message ||
-                                            "No se pudo eliminar el archivo.",
-                                        )
+                                        alert(e?.message || "No se pudo eliminar el archivo.")
                                       }
                                     }}
                                   >
-                                    <Trash2 className="w-4 h-4 mr-2" />
-                                    Eliminar
-                                  </Button>
+                                    <Trash2 className="w-4 h-4 transition-all duration-200 group-hover:rotate-[-8deg] group-active:drop-shadow-[0_0_12px_rgba(239,68,68,1)] group-active:scale-110" />
+                                  </button>
                                 </div>
                               </div>
                             )
                           })}
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
 
-                  <Card>
-                    <CardHeader className="flex flex-row items-center justify-between">
+                  <div
+                    className="rounded-xl border border-slate-700/60"
+                    style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                  >
+                    <div className="flex flex-row items-center justify-between p-6 pb-4">
                       <div className="flex items-center gap-2">
-                        <FolderOpen className="w-5 h-5 text-slate-700" />
-                        <CardTitle>Carpeta de Reportes Médicos</CardTitle>
+                        <FolderOpen className="w-5 h-5 text-slate-400" />
+                        <h3 className="text-lg font-semibold text-slate-100">Carpeta de Reportes Médicos</h3>
                       </div>
 
                       <Dialog open={medicalDialogOpen} onOpenChange={setMedicalDialogOpen}>
                         <DialogTrigger asChild>
-                          <Button variant="outline">
+                          <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
                             Agregar archivos
                           </Button>
                         </DialogTrigger>
 
-                        <DialogContent className="max-w-2xl">
+                        <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
                           <DialogHeader>
-                            <DialogTitle>
+                            <DialogTitle className="text-slate-100">
                               Agregar documentos a Carpeta de Reportes Médicos
                             </DialogTitle>
-                            <DialogDescription>
+                            <DialogDescription className="text-slate-400">
                               Sube incapacidades, estudios, reportes u otros documentos médicos del empleado.
                             </DialogDescription>
                           </DialogHeader>
 
                           <div className="space-y-4 py-2">
                             <div className="space-y-2">
-                              <Label>Seleccionar archivos</Label>
-                              <Input
-                                type="file"
-                                multiple
-                                accept=".pdf,image/*"
-                                onChange={(e) =>
-                                  handleChangeWorkFiles("medical_reports", e.target.files)
-                                }
-                              />
+                              <Label className={labelCls}>Seleccionar archivos</Label>
+                              <div className={fileWrapCls}>
+                                <Input
+                                  type="file"
+                                  multiple
+                                  accept=".pdf,image/*"
+                                  className={fileInputCls}
+                                  onChange={(e) =>
+                                    handleChangeWorkFiles("medical_reports", e.target.files)
+                                  }
+                                />
+                              </div>
                             </div>
 
                             {medicalFiles.length > 0 ? (
                               <div className="space-y-2">
-                                <p className="text-sm font-medium text-slate-900">
+                                <p className="text-sm font-medium text-slate-300">
                                   Archivos seleccionados
                                 </p>
-                                <div className="space-y-2 max-h-48 overflow-y-auto border rounded-md p-3">
+                                <div className="space-y-2 max-h-48 overflow-y-auto border border-slate-700 rounded-md p-3 bg-slate-900/40">
                                   {medicalFiles.map((file, index) => (
                                     <div
                                       key={`${file.name}-${index}`}
-                                      className="flex items-center justify-between text-sm text-slate-700"
+                                      className="flex items-center justify-between text-sm text-slate-300"
                                     >
                                       <span className="truncate">{file.name}</span>
-                                      <span className="text-xs text-slate-400 ml-3">
+                                      <span className="text-xs text-slate-500 ml-3">
                                         {Math.round(file.size / 1024)} KB
                                       </span>
                                     </div>
@@ -3214,7 +3382,7 @@ export default function EmployeeDetailPage() {
                                 </div>
                               </div>
                             ) : (
-                              <p className="text-sm text-slate-500">
+                              <p className="text-sm text-slate-400">
                                 No hay archivos seleccionados.
                               </p>
                             )}
@@ -3224,6 +3392,7 @@ export default function EmployeeDetailPage() {
                             <Button
                               type="button"
                               variant="outline"
+                              className={`cursor-pointer ${btnOutlineCls}`}
                               onClick={() => setMedicalDialogOpen(false)}
                               disabled={medicalSaving}
                             >
@@ -3231,6 +3400,7 @@ export default function EmployeeDetailPage() {
                             </Button>
                             <Button
                               type="button"
+                              className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                               onClick={() => handleSaveWorkDocuments("medical_reports")}
                               disabled={medicalSaving}
                             >
@@ -3239,21 +3409,21 @@ export default function EmployeeDetailPage() {
                           </DialogFooter>
                         </DialogContent>
                       </Dialog>
-                    </CardHeader>
+                    </div>
 
-                    <CardContent>
+                    <div className="px-6 pb-6">
                       {medicalLoading ? (
-                        <p className="text-sm text-slate-600">
+                        <p className="text-sm text-slate-400">
                           Cargando carpeta de reportes médicos...
                         </p>
                       ) : medicalError ? (
-                        <p className="text-sm text-red-500">{medicalError}</p>
+                        <p className="text-sm text-red-400">{medicalError}</p>
                       ) : medicalDocuments.length === 0 ? (
-                        <p className="text-sm text-slate-600">
+                        <p className="text-sm text-slate-400">
                           Esta carpeta aún no tiene documentos cargados.
                         </p>
                       ) : (
-                        <div className="space-y-4">
+                        <div className="space-y-3">
                           {medicalDocuments.map((doc) => {
                             const signedUrl = medicalSignedUrls[doc.id]
                             const isPdf = normalizeMimeIsPdf(doc.mime_type)
@@ -3261,12 +3431,12 @@ export default function EmployeeDetailPage() {
                             return (
                               <div
                                 key={doc.id}
-                                className="flex items-center justify-between p-4 border border-slate-200 rounded-lg"
+                                className="flex items-center justify-between p-4 border border-slate-700/60 rounded-lg bg-slate-900/30 hover:bg-slate-700/20 transition-colors"
                               >
                                 <div className="flex items-start gap-3 flex-1">
-                                  <FileText className="w-5 h-5 text-slate-600 mt-0.5" />
+                                  <FileText className="w-5 h-5 text-slate-400 mt-0.5" />
                                   <div className="flex-1">
-                                    <h4 className="font-medium text-slate-900">
+                                    <h4 className="font-medium text-slate-200">
                                       {doc.file_name ?? "Archivo sin nombre"}
                                     </h4>
 
@@ -3287,104 +3457,86 @@ export default function EmployeeDetailPage() {
                                   </div>
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                <div className="flex items-center gap-1.5">
                                   <Button
                                     type="button"
                                     variant="outline"
+                                    size="sm"
+                                    className="cursor-pointer border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
                                     disabled={!signedUrl}
                                     onClick={() => {
                                       if (!signedUrl) return
-                                      window.open(
-                                        signedUrl,
-                                        "_blank",
-                                        "noopener,noreferrer",
-                                      )
+                                      setFileViewer({ url: signedUrl, name: doc.file_name || "documento-reporte-medico", isPdf })
                                     }}
                                   >
-                                    <Eye className="w-4 h-4 mr-2" />
+                                    <Eye className="w-4 h-4 mr-1.5" />
                                     {isPdf ? "Ver" : "Abrir"}
                                   </Button>
 
-                                  <Button
+                                  {/* Eliminar — solo ícono, hover dinámico */}
+                                  <button
                                     type="button"
-                                    variant="outline"
-                                    disabled={!signedUrl}
+                                    title={`Eliminar ${doc.file_name ?? "archivo"}`}
+                                    className="
+                                      cursor-pointer
+                                      group relative flex items-center justify-center
+                                      w-8 h-8 rounded-lg
+                                      text-red-400 border border-red-500/40
+                                      hover:border-transparent hover:bg-red-500/15 hover:text-red-300
+                                      transition-all duration-200
+                                      hover:scale-110
+                                      active:scale-95
+                                      focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500/40
+                                    "
                                     onClick={async () => {
-                                      try {
-                                        if (!signedUrl) return
-                                        await forceDownloadFile(
-                                          signedUrl,
-                                          doc.file_name || "documento-reporte-medico",
-                                        )
-                                      } catch (e: any) {
-                                        console.error(e)
-                                        alert(e?.message || "No se pudo descargar el archivo.")
-                                      }
-                                    }}
-                                  >
-                                    <Download className="w-4 h-4 mr-2" />
-                                    Descargar
-                                  </Button>
-
-                                  <Button
-                                    type="button"
-                                    variant="destructive"
-                                    onClick={async () => {
-                                      const ok = confirm(
-                                        `¿Eliminar "${doc.file_name ?? "este archivo"}"?`,
-                                      )
+                                      const ok = confirm(`¿Eliminar "${doc.file_name ?? "este archivo"}"?`)
                                       if (!ok) return
-
                                       try {
-                                        await deleteWorkDocumentByFolder(
-                                          "medical_reports",
-                                          doc.id,
-                                        )
+                                        await deleteWorkDocumentByFolder("medical_reports", doc.id)
                                       } catch (e: any) {
                                         console.error(e)
-                                        alert(
-                                          e?.message ||
-                                            "No se pudo eliminar el archivo.",
-                                        )
+                                        alert(e?.message || "No se pudo eliminar el archivo.")
                                       }
                                     }}
                                   >
-                                    <Trash2 className="w-4 h-4 mr-2" />
-                                    Eliminar
-                                  </Button>
+                                    <Trash2 className="w-4 h-4 transition-all duration-200 group-hover:rotate-[-8deg] group-active:drop-shadow-[0_0_12px_rgba(239,68,68,1)] group-active:scale-110" />
+                                  </button>
                                 </div>
                               </div>
                             )
                           })}
                         </div>
                       )}
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 </div>
               </TabsContent>
 
               <TabsContent value="projects">
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Obras asignadas</CardTitle>
-                  </CardHeader>
-                  <CardContent>
+                <div
+                  className="rounded-xl border border-slate-700/60"
+                  style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+                >
+                  <div className="p-6 pb-4">
+                    <h3 className="text-lg font-semibold text-slate-100">Obras asignadas</h3>
+                  </div>
+                  <div className="px-6 pb-6">
                     {projects.length === 0 ? (
-                      <p className="text-sm text-slate-600">
+                      <p className="text-sm text-slate-400">
                         Este empleado no tiene obras activas asignadas.
                       </p>
                     ) : (
-                      <div className="space-y-4">
+                      <div className="space-y-3">
                         {projects.map((project) => (
                           <div
                             key={project.obraId}
-                            className="flex items-center justify-between p-4 border border-slate-200 rounded-lg hover:border-blue-300 transition-colors"
+                            className="flex items-center justify-between p-4 border border-slate-700/60 rounded-lg bg-slate-900/30 hover:border-[#0174bd]/40 transition-colors"
                           >
                             <div className="flex items-start gap-3 flex-1">
-                              <Building2 className="w-5 h-5 text-blue-600 mt-1" />
+                              <Building2 className="w-5 h-5 text-[#4da8e8] mt-1" />
                               <div className="flex-1">
                                 <div className="flex items-center gap-2">
-                                  <h4 className="font-medium text-slate-900">
+                                  <h4 className="font-medium text-slate-200">
                                     {project.name}
                                   </h4>
                                   {project.status && (
@@ -3406,12 +3558,75 @@ export default function EmployeeDetailPage() {
                         ))}
                       </div>
                     )}
-                  </CardContent>
-                </Card>
+                  </div>
+                </div>
               </TabsContent>
             </Tabs>
           </div>
         </div>
+
+        {/* ── File Viewer Modal ── */}
+        {fileViewer && (
+          <div
+            className="fixed inset-0 z-[110] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setFileViewer(null)}
+          >
+            <div
+              className="relative flex flex-col w-full max-w-4xl rounded-2xl overflow-hidden border border-slate-700 shadow-2xl"
+              style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)", maxHeight: "90vh" }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-700/60 shrink-0">
+                <p className="text-sm font-medium text-slate-200 truncate max-w-[70%]">{fileViewer.name}</p>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    title="Descargar"
+                    className="cursor-pointer flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-slate-300 border border-slate-600 hover:bg-[#0174bd]/20 hover:border-[#0174bd]/60 hover:text-[#4da8e8] transition-all duration-150"
+                    onClick={async () => {
+                      try {
+                        await forceDownloadFile(fileViewer.url, fileViewer.name)
+                      } catch (e: any) {
+                        alert(e?.message || "No se pudo descargar el archivo.")
+                      }
+                    }}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Descargar
+                  </button>
+                  <button
+                    type="button"
+                    title="Cerrar"
+                    className="cursor-pointer flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 border border-slate-600 hover:bg-slate-700 hover:text-slate-200 transition-all duration-150"
+                    onClick={() => setFileViewer(null)}
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Content */}
+              <div className="flex-1 overflow-auto min-h-0 bg-slate-950/40">
+                {fileViewer.isPdf ? (
+                  <iframe
+                    src={fileViewer.url}
+                    className="w-full h-full min-h-[70vh]"
+                    title={fileViewer.name}
+                  />
+                ) : (
+                  <div className="flex items-center justify-center p-6 min-h-[50vh]">
+                    <img
+                      src={fileViewer.url}
+                      alt={fileViewer.name}
+                      className="max-h-[70vh] w-auto max-w-full rounded-xl object-contain shadow-xl"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
 
         {imagePreviewOpen && profilePhotoUrl && (
           <div
@@ -3425,7 +3640,7 @@ export default function EmployeeDetailPage() {
               <button
                 type="button"
                 onClick={() => setImagePreviewOpen(false)}
-                className="absolute -top-3 right-3 z-10 rounded-full bg-white shadow-md p-2 text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                className="absolute -top-3 right-3 z-10 rounded-full bg-slate-800 shadow-md p-2 text-slate-300 hover:bg-slate-700 hover:text-slate-100 transition cursor-pointer border border-slate-600"
                 aria-label="Cerrar vista previa"
               >
                 <X className="w-5 h-5 hover:w-6 hover:h-6 transition-all" />
@@ -3434,7 +3649,7 @@ export default function EmployeeDetailPage() {
               <img
                 src={profilePhotoUrl}
                 alt={`Foto ampliada de ${employee.name}`}
-                className="max-h-[85vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl bg-white"
+                className="max-h-[85vh] w-auto max-w-full rounded-2xl object-contain shadow-2xl bg-slate-900"
               />
             </div>
           </div>

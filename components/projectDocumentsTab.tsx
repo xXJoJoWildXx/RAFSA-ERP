@@ -67,17 +67,17 @@ function formatBytes(bytes: number) {
 function statusBadge(status: DocStatus) {
   switch (status) {
     case "missing":
-      return { label: "Pendiente", className: "bg-slate-100 text-slate-700" }
+      return { label: "Pendiente", className: "bg-slate-500/15 text-slate-400 border border-slate-500/25" }
     case "uploaded":
-      return { label: "Subido", className: "bg-blue-100 text-blue-700" }
+      return { label: "Subido", className: "bg-[#0174bd]/15 text-[#4da8e8] border border-[#0174bd]/25" }
     case "processing":
-      return { label: "Procesando", className: "bg-yellow-100 text-yellow-700" }
+      return { label: "Procesando", className: "bg-amber-500/15 text-amber-300 border border-amber-500/25" }
     case "approved":
-      return { label: "Aprobado", className: "bg-green-100 text-green-700" }
+      return { label: "Aprobado", className: "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25" }
     case "rejected":
-      return { label: "Rechazado", className: "bg-red-100 text-red-700" }
+      return { label: "Rechazado", className: "bg-red-500/15 text-red-400 border border-red-500/25" }
     default:
-      return { label: status, className: "bg-slate-100 text-slate-700" }
+      return { label: status, className: "bg-slate-500/15 text-slate-400 border border-slate-500/25" }
   }
 }
 
@@ -88,15 +88,15 @@ function docTypeLabel(t: DocType) {
 }
 
 function docTypeIcon(t: DocType) {
-  if (t === "contract") return <FileCheck2 className="w-5 h-5 text-blue-600" />
-  if (t === "quote") return <FileText className="w-5 h-5 text-purple-600" />
-  return <FileText className="w-5 h-5 text-slate-700" />
+  if (t === "contract") return <FileCheck2 className="w-5 h-5 text-[#4da8e8]" />
+  if (t === "quote") return <FileText className="w-5 h-5 text-violet-400" />
+  return <FileText className="w-5 h-5 text-slate-400" />
 }
 
 function docStatusIcon(status: DocStatus) {
-  if (status === "approved") return <ShieldCheck className="w-4 h-4 text-green-600" />
-  if (status === "processing") return <Loader2 className="w-4 h-4 text-yellow-600 animate-spin" />
-  if (status === "rejected") return <FileWarning className="w-4 h-4 text-red-600" />
+  if (status === "approved") return <ShieldCheck className="w-4 h-4 text-emerald-400" />
+  if (status === "processing") return <Loader2 className="w-4 h-4 text-amber-300 animate-spin" />
+  if (status === "rejected") return <FileWarning className="w-4 h-4 text-red-400" />
   return null
 }
 
@@ -121,6 +121,12 @@ function mapAiToDocStatus(ai: AiStatus): Exclude<DocStatus, "missing"> {
   if (ai === "error") return "rejected"
   return "uploaded"
 }
+
+// Shared dark-mode class strings
+const inputCls = "bg-slate-900 border-slate-700 text-slate-200 focus:border-[#0174bd]/60 placeholder:text-slate-500"
+const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
+const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
+const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
 export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -188,7 +194,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
     e.stopPropagation()
     const file = e.dataTransfer.files?.[0]
     if (!file) return
-    // Open modal pre-filled for this type, then set the dropped file
     openUploadModal(docType)
     setFile(file)
   }
@@ -275,7 +280,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
     setIsAdmin(String(data?.role || "").toLowerCase() === "admin")
   }
 
-  
   async function fetchDocuments() {
     setDocsLoading(true)
     setDocsError(null)
@@ -297,18 +301,11 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
       .order("uploaded_at", { ascending: false })
 
     if (error) {
-    console.error("fetchDocuments error (raw):", error)
-    console.error("fetchDocuments error fields:", {
-        message: (error as any)?.message,
-        details: (error as any)?.details,
-        hint: (error as any)?.hint,
-        code: (error as any)?.code,
-        status: (error as any)?.status,
-    })
-    setDocsError(`No se pudieron cargar los documentos: ${(error as any)?.message ?? "error desconocido"}`)
-    setDocs([])
-    setDocsLoading(false)
-    return
+      console.error("fetchDocuments error (raw):", error)
+      setDocsError(`No se pudieron cargar los documentos: ${(error as any)?.message ?? "error desconocido"}`)
+      setDocs([])
+      setDocsLoading(false)
+      return
     }
 
     const uiDocs: UiObraDocument[] = (data || []).map((d: any) => ({
@@ -442,7 +439,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         uploadForm.doc_type === "contract" ? "contracts" : uploadForm.doc_type === "quote" ? "quotes" : "other"
       const objectPath = `obras/${obraId}/${folder}/${uuid}_${safeName}`
 
-      // Versionado current solo para contract/quote
       if (uploadForm.doc_type !== "other") {
         const { error: updErr } = await supabase
           .from("obra_documents")
@@ -459,7 +455,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         }
       }
 
-      // 1) upload Storage
       const { error: upErr } = await supabase.storage.from(DOCS_BUCKET).upload(objectPath, selectedFile, {
         contentType: selectedFile.type || "application/octet-stream",
         upsert: false,
@@ -472,7 +467,6 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         return
       }
 
-      // 2) insert DB
       const payload = {
         obra_id: obraId,
         doc_type: uploadForm.doc_type,
@@ -495,7 +489,7 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
 
       if (insErr) {
         console.error("insert obra_documents error:", insErr)
-        await supabase.storage.from(DOCS_BUCKET).remove([objectPath]) // rollback
+        await supabase.storage.from(DOCS_BUCKET).remove([objectPath])
         setUploadError("No se pudo registrar el documento (DB).")
         setUploadSaving(false)
         return
@@ -564,124 +558,131 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Documentos de la obra</h2>
-          <p className="text-sm text-slate-600">Administra el contrato, la cotización y anexos.</p>
+          <h2 className="text-xl font-bold text-slate-100">Documentos de la obra</h2>
+          <p className="text-sm text-slate-400">Administra el contrato, la cotización y anexos.</p>
         </div>
-
       </div>
 
       {/* Contrato + Cotización */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
         {/* ── CONTRATO ── */}
-        <Card className="hover:shadow-md transition-shadow">
-          <CardContent className="p-5 space-y-3">
+        <div
+          className="rounded-2xl border border-slate-700/60 overflow-hidden"
+          style={{
+            background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+          }}
+        >
+          <div className="p-5 space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-slate-900">Contrato</p>
+                <p className="text-sm font-semibold text-slate-100">Contrato</p>
                 <p className="text-xs text-slate-500">PDF firmado o contrato de obra</p>
               </div>
               <Badge className={statusBadge(contractStatus).className}>{statusBadge(contractStatus).label}</Badge>
             </div>
 
             {currentContract ? (
-              /* Documento existente — clickable */
               <div
-                className="rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer hover:bg-blue-50 hover:border-blue-200 transition-all duration-150 group"
+                className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3 cursor-pointer hover:bg-[#0174bd]/5 hover:border-[#0174bd]/40 transition-all duration-150 group"
                 onClick={() => openDocPreview(currentContract)}
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-white border group-hover:border-blue-200 transition-colors shrink-0">
+                  <div className="p-2 rounded-md bg-slate-800 border border-slate-700 group-hover:border-[#0174bd]/40 transition-colors shrink-0">
                     {docTypeIcon("contract")}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-900 truncate">{currentContract.title}</p>
+                    <p className="text-sm font-medium text-slate-100 truncate">{currentContract.title}</p>
                     <p className="text-xs text-slate-500 truncate">{currentContract.file_name}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
+                    <p className="text-xs text-slate-600 mt-0.5">
                       v{currentContract.version} · {new Date(currentContract.uploaded_at).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
                     </p>
                   </div>
-                  <Eye className="w-4 h-4 text-slate-300 group-hover:text-blue-500 transition-colors shrink-0" />
+                  <Eye className="w-4 h-4 text-slate-600 group-hover:text-[#4da8e8] transition-colors shrink-0" />
                 </div>
               </div>
             ) : (
-              /* Sin documento — zona de subida */
               <div
-                className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 cursor-pointer hover:bg-blue-50 hover:border-blue-300 transition-all duration-150 group"
+                className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 cursor-pointer hover:bg-[#0174bd]/5 hover:border-[#0174bd]/40 transition-all duration-150 group"
                 onClick={() => openUploadModal("contract")}
                 onDrop={(e) => handleCardDrop(e, "contract")}
                 onDragOver={handleDragOver}
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-white border group-hover:border-blue-200 transition-colors">
+                  <div className="p-2 rounded-md bg-slate-800 border border-slate-700 group-hover:border-[#0174bd]/40 transition-colors">
                     {docTypeIcon("contract")}
                   </div>
                   <div className="flex-1">
-                    <p className="text-sm text-slate-800 group-hover:text-blue-700 transition-colors">
-                      Arrastra el contrato aquí o <span className="text-blue-600 font-medium">selecciónalo</span>
+                    <p className="text-sm text-slate-400 group-hover:text-slate-200 transition-colors">
+                      Arrastra el contrato aquí o <span className="text-[#4da8e8] font-medium">selecciónalo</span>
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">PDF recomendado. Máx. 25MB.</p>
+                    <p className="text-xs text-slate-600 mt-1">PDF recomendado. Máx. 25MB.</p>
                   </div>
                 </div>
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
         {/* ── COTIZACIÓN ── */}
-        <Card className="hover:shadow-md transition-shadow">
-          <CardContent className="p-5 space-y-3">
+        <div
+          className="rounded-2xl border border-slate-700/60 overflow-hidden"
+          style={{
+            background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+            boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+          }}
+        >
+          <div className="p-5 space-y-3">
             <div className="flex items-start justify-between gap-3">
               <div className="space-y-1">
-                <p className="text-sm font-semibold text-slate-900">Cotización</p>
+                <p className="text-sm font-semibold text-slate-100">Cotización</p>
                 <p className="text-xs text-slate-500">Cotización oficial aprobada por el cliente</p>
               </div>
               <Badge className={statusBadge(quoteStatus).className}>{statusBadge(quoteStatus).label}</Badge>
             </div>
 
             {currentQuote ? (
-              /* Documento existente — clickable */
               <div
-                className="rounded-lg border border-slate-200 bg-slate-50 p-3 cursor-pointer hover:bg-purple-50 hover:border-purple-200 transition-all duration-150 group"
+                className="rounded-lg border border-slate-700/60 bg-slate-900/60 p-3 cursor-pointer hover:bg-violet-500/5 hover:border-violet-400/30 transition-all duration-150 group"
                 onClick={() => openDocPreview(currentQuote)}
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-white border group-hover:border-purple-200 transition-colors shrink-0">
+                  <div className="p-2 rounded-md bg-slate-800 border border-slate-700 group-hover:border-violet-400/30 transition-colors shrink-0">
                     {docTypeIcon("quote")}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-slate-900 truncate">{currentQuote.title}</p>
+                    <p className="text-sm font-medium text-slate-100 truncate">{currentQuote.title}</p>
                     <p className="text-xs text-slate-500 truncate">{currentQuote.file_name}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">
+                    <p className="text-xs text-slate-600 mt-0.5">
                       v{currentQuote.version} · {new Date(currentQuote.uploaded_at).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" })}
                     </p>
                   </div>
-                  <Eye className="w-4 h-4 text-slate-300 group-hover:text-purple-500 transition-colors shrink-0" />
+                  <Eye className="w-4 h-4 text-slate-600 group-hover:text-violet-400 transition-colors shrink-0" />
                 </div>
               </div>
             ) : (
-              /* Sin documento — zona de subida */
               <div
-                className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4 cursor-pointer hover:bg-purple-50 hover:border-purple-300 transition-all duration-150 group"
+                className="rounded-lg border border-dashed border-slate-700 bg-slate-900/40 p-4 cursor-pointer hover:bg-violet-500/5 hover:border-violet-400/30 transition-all duration-150 group"
                 onClick={() => openUploadModal("quote")}
                 onDrop={(e) => handleCardDrop(e, "quote")}
                 onDragOver={handleDragOver}
               >
                 <div className="flex items-center gap-3">
-                  <div className="p-2 rounded-md bg-white border group-hover:border-purple-200 transition-colors">
+                  <div className="p-2 rounded-md bg-slate-800 border border-slate-700 group-hover:border-violet-400/30 transition-colors">
                     {docTypeIcon("quote")}
                   </div>
                   <div className="flex-1">
-                    <p className="text-sm text-slate-800 group-hover:text-purple-700 transition-colors">
-                      Arrastra la cotización aquí o <span className="text-purple-600 font-medium">selecciónala</span>
+                    <p className="text-sm text-slate-400 group-hover:text-slate-200 transition-colors">
+                      Arrastra la cotización aquí o <span className="text-violet-400 font-medium">selecciónala</span>
                     </p>
-                    <p className="text-xs text-slate-500 mt-1">PDF/Excel recomendado. Máx. 25MB.</p>
+                    <p className="text-xs text-slate-600 mt-1">PDF/Excel recomendado. Máx. 25MB.</p>
                   </div>
                 </div>
               </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
 
       </div>
 
@@ -689,23 +690,30 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
       <ProjectCarpetaSuaTab obraId={obraId} compact />
 
       {/* Lista */}
-      <Card>
-        <CardHeader className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-          <CardTitle>Historial de Contratos y Cotizaciones</CardTitle>
+      <div
+        className="rounded-2xl border border-slate-700/60 overflow-hidden"
+        style={{
+          background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+        }}
+      >
+        {/* Card header with filters */}
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 p-5 border-b border-slate-700/60">
+          <h3 className="text-base font-semibold text-slate-100">Historial de Contratos y Cotizaciones</h3>
 
           <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
             <Input
               placeholder="Buscar por nombre..."
               value={docSearch}
               onChange={(e) => setDocSearch(e.target.value)}
-              className="sm:w-64"
+              className={`sm:w-64 ${inputCls}`}
             />
 
             <Select value={docTypeFilter} onValueChange={(v) => setDocTypeFilter(v as any)}>
-              <SelectTrigger className="w-full sm:w-48">
+              <SelectTrigger className={`w-full sm:w-48 ${selectTriggerCls}`}>
                 <SelectValue placeholder="Tipo" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className={selectContentCls}>
                 <SelectItem value="all">Todos</SelectItem>
                 <SelectItem value="contract">Contrato</SelectItem>
                 <SelectItem value="quote">Cotización</SelectItem>
@@ -714,10 +722,10 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
             </Select>
 
             <Select value={docStatusFilter} onValueChange={(v) => setDocStatusFilter(v as any)}>
-              <SelectTrigger className="w-full sm:w-48">
+              <SelectTrigger className={`w-full sm:w-48 ${selectTriggerCls}`}>
                 <SelectValue placeholder="Estatus" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className={selectContentCls}>
                 <SelectItem value="all">Todos</SelectItem>
                 <SelectItem value="uploaded">Subido</SelectItem>
                 <SelectItem value="processing">Procesando</SelectItem>
@@ -726,11 +734,11 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               </SelectContent>
             </Select>
           </div>
-        </CardHeader>
+        </div>
 
-        <CardContent>
+        <div className="p-5">
           {docsError && (
-            <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+            <div className="mb-4 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
               {docsError}
             </div>
           )}
@@ -741,21 +749,21 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
             <div className="py-10 text-center text-slate-500 text-sm">
               Aún no hay documentos registrados para esta obra.
               <div className="mt-2 text-slate-600">
-                Sube el <b>Contrato</b> y la <b>Cotización</b> para comenzar.
+                Sube el <span className="font-semibold text-slate-400">Contrato</span> y la <span className="font-semibold text-slate-400">Cotización</span> para comenzar.
               </div>
             </div>
           ) : (
-            <div className="rounded-md border overflow-hidden">
+            <div className="rounded-md border border-slate-700/60 overflow-hidden">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Tipo</TableHead>
-                    <TableHead>Archivo</TableHead>
-                    <TableHead>Versión</TableHead>
-                    <TableHead>Estatus</TableHead>
-                    <TableHead>Fecha</TableHead>
-                    <TableHead>Tamaño</TableHead>
-                    <TableHead className="text-right">Acciones</TableHead>
+                  <TableRow className="border-slate-700/60 hover:bg-slate-800/40">
+                    <TableHead className="text-slate-400">Tipo</TableHead>
+                    <TableHead className="text-slate-400">Archivo</TableHead>
+                    <TableHead className="text-slate-400">Versión</TableHead>
+                    <TableHead className="text-slate-400">Estatus</TableHead>
+                    <TableHead className="text-slate-400">Fecha</TableHead>
+                    <TableHead className="text-slate-400">Tamaño</TableHead>
+                    <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
 
@@ -763,23 +771,23 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
                   {filteredDocs.map((d) => {
                     const st = statusBadge(d.status)
                     return (
-                      <TableRow key={d.id}>
+                      <TableRow key={d.id} className="border-slate-700/40 hover:bg-slate-800/40">
                         <TableCell>
                           <div className="flex items-center gap-2">
                             {docTypeIcon(d.doc_type)}
-                            <span className="font-medium text-slate-900">{docTypeLabel(d.doc_type)}</span>
+                            <span className="font-medium text-slate-200">{docTypeLabel(d.doc_type)}</span>
                           </div>
                         </TableCell>
 
                         <TableCell>
                           <div className="space-y-0.5">
-                            <p className="font-medium text-slate-900">{d.title}</p>
+                            <p className="font-medium text-slate-200">{d.title}</p>
                             <p className="text-xs text-slate-500">{d.file_name}</p>
                           </div>
                         </TableCell>
 
                         <TableCell>
-                          <span className="font-mono text-xs">v{d.version}</span>
+                          <span className="font-mono text-xs text-slate-400">v{d.version}</span>
                         </TableCell>
 
                         <TableCell>
@@ -789,18 +797,18 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
                           </div>
                         </TableCell>
 
-                        <TableCell className="text-sm text-slate-600">{new Date(d.created_at).toISOString().slice(0, 10)}</TableCell>
-                        <TableCell className="text-sm text-slate-600">{formatBytes(d.size_bytes)}</TableCell>
+                        <TableCell className="text-sm text-slate-400">{new Date(d.created_at).toISOString().slice(0, 10)}</TableCell>
+                        <TableCell className="text-sm text-slate-400">{formatBytes(d.size_bytes)}</TableCell>
 
                         <TableCell className="text-right">
                           <div className="inline-flex gap-2">
-                            <Button variant="outline" size="icon" onClick={() => handlePreview(d)}>
+                            <Button variant="outline" size="icon" onClick={() => handlePreview(d)} className={btnOutlineCls}>
                               <Eye className="w-4 h-4" />
                             </Button>
-                            <Button variant="outline" size="icon" onClick={() => handleDownload(d)}>
+                            <Button variant="outline" size="icon" onClick={() => handleDownload(d)} className={btnOutlineCls}>
                               <Download className="w-4 h-4" />
                             </Button>
-                            <Button variant="outline" size="icon" onClick={() => handleCopyLink(d)}>
+                            <Button variant="outline" size="icon" onClick={() => handleCopyLink(d)} className={btnOutlineCls}>
                               <Link2 className="w-4 h-4" />
                             </Button>
 
@@ -818,53 +826,59 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      {/* Panel “próximo” */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Automatización (próximo)</CardTitle>
-        </CardHeader>
-        <CardContent className="text-sm text-slate-600 space-y-2">
+      {/* Panel "próximo" */}
+      <div
+        className="rounded-2xl border border-slate-700/60 overflow-hidden"
+        style={{
+          background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+        }}
+      >
+        <div className="p-5 border-b border-slate-700/60">
+          <h3 className="text-base font-semibold text-slate-100">Automatización (próximo)</h3>
+        </div>
+        <div className="p-5 text-sm text-slate-500 space-y-2">
           <p>Esta sección la conectaremos después a OCR/AI + validaciones.</p>
           <ul className="list-disc pl-5 space-y-1">
             <li>Detectar montos, fechas, vigencia, proveedor/cliente.</li>
             <li>Comparar cotización vs contrato (discrepancias).</li>
-            <li>Generar resumen y “checklist de firma”.</li>
+            <li>Generar resumen y "checklist de firma".</li>
           </ul>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Input file oculto */}
       <input ref={fileInputRef} type="file" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
 
       {/* ── Preview Dialog ── */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-4xl w-full p-0 overflow-hidden">
+        <DialogContent className="max-w-4xl w-full p-0 overflow-hidden bg-slate-800 border-slate-700">
           {/* Header */}
-          <DialogHeader className="flex flex-row items-center gap-3 px-5 pt-5 pb-3 border-b">
-            <div className="p-2 rounded-md bg-slate-100 shrink-0">
-              {previewDoc ? docTypeIcon(previewDoc.doc_type) : <FileText className="w-5 h-5 text-slate-500" />}
+          <DialogHeader className="flex flex-row items-center gap-3 px-5 pt-5 pb-3 border-b border-slate-700">
+            <div className="p-2 rounded-md bg-slate-700 shrink-0">
+              {previewDoc ? docTypeIcon(previewDoc.doc_type) : <FileText className="w-5 h-5 text-slate-400" />}
             </div>
             <div className="flex-1 min-w-0">
-              <DialogTitle className="text-base font-semibold text-slate-900 truncate">
+              <DialogTitle className="text-base font-semibold text-slate-100 truncate">
                 {previewDoc?.title ?? "Documento"}
               </DialogTitle>
               <p className="text-xs text-slate-500 truncate mt-0.5">{previewDoc?.file_name}</p>
             </div>
             {previewDoc && (
-              <Badge className="shrink-0 bg-slate-100 text-slate-700 font-mono text-xs">
+              <Badge className="shrink-0 bg-slate-700 text-slate-300 font-mono text-xs border border-slate-600">
                 v{previewDoc.version}
               </Badge>
             )}
           </DialogHeader>
 
           {/* Preview area */}
-          <div className="relative bg-slate-100" style={{ height: "60vh" }}>
+          <div className="relative bg-slate-900" style={{ height: "60vh" }}>
             {previewLoading && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-100">
-                <Loader2 className="w-8 h-8 text-slate-400 animate-spin" />
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-900">
+                <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
                 <p className="text-sm text-slate-500">Cargando previsualización…</p>
               </div>
             )}
@@ -897,29 +911,29 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               }
               return (
                 <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-slate-500">
-                  <FolderOpen className="w-12 h-12 text-slate-300" />
+                  <FolderOpen className="w-12 h-12 text-slate-600" />
                   <p className="text-sm font-medium">Vista previa no disponible para este tipo de archivo.</p>
-                  <p className="text-xs text-slate-400">Descarga el archivo para abrirlo.</p>
+                  <p className="text-xs text-slate-600">Descarga el archivo para abrirlo.</p>
                 </div>
               )
             })()}
 
             {!previewLoading && !previewUrl && !previewLoading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 text-slate-500">
-                <FileWarning className="w-10 h-10 text-slate-300" />
+                <FileWarning className="w-10 h-10 text-slate-600" />
                 <p className="text-sm">No se pudo cargar la previsualización.</p>
               </div>
             )}
           </div>
 
           {/* Footer */}
-          <DialogFooter className="flex flex-row items-center justify-between gap-2 px-5 py-3 border-t bg-white">
+          <DialogFooter className="flex flex-row items-center justify-between gap-2 px-5 py-3 border-t border-slate-700 bg-slate-800">
             <Button
               variant="outline"
               size="sm"
               onClick={handleDownloadPreview}
               disabled={!previewUrl}
-              className="gap-1.5"
+              className={`gap-1.5 ${btnOutlineCls}`}
             >
               <Download className="w-4 h-4" />
               Descargar
@@ -928,7 +942,7 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
             <Button
               size="sm"
               onClick={handleEditVersion}
-              className="gap-1.5 bg-slate-900 hover:bg-slate-700 text-white"
+              className="gap-1.5 bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
             >
               <Pencil className="w-4 h-4" />
               {previewDoc ? `Subir v${previewDoc.version + 1}` : "Editar"}
@@ -937,40 +951,51 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
         </DialogContent>
       </Dialog>
 
-      {/* Modal */}
+      {/* Upload Modal */}
       <Dialog open={uploadOpen} onOpenChange={(v) => (uploadSaving ? null : setUploadOpen(v))}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
-            <DialogTitle>Subir documento</DialogTitle>
+            <DialogTitle className="text-slate-100">Subir documento</DialogTitle>
           </DialogHeader>
 
           <div className="space-y-4 mt-2">
             {/* Dropzone */}
-            <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50 p-4" onDrop={handleDrop} onDragOver={handleDragOver}>
+            <div
+              className="rounded-lg border border-dashed border-slate-700 bg-slate-900/60 p-4"
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+            >
               <div className="flex items-start gap-3">
-                <div className="p-2 rounded-md bg-white border">
-                  <Upload className="w-5 h-5 text-slate-700" />
+                <div className="p-2 rounded-md bg-slate-800 border border-slate-700">
+                  <Upload className="w-5 h-5 text-slate-400" />
                 </div>
                 <div className="flex-1">
-                  <p className="text-sm text-slate-800">
+                  <p className="text-sm text-slate-300">
                     Arrastra tu archivo aquí o{" "}
-                    <button type="button" onClick={onPickFile} className="text-blue-600 font-medium hover:underline">
+                    <button type="button" onClick={onPickFile} className="text-[#4da8e8] font-medium hover:underline">
                       selecciónalo
                     </button>
                   </p>
                   <p className="text-xs text-slate-500 mt-1">PDF/Excel/Word/imagen/zip. Máx. 25MB.</p>
 
                   {selectedFile && (
-                    <div className="mt-3 rounded-md bg-white border p-3">
+                    <div className="mt-3 rounded-md bg-slate-800 border border-slate-700 p-3">
                       <div className="flex items-start justify-between gap-3">
                         <div className="space-y-0.5">
-                          <p className="text-sm font-medium text-slate-900">{selectedFile.name}</p>
+                          <p className="text-sm font-medium text-slate-200">{selectedFile.name}</p>
                           <p className="text-xs text-slate-500">
                             {selectedFile.type || "application/octet-stream"} • {formatBytes(selectedFile.size)}
                           </p>
                         </div>
 
-                        <Button type="button" variant="outline" size="sm" onClick={() => setSelectedFile(null)} disabled={uploadSaving}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setSelectedFile(null)}
+                          disabled={uploadSaving}
+                          className={btnOutlineCls}
+                        >
                           Quitar
                         </Button>
                       </div>
@@ -983,12 +1008,12 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
             {/* Form */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Tipo de documento *</label>
+                <label className="text-xs font-medium text-slate-400">Tipo de documento *</label>
                 <Select value={uploadForm.doc_type} onValueChange={(v) => setUploadForm((f) => ({ ...f, doc_type: v as DocType }))}>
-                  <SelectTrigger>
+                  <SelectTrigger className={selectTriggerCls}>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className={selectContentCls}>
                     <SelectItem value="contract">Contrato</SelectItem>
                     <SelectItem value="quote">Cotización</SelectItem>
                     <SelectItem value="other">Anexo</SelectItem>
@@ -997,29 +1022,62 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
               </div>
 
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-600">Versión *</label>
-                <Input type="number" min={1} step={1} value={uploadForm.version} onChange={(e) => setUploadForm((f) => ({ ...f, version: e.target.value }))} placeholder="1" />
+                <label className="text-xs font-medium text-slate-400">Versión *</label>
+                <Input
+                  type="number"
+                  min={1}
+                  step={1}
+                  value={uploadForm.version}
+                  onChange={(e) => setUploadForm((f) => ({ ...f, version: e.target.value }))}
+                  placeholder="1"
+                  className={inputCls}
+                />
               </div>
 
               <div className="flex flex-col gap-1.5 md:col-span-2">
-                <label className="text-xs font-medium text-slate-600">Título *</label>
-                <Input value={uploadForm.title} onChange={(e) => setUploadForm((f) => ({ ...f, title: e.target.value }))} placeholder="Ej. Contrato firmado – Cliente X" />
+                <label className="text-xs font-medium text-slate-400">Título *</label>
+                <Input
+                  value={uploadForm.title}
+                  onChange={(e) => setUploadForm((f) => ({ ...f, title: e.target.value }))}
+                  placeholder="Ej. Contrato firmado – Cliente X"
+                  className={inputCls}
+                />
                 <p className="text-[11px] text-slate-500">Tip: usa un nombre claro (cliente / fecha / versión).</p>
               </div>
 
               <div className="flex flex-col gap-1.5 md:col-span-2">
-                <label className="text-xs font-medium text-slate-600">Notas (opcional)</label>
-                <Textarea rows={3} value={uploadForm.notes} onChange={(e) => setUploadForm((f) => ({ ...f, notes: e.target.value }))} placeholder="Comentarios internos (ej. pendiente de firma del cliente, etc.)" />
+                <label className="text-xs font-medium text-slate-400">Notas (opcional)</label>
+                <Textarea
+                  rows={3}
+                  value={uploadForm.notes}
+                  onChange={(e) => setUploadForm((f) => ({ ...f, notes: e.target.value }))}
+                  placeholder="Comentarios internos (ej. pendiente de firma del cliente, etc.)"
+                  className={inputCls}
+                />
               </div>
             </div>
 
-            {uploadError && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{uploadError}</div>}
+            {uploadError && (
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+                {uploadError}
+              </div>
+            )}
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setUploadOpen(false)} disabled={uploadSaving}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setUploadOpen(false)}
+                disabled={uploadSaving}
+                className={btnOutlineCls}
+              >
                 Cancelar
               </Button>
-              <Button onClick={handleUploadDocument} disabled={uploadSaving}>
+              <Button
+                onClick={handleUploadDocument}
+                disabled={uploadSaving}
+                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+              >
                 {uploadSaving ? "Guardando..." : "Subir documento"}
               </Button>
             </div>
@@ -1029,4 +1087,4 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
 
     </div>
   )
-}
+}

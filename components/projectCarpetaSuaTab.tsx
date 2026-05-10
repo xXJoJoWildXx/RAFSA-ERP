@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState, type DragEvent } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+// Card components unused after dark mode refactor
+// import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -74,12 +75,12 @@ function getMimeLabel(mime: string | null, fileName: string) {
 }
 
 function getMimeBadgeClass(mime: string | null) {
-  if (!mime) return "bg-slate-100 text-slate-600"
-  if (mime.startsWith("image/")) return "bg-purple-100 text-purple-700"
-  if (mime === "application/pdf") return "bg-red-100 text-red-700"
-  if (mime.includes("word")) return "bg-blue-100 text-blue-700"
-  if (mime.includes("excel") || mime.includes("spreadsheet")) return "bg-green-100 text-green-700"
-  return "bg-slate-100 text-slate-600"
+  if (!mime) return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
+  if (mime.startsWith("image/")) return "bg-violet-500/15 text-violet-400 border border-violet-500/25"
+  if (mime === "application/pdf") return "bg-red-500/15 text-red-400 border border-red-500/25"
+  if (mime.includes("word")) return "bg-[#0174bd]/15 text-[#4da8e8] border border-[#0174bd]/25"
+  if (mime.includes("excel") || mime.includes("spreadsheet")) return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
+  return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
 }
 
 function FileIcon({ mime }: { mime: string | null }) {
@@ -294,13 +295,24 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
   // ── Modo compacto: card simple con lista y un botón de subir ──
   if (compact) {
     return (
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      <div
+        className="rounded-2xl border border-slate-700/60 overflow-hidden"
+        style={{
+          background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+        }}
+      >
+        <div className="flex flex-row items-center justify-between p-5 border-b border-slate-700/60">
           <div className="flex items-center gap-2">
             <FolderOpen className="w-5 h-5 text-slate-500" />
-            <CardTitle>Carpeta SUA</CardTitle>
+            <h3 className="text-base font-semibold text-slate-100">Carpeta SUA</h3>
           </div>
-          <Button size="sm" onClick={() => inputRef.current?.click()} disabled={uploading}>
+          <Button
+            size="sm"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+            className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+          >
             {uploading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             ) : (
@@ -308,40 +320,41 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
             )}
             {uploading ? "Subiendo..." : "Subir archivo"}
           </Button>
-        </CardHeader>
-        <CardContent>
+        </div>
+
+        <div className="p-5">
           <input ref={inputRef} type="file" className="hidden" onChange={handleFileInputChange} />
           {error && (
-            <div className="mb-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>
+            <div className="mb-3 rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">{error}</div>
           )}
           {loading ? (
-            <div className="py-6 flex items-center justify-center gap-2 text-slate-400 text-sm">
+            <div className="py-6 flex items-center justify-center gap-2 text-slate-500 text-sm">
               <Loader2 className="w-4 h-4 animate-spin" />
               Cargando...
             </div>
           ) : files.length === 0 ? (
             <div className="py-6 text-center">
-              <FolderOpen className="w-8 h-8 text-slate-200 mx-auto mb-2" />
-              <p className="text-sm text-slate-400">No hay archivos en la Carpeta SUA todavia.</p>
+              <FolderOpen className="w-8 h-8 text-slate-600 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">No hay archivos en la Carpeta SUA todavia.</p>
             </div>
           ) : (
-            <div className="rounded-md border overflow-hidden">
+            <div className="rounded-md border border-slate-700/60 overflow-hidden">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-full min-w-0">Archivo</TableHead>
-                    <TableHead className="w-20 shrink-0">Tipo</TableHead>
-                    <TableHead className="w-24 shrink-0">Fecha</TableHead>
-                    <TableHead className="w-24 shrink-0 text-right">Acciones</TableHead>
+                  <TableRow className="border-slate-700/60 hover:bg-slate-800/40">
+                    <TableHead className="w-full min-w-0 text-slate-400">Archivo</TableHead>
+                    <TableHead className="w-20 shrink-0 text-slate-400">Tipo</TableHead>
+                    <TableHead className="w-24 shrink-0 text-slate-400">Fecha</TableHead>
+                    <TableHead className="w-24 shrink-0 text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {files.map((f) => (
-                    <TableRow key={f.id}>
+                    <TableRow key={f.id} className="border-slate-700/40 hover:bg-slate-800/40">
                       <TableCell className="max-w-0 w-full">
                         <div className="flex items-center gap-2 min-w-0">
                           <FileIcon mime={f.mime_type} />
-                          <span className="font-medium text-slate-800 truncate block min-w-0" title={f.file_name}>
+                          <span className="font-medium text-slate-200 truncate block min-w-0" title={f.file_name}>
                             {f.file_name}
                           </span>
                         </div>
@@ -351,20 +364,22 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                           {getMimeLabel(f.mime_type, f.file_name)}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm text-slate-500">{formatDate(f.uploaded_at)}</TableCell>
+                      <TableCell className="text-sm text-slate-400">{formatDate(f.uploaded_at)}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex items-center justify-end gap-1">
                           {isPreviewable(f.mime_type) && (
-                            <Button size="sm" variant="ghost" onClick={() => handleView(f)} title="Visualizar">
+                            <Button size="sm" variant="ghost" onClick={() => handleView(f)} title="Visualizar"
+                              className="text-slate-400 hover:bg-slate-700/60 hover:text-slate-200">
                               <Eye className="w-4 h-4" />
                             </Button>
                           )}
-                          <Button size="sm" variant="ghost" onClick={() => handleDownload(f)} title="Descargar">
+                          <Button size="sm" variant="ghost" onClick={() => handleDownload(f)} title="Descargar"
+                            className="text-slate-400 hover:bg-slate-700/60 hover:text-slate-200">
                             <Download className="w-4 h-4" />
                           </Button>
                           <Button
                             size="sm" variant="ghost"
-                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                             onClick={() => handleDelete(f)}
                             disabled={deletingId === f.id}
                             title="Eliminar"
@@ -379,15 +394,15 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
               </Table>
             </div>
           )}
-        </CardContent>
+        </div>
 
         {/* Visor inline (reutilizado) */}
         <Dialog open={viewOpen} onOpenChange={(v) => { if (!viewingLoading) { setViewOpen(v); if (!v) setViewingUrl(null) } }}>
-          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col bg-slate-800 border-slate-700">
             <DialogHeader>
-              <DialogTitle className="truncate pr-8">{viewingFile?.file_name}</DialogTitle>
+              <DialogTitle className="truncate pr-8 text-slate-100">{viewingFile?.file_name}</DialogTitle>
             </DialogHeader>
-            <div className="flex-1 overflow-hidden mt-2 min-h-[400px] flex items-center justify-center">
+            <div className="flex-1 overflow-hidden mt-2 min-h-[400px] flex items-center justify-center bg-slate-900 rounded-md">
               {viewingLoading ? (
                 <div className="flex flex-col items-center gap-2 text-slate-500">
                   <Loader2 className="w-8 h-8 animate-spin" />
@@ -397,24 +412,28 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                 viewingFile?.mime_type?.startsWith("image/") ? (
                   <img src={viewingUrl} alt={viewingFile?.file_name} className="max-w-full max-h-[65vh] object-contain rounded-md shadow" />
                 ) : (
-                  <iframe src={viewingUrl} className="w-full h-[65vh] rounded-md border" title={viewingFile?.file_name} />
+                  <iframe src={viewingUrl} className="w-full h-[65vh] rounded-md border-0" title={viewingFile?.file_name} />
                 )
               ) : (
                 <p className="text-sm text-slate-500">No se pudo cargar la vista previa.</p>
               )}
             </div>
-            <div className="flex justify-end gap-2 pt-3 border-t mt-3">
+            <div className="flex justify-end gap-2 pt-3 border-t border-slate-700 mt-3">
               {viewingFile && (
-                <Button variant="outline" onClick={() => handleDownload(viewingFile)}>
+                <Button variant="outline" onClick={() => handleDownload(viewingFile)}
+                  className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200">
                   <Download className="w-4 h-4 mr-2" />
                   Descargar
                 </Button>
               )}
-              <Button variant="outline" onClick={() => { setViewOpen(false); setViewingUrl(null) }}>Cerrar</Button>
+              <Button variant="outline" onClick={() => { setViewOpen(false); setViewingUrl(null) }}
+                className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200">
+                Cerrar
+              </Button>
             </div>
           </DialogContent>
         </Dialog>
-      </Card>
+      </div>
     )
   }
 
@@ -423,18 +442,27 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Carpeta SUA</h2>
-          <p className="text-sm text-slate-600">
+          <h2 className="text-xl font-bold text-slate-100">Carpeta SUA</h2>
+          <p className="text-sm text-slate-400">
             Documentos SUA y archivos de seguridad social de esta obra.
           </p>
         </div>
 
         <div className="flex gap-2">
-          <Button variant="outline" onClick={loadFiles} disabled={loading}>
+          <Button
+            variant="outline"
+            className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+            onClick={loadFiles}
+            disabled={loading}
+          >
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refrescar
           </Button>
-          <Button onClick={() => inputRef.current?.click()} disabled={uploading}>
+          <Button
+            className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+          >
             {uploading ? (
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
             ) : (
@@ -461,25 +489,25 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
         onClick={() => !uploading && inputRef.current?.click()}
         className={`flex flex-col items-center justify-center gap-3 rounded-xl border-2 border-dashed p-8 cursor-pointer transition-colors ${
           dragOver
-            ? "border-blue-400 bg-blue-50"
-            : "border-slate-200 bg-slate-50 hover:border-slate-300 hover:bg-slate-100"
+            ? "border-[#0174bd]/60 bg-[#0174bd]/5"
+            : "border-slate-700 bg-slate-900/40 hover:border-slate-600 hover:bg-slate-800/60"
         } ${uploading ? "pointer-events-none opacity-60" : ""}`}
       >
         {uploading ? (
           <>
-            <Loader2 className="w-8 h-8 text-blue-500 animate-spin" />
-            <p className="text-sm text-slate-600 font-medium">Subiendo archivo...</p>
+            <Loader2 className="w-8 h-8 text-[#4da8e8] animate-spin" />
+            <p className="text-sm text-slate-400 font-medium">Subiendo archivo...</p>
           </>
         ) : (
           <>
-            <div className="p-3 rounded-full bg-white border border-slate-200 shadow-sm">
+            <div className="p-3 rounded-full bg-slate-800 border border-slate-700 shadow-sm">
               <FolderOpen className="w-6 h-6 text-slate-400" />
             </div>
             <div className="text-center">
-              <p className="text-sm font-medium text-slate-700">
+              <p className="text-sm font-medium text-slate-300">
                 Arrastra un archivo aqui o haz clic para seleccionar
               </p>
-              <p className="text-xs text-slate-400 mt-1">
+              <p className="text-xs text-slate-500 mt-1">
                 PDF, imagenes, Word, Excel — cualquier formato
               </p>
             </div>
@@ -489,32 +517,36 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
 
       {/* Error */}
       {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}
         </div>
       )}
 
       {/* Buscador y conteo */}
-      <Card>
-        <CardContent className="p-4 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between">
-          <Input
-            placeholder="Buscar por nombre de archivo..."
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="sm:w-72"
-          />
-          <p className="text-sm text-slate-500">
-            {filtered.length} {filtered.length === 1 ? "archivo" : "archivos"}
-          </p>
-        </CardContent>
-      </Card>
+      <div
+        className="rounded-xl border border-slate-700/60 p-4 flex flex-col sm:flex-row gap-2 sm:items-center sm:justify-between"
+        style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+      >
+        <Input
+          placeholder="Buscar por nombre de archivo..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="sm:w-72 bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-500 focus:border-[#0174bd]/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+        />
+        <p className="text-sm text-slate-400">
+          {filtered.length} {filtered.length === 1 ? "archivo" : "archivos"}
+        </p>
+      </div>
 
       {/* Tabla de archivos */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Archivos</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <div
+        className="rounded-xl border border-slate-700/60 overflow-hidden"
+        style={{ background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)" }}
+      >
+        <div className="p-5 pb-4 border-b border-slate-700/60">
+          <h3 className="text-base font-semibold text-slate-100">Archivos</h3>
+        </div>
+        <div className="p-5">
           {loading ? (
             <div className="py-12 flex items-center justify-center gap-2 text-slate-500 text-sm">
               <Loader2 className="w-4 h-4 animate-spin" />
@@ -522,15 +554,15 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
             </div>
           ) : filtered.length === 0 ? (
             <div className="py-12 text-center">
-              <FolderOpen className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-              <p className="text-sm text-slate-500">
+              <FolderOpen className="w-10 h-10 text-slate-600 mx-auto mb-3" />
+              <p className="text-sm text-slate-400">
                 {search ? "No se encontraron archivos con ese nombre." : "No hay archivos en la Carpeta SUA todavia."}
               </p>
               {!search && (
                 <Button
                   size="sm"
                   variant="outline"
-                  className="mt-3"
+                  className="mt-3 border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
                   onClick={() => inputRef.current?.click()}
                 >
                   <Upload className="w-4 h-4 mr-2" />
@@ -539,24 +571,24 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
               )}
             </div>
           ) : (
-            <div className="rounded-md border overflow-hidden">
+            <div className="rounded-md border border-slate-700/60 overflow-hidden">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-full min-w-0">Archivo</TableHead>
-                    <TableHead className="w-20 shrink-0">Tipo</TableHead>
-                    <TableHead className="w-20 shrink-0">Tamano</TableHead>
-                    <TableHead className="w-24 shrink-0">Fecha</TableHead>
-                    <TableHead className="w-24 shrink-0 text-right">Acciones</TableHead>
+                  <TableRow className="border-slate-700/60 hover:bg-slate-800/40">
+                    <TableHead className="w-full min-w-0 text-slate-400">Archivo</TableHead>
+                    <TableHead className="w-20 shrink-0 text-slate-400">Tipo</TableHead>
+                    <TableHead className="w-20 shrink-0 text-slate-400">Tamaño</TableHead>
+                    <TableHead className="w-24 shrink-0 text-slate-400">Fecha</TableHead>
+                    <TableHead className="w-24 shrink-0 text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {filtered.map((f) => (
-                    <TableRow key={f.id}>
+                    <TableRow key={f.id} className="border-slate-700/40 hover:bg-slate-800/40">
                       <TableCell className="max-w-0 w-full">
                         <div className="flex items-center gap-2 min-w-0">
                           <FileIcon mime={f.mime_type} />
-                          <span className="font-medium text-slate-800 truncate block min-w-0" title={f.file_name}>
+                          <span className="font-medium text-slate-200 truncate block min-w-0" title={f.file_name}>
                             {f.file_name}
                           </span>
                         </div>
@@ -568,11 +600,11 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                         </Badge>
                       </TableCell>
 
-                      <TableCell className="text-sm text-slate-500">
+                      <TableCell className="text-sm text-slate-400">
                         {formatBytes(f.size_bytes)}
                       </TableCell>
 
-                      <TableCell className="text-sm text-slate-500">
+                      <TableCell className="text-sm text-slate-400">
                         {formatDate(f.uploaded_at)}
                       </TableCell>
 
@@ -582,6 +614,7 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                             <Button
                               size="sm"
                               variant="ghost"
+                              className="text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
                               onClick={() => handleView(f)}
                               title="Visualizar"
                             >
@@ -591,6 +624,7 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                           <Button
                             size="sm"
                             variant="ghost"
+                            className="text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
                             onClick={() => handleDownload(f)}
                             title="Descargar"
                           >
@@ -599,7 +633,7 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                             onClick={() => handleDelete(f)}
                             disabled={deletingId === f.id}
                             title="Eliminar"
@@ -618,17 +652,17 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Visor de archivo */}
       <Dialog open={viewOpen} onOpenChange={(v) => { if (!viewingLoading) { setViewOpen(v); if (!v) setViewingUrl(null) } }}>
-        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+        <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col bg-slate-800 border-slate-700">
           <DialogHeader>
-            <DialogTitle className="truncate pr-8">{viewingFile?.file_name}</DialogTitle>
+            <DialogTitle className="truncate pr-8 text-slate-100">{viewingFile?.file_name}</DialogTitle>
           </DialogHeader>
 
-          <div className="flex-1 overflow-hidden mt-2 min-h-[400px] flex items-center justify-center">
+          <div className="flex-1 overflow-hidden mt-2 min-h-[400px] flex items-center justify-center bg-slate-900 rounded-md">
             {viewingLoading ? (
               <div className="flex flex-col items-center gap-2 text-slate-500">
                 <Loader2 className="w-8 h-8 animate-spin" />
@@ -644,7 +678,7 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
               ) : (
                 <iframe
                   src={viewingUrl}
-                  className="w-full h-[65vh] rounded-md border"
+                  className="w-full h-[65vh] rounded-md border-0"
                   title={viewingFile?.file_name}
                 />
               )
@@ -653,14 +687,22 @@ export function ProjectCarpetaSuaTab({ obraId, compact = false }: Props) {
             )}
           </div>
 
-          <div className="flex justify-end gap-2 pt-3 border-t mt-3">
+          <div className="flex justify-end gap-2 pt-3 border-t border-slate-700 mt-3">
             {viewingFile && (
-              <Button variant="outline" onClick={() => handleDownload(viewingFile)}>
+              <Button
+                variant="outline"
+                className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+                onClick={() => handleDownload(viewingFile)}
+              >
                 <Download className="w-4 h-4 mr-2" />
                 Descargar
               </Button>
             )}
-            <Button variant="outline" onClick={() => { setViewOpen(false); setViewingUrl(null) }}>
+            <Button
+              variant="outline"
+              className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+              onClick={() => { setViewOpen(false); setViewingUrl(null) }}
+            >
               Cerrar
             </Button>
           </div>
