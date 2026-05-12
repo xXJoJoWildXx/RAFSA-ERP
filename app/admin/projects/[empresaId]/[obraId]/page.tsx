@@ -1294,7 +1294,7 @@ export default function ProjectDetailPage() {
     setEditingBillingItem(null)
     setSavingBilling(false)
     // Reload data to refresh billing items
-    const obraId = params.id as string
+    const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
       .select("id, obra_id, type, description, amount, date, created_at")
@@ -1320,7 +1320,7 @@ export default function ProjectDetailPage() {
     const { error } = await supabase.from("obra_billing_items").delete().eq("id", item.id)
     if (error) { console.error("delete billing item error:", error); return }
     // Reload data
-    const obraId = params.id as string
+    const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
       .select("id, obra_id, type, description, amount, date, created_at")
@@ -1915,20 +1915,26 @@ export default function ProjectDetailPage() {
             <DialogTitle className="text-slate-100">Editar obra</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !savingEdit)
+                handleUpdateObra()
+            }}
+          >
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Nombre *</label>
-              <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+              <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Cliente</label>
-              <Input value={editForm.client_name} onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+              <Input value={editForm.client_name} onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Ubicación</label>
-              <Input value={editForm.location_text} onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+              <Input value={editForm.location_text} onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
             </div>
 
             <div className="flex flex-col gap-1.5">
@@ -1949,17 +1955,17 @@ export default function ProjectDetailPage() {
             <div className="grid grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-400">Inicio planeado</label>
-                <Input type="date" value={editForm.start_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+                <Input type="date" value={editForm.start_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-400">Fin planeado</label>
-                <Input type="date" value={editForm.end_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+                <Input type="date" value={editForm.end_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
               </div>
             </div>
 
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Notas</label>
-              <Textarea value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} rows={3} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+              <Textarea value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} rows={3} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
@@ -1981,7 +1987,13 @@ export default function ProjectDetailPage() {
             <DialogTitle className="text-slate-100">Registrar nuevo deposito</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !newPaymentSaving)
+                handleCreatePayment()
+            }}
+          >
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-400">Concepto</label>
@@ -2028,7 +2040,7 @@ export default function ProjectDetailPage() {
 
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-400">Fecha del deposito</label>
-                <Input type="date" value={newPaymentForm.date} onChange={(e) => setNewPaymentForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+                <Input type="date" value={newPaymentForm.date} onChange={(e) => setNewPaymentForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
               </div>
             </div>
 
@@ -2365,10 +2377,15 @@ export default function ProjectDetailPage() {
                 : billingForm.type === "cotizacion" ? "Registrar cotizacion" : "Nuevo aditivo"}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingBilling) handleSaveBillingItem()
+            }}
+          >
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Fecha</label>
-              <Input type="date" value={billingForm.date} onChange={(e) => setBillingForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]" />
+              <Input type="date" value={billingForm.date} onChange={(e) => setBillingForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">

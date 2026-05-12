@@ -958,7 +958,13 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
             <DialogTitle className="text-slate-100">Subir documento</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !uploadSaving)
+                handleUploadDocument()
+            }}
+          >
             {/* Dropzone */}
             <div
               className="rounded-lg border border-dashed border-slate-700 bg-slate-900/60 p-4"
