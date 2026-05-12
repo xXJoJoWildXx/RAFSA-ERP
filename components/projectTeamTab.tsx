@@ -720,7 +720,13 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             </DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingAdd && addForm.employee_id && addForm.employee_id !== "__none__")
+                handleAddMember()
+            }}
+          >
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Rol en obra</label>
 
@@ -825,7 +831,12 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             <DialogTitle className="text-slate-100">Transferir empleado</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingTransfer) handleConfirmTransfer()
+            }}
+          >
             {transferInfo && (
               <p className="text-sm text-slate-300 leading-relaxed">
                 Seguro que quieres agregar a{" "}
