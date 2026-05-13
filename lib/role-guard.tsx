@@ -4,6 +4,7 @@ import type React from "react"
 import { useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
+import PageLoading from "@/components/ui/page-loading"
 
 type Role = "admin" | "user" | "worker"
 
@@ -33,11 +34,7 @@ export function RoleGuard({ allowed, children }: RoleGuardProps) {
   }, [user, isLoading, allowed, router])
 
   if (isLoading) {
-    return (
-      <div className="min-h-screen flex items-center justify-center text-slate-500">
-        Cargando...
-      </div>
-    )
+    return <PageLoading />
   }
 
   // Aquí sabemos que está logueado y que su rol está permitido

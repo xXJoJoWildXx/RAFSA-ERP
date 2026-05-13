@@ -149,5 +149,16 @@
   }
   body {
     @apply bg-background text-foreground;
+    background-color: #0f172a;
   }
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1) brightness(2);
+  cursor: pointer;
+  opacity: 0.7;
+  transition: opacity 0.15s;
+}
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
 }

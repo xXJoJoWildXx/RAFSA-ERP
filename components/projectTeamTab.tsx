@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
@@ -87,6 +86,12 @@ function isEmployeeDirectorObra(e: EmployeeRow | null | undefined) {
   return (e?.roles ?? []).includes("director_obra")
 }
 
+// Shared dark-mode class strings
+const inputCls = "bg-slate-900 border-slate-700 text-slate-200 focus:border-[#0174bd]/60 placeholder:text-slate-500"
+const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
+const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
+const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+
 export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -100,7 +105,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
   // modal add
   const [addOpen, setAddOpen] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
-  // true cuando se abre desde "Asignar Director" - bloquea el selector de rol
   const [directorMode, setDirectorMode] = useState(false)
 
   const [employees, setEmployees] = useState<EmployeeRow[]>([])
@@ -113,7 +117,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
 
   // Segundo slot de Director de Obra
   const [showSecondSlot, setShowSecondSlot] = useState(false)
-  // ID del assignment a reemplazar cuando se hace "Actualizar" en un card de director
   const [replacingDirectorAssignmentId, setReplacingDirectorAssignmentId] = useState<string | null>(null)
 
   // Transferencia de empleado entre obras
@@ -122,7 +125,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
   const [transferInfo, setTransferInfo] = useState<{
     employeeName: string
     fromObraName: string
-    assignmentIds: string[]   // puede haber >1 si hubo datos sucios previos
+    assignmentIds: string[]
   } | null>(null)
 
   async function fetchMembers() {
@@ -232,7 +235,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     setSavingAdd(true)
     setError(null)
 
-    // Evitar duplicado activo para el mismo empleado
     const alreadyActive = members.some(
       (m) => m.employee_id === addForm.employee_id && isActiveAssignment(m),
     )
@@ -242,7 +244,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       return
     }
 
-    // El empleado debe tener el rol director_obra en el catalogo
     const selectedEmp = employees.find((e) => e.id === addForm.employee_id) ?? null
     if (addForm.role_on_site === "director_obra" && !isEmployeeDirectorObra(selectedEmp)) {
       setError("Solo puedes asignar como Director de Obra a empleados que tengan ese rol en el catalogo.")
@@ -250,7 +251,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       return
     }
 
-    // Maximo 2 directores activos por obra
     const activeDirectors = members.filter(
       (m) => m.role_on_site === "director_obra" && isActiveAssignment(m),
     )
@@ -264,7 +264,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       return
     }
 
-    // Para roles que NO son director, verificar si el empleado ya esta en otra obra
     if (addForm.role_on_site !== "director_obra") {
       const { data: otherAssignments } = await supabase
         .from("obra_assignments")
@@ -286,7 +285,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
         })
         setTransferConfirmOpen(true)
         setSavingAdd(false)
-        return  // Pausar - esperar confirmacion del usuario
+        return
       }
     }
 
@@ -294,7 +293,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     const created_by = authData?.user?.id ?? null
 
     try {
-      // Si se esta reemplazando un director especifico, eliminar su asignacion primero
       if (addForm.role_on_site === "director_obra" && replacingDirectorAssignmentId) {
         const { error: delErr } = await supabase
           .from("obra_assignments")
@@ -356,14 +354,12 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
 
-  // Hasta 2 directores de obra activos simultaneamente
   const directors = useMemo(() => {
     return members
       .filter((m) => (m.role_on_site || "") === "director_obra" && isActiveAssignment(m))
       .slice(0, 2)
   }, [members])
 
-  // Revela el segundo slot si ya hay 2 directores asignados
   useEffect(() => {
     if (directors.length >= 2) setShowSecondSlot(true)
   }, [directors])
@@ -389,7 +385,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     })
   }, [members, search, roleFilter])
 
-  //  Siempre filtra empleados por el rol seleccionado en el modal
   const employeesForModal = useMemo(() => {
     if (!addForm.role_on_site) return employees
     return employees.filter((e) => e.roles.includes(addForm.role_on_site))
@@ -409,7 +404,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     setError(null)
 
     try {
-      // 1. Eliminar las asignaciones activas del empleado en la otra obra
       for (const assignmentId of transferInfo.assignmentIds) {
         const { error: delErr } = await supabase
           .from("obra_assignments")
@@ -423,7 +417,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
         }
       }
 
-      // 2. Insertar la nueva asignacion en esta obra
       const { data: authData } = await supabase.auth.getUser()
       const created_by = authData?.user?.id ?? null
 
@@ -441,7 +434,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
         return
       }
 
-      // 3. Limpiar estado y refrescar
       setTransferConfirmOpen(false)
       setTransferInfo(null)
       setAddOpen(false)
@@ -458,7 +450,6 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     setTransferConfirmOpen(false)
     setTransferInfo(null)
     setSavingTransfer(false)
-    // Dejar el modal de agregar abierto para que el usuario pueda elegir otro empleado
     setAddOpen(true)
   }
 
@@ -467,18 +458,18 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       {/* Header */}
       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
-          <h2 className="text-xl font-bold text-slate-900">Equipo de la obra</h2>
-          <p className="text-sm text-slate-600">Asignaciones del personal a esta obra.</p>
+          <h2 className="text-xl font-bold text-slate-100">Equipo de la obra</h2>
+          <p className="text-sm text-slate-400">Asignaciones del personal a esta obra.</p>
         </div>
 
         <div className="flex gap-2">
-          <Button variant="outline" onClick={fetchMembers} disabled={loading}>
+          <Button variant="outline" onClick={fetchMembers} disabled={loading} className={btnOutlineCls}>
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refrescar
           </Button>
 
           {allowManage && (
-            <Button onClick={handleOpenAdd}>
+            <Button onClick={handleOpenAdd} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
               <UserPlus className="w-4 h-4 mr-2" />
               Agregar miembro
             </Button>
@@ -488,27 +479,33 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
 
       {/* Cards de Directores de Obra (hasta 2) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-stretch">
-        {/* Slot 1 - siempre visible */}
         {[0, ...(showSecondSlot ? [1] : [])].map((slot) => {
           const dir = directors[slot] ?? null
           return (
-            <Card key={slot} className="border-amber-100">
-              <CardContent className="p-5">
+            <div
+              key={slot}
+              className="rounded-2xl border border-amber-500/20 overflow-hidden"
+              style={{
+                background: "linear-gradient(145deg, #1e2a1a 0%, #1a2318 60%, #1e2a1a 100%)",
+                boxShadow: "inset 0 1px 0 rgba(255,200,0,0.04)",
+              }}
+            >
+              <div className="p-5">
                 <div className="flex items-start justify-between gap-4">
                   <div className="space-y-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">
-                      <div className="p-2 rounded-md bg-amber-50 border border-amber-100 shrink-0">
-                        <Crown className="w-4 h-4 text-amber-600" />
+                      <div className="p-2 rounded-md bg-amber-500/10 border border-amber-500/20 shrink-0">
+                        <Crown className="w-4 h-4 text-amber-400" />
                       </div>
                       <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
                         Director de Obra {showSecondSlot ? `${slot + 1}` : ""}
                       </p>
                       {dir && (
-                        <Badge className="bg-amber-100 text-amber-800 text-xs">Activo</Badge>
+                        <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25 text-xs">Activo</Badge>
                       )}
                     </div>
 
-                    <p className="text-xl font-bold text-slate-900 truncate">
+                    <p className="text-xl font-bold text-slate-100 truncate">
                       {dir?.full_name ?? "Sin asignar"}
                     </p>
 
@@ -518,7 +515,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                           Desde {dir.assigned_from}
                         </span>
                       ) : (
-                        <span className="text-slate-400 text-xs">
+                        <span className="text-slate-600 text-xs">
                           Ningun director asignado en este slot.
                         </span>
                       )}
@@ -533,6 +530,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                         onClick={() =>
                           dir ? handleUpdateDirector(dir) : handleAssignDirectorShortcut()
                         }
+                        className={btnOutlineCls}
                       >
                         <Plus className="w-3 h-3 mr-1" />
                         {dir ? "Actualizar" : "Asignar"}
@@ -541,7 +539,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="text-red-600 hover:text-red-700 hover:bg-red-50"
+                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
                           onClick={() => handleRemoveMember(dir)}
                         >
                           <Trash2 className="w-3 h-3 mr-1" />
@@ -551,8 +549,8 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                     </div>
                   )}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           )
         })}
 
@@ -563,7 +561,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
               setShowSecondSlot(true)
               handleAssignDirectorShortcut()
             }}
-            className="flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed border-slate-200 p-5 text-slate-400 hover:border-amber-300 hover:text-amber-600 transition-colors min-h-[110px] w-full"
+            className="flex flex-col items-center justify-center gap-2 rounded-2xl border-2 border-dashed border-slate-700 p-5 text-slate-600 hover:border-amber-500/40 hover:text-amber-400 transition-colors min-h-[110px] w-full"
           >
             <div className="p-2 rounded-full border-2 border-current">
               <Plus className="w-4 h-4" />
@@ -574,21 +572,27 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
       </div>
 
       {/* filtros */}
-      <Card>
-        <CardContent className="p-4 flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
+      <div
+        className="rounded-2xl border border-slate-700/60 overflow-hidden"
+        style={{
+          background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+        }}
+      >
+        <div className="p-4 flex flex-col md:flex-row gap-2 md:items-center md:justify-between">
           <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
             <Input
               placeholder="Buscar por nombre o puesto..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="sm:w-64"
+              className={`sm:w-64 ${inputCls}`}
             />
 
             <Select value={roleFilter} onValueChange={(v) => setRoleFilter(v as any)}>
-              <SelectTrigger className="w-full sm:w-56">
+              <SelectTrigger className={`w-full sm:w-56 ${selectTriggerCls}`}>
                 <SelectValue placeholder="Rol en obra" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className={selectContentCls}>
                 <SelectItem value="all">Todos</SelectItem>
                 {ROLE_ON_SITE_OPTIONS.map((r) => (
                   <SelectItem key={r.value} value={r.value}>
@@ -599,26 +603,32 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             </Select>
           </div>
 
-          <div className="text-sm text-slate-600">
-            Total: <span className="font-semibold text-slate-900">{members.length}</span>
+          <div className="text-sm text-slate-500">
+            Total: <span className="font-semibold text-slate-300">{members.length}</span>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* error */}
       {error && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
           {error}
         </div>
       )}
 
       {/* tabla */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Miembros</CardTitle>
-        </CardHeader>
+      <div
+        className="rounded-2xl border border-slate-700/60 overflow-hidden"
+        style={{
+          background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+          boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+        }}
+      >
+        <div className="p-5 border-b border-slate-700/60">
+          <h3 className="text-base font-semibold text-slate-100">Miembros</h3>
+        </div>
 
-        <CardContent>
+        <div className="p-5">
           {loading ? (
             <div className="py-10 text-center text-slate-500 text-sm">Cargando equipo...</div>
           ) : filtered.length === 0 ? (
@@ -626,7 +636,11 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
               No hay miembros asignados aun.
               {allowManage && (
                 <div className="mt-2">
-                  <Button size="sm" onClick={handleOpenAdd}>
+                  <Button
+                    size="sm"
+                    onClick={handleOpenAdd}
+                    className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                  >
                     <Plus className="w-4 h-4 mr-2" />
                     Agregar el primero
                   </Button>
@@ -634,45 +648,49 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
               )}
             </div>
           ) : (
-            <div className="rounded-md border overflow-hidden">
+            <div className="rounded-md border border-slate-700/60 overflow-hidden">
               <Table>
                 <TableHeader>
-                  <TableRow>
-                    <TableHead>Empleado</TableHead>
-                    <TableHead>Puesto</TableHead>
-                    <TableHead>Rol en obra</TableHead>
-                    <TableHead>Asignacion</TableHead>
-                    <TableHead className="text-right">Acciones</TableHead>
+                  <TableRow className="border-slate-700/60 hover:bg-slate-800/40">
+                    <TableHead className="text-slate-400">Empleado</TableHead>
+                    <TableHead className="text-slate-400">Puesto</TableHead>
+                    <TableHead className="text-slate-400">Rol en obra</TableHead>
+                    <TableHead className="text-slate-400">Asignacion</TableHead>
+                    <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
 
                 <TableBody>
                   {filtered.map((m) => (
-                    <TableRow key={m.assignment_id}>
+                    <TableRow key={m.assignment_id} className="border-slate-700/40 hover:bg-slate-800/40">
                       <TableCell>
                         <div className="space-y-0.5">
-                          <p className="font-medium text-slate-900">{m.full_name}</p>
-                          <p className="text-xs text-slate-500 font-mono">{m.employee_id}</p>
+                          <p className="font-medium text-slate-200">{m.full_name}</p>
+                          <p className="text-xs text-slate-600 font-mono">{m.employee_id}</p>
                         </div>
                       </TableCell>
 
-                      <TableCell className="text-sm text-slate-600">
+                      <TableCell className="text-sm text-slate-400">
                         {m.position_title ?? "-"}
                         {String(m.employee_status).toLowerCase() !== "active" && (
-                          <span className="ml-2 text-xs text-red-600">(inactive)</span>
+                          <span className="ml-2 text-xs text-red-400">(inactive)</span>
                         )}
                       </TableCell>
 
                       <TableCell>
-                        <Badge className="bg-slate-100 text-slate-700">{normalizeRoleLabel(m.role_on_site)}</Badge>
+                        <Badge className="bg-slate-700/60 text-slate-300 border border-slate-600">
+                          {normalizeRoleLabel(m.role_on_site)}
+                        </Badge>
                       </TableCell>
 
-                      <TableCell className="text-sm text-slate-600">
+                      <TableCell className="text-sm text-slate-400">
                         <span className="font-mono text-xs">
                           {m.assigned_from}
                           {m.assigned_to ? `  ${m.assigned_to}` : ""}
                         </span>
-                        {!isActiveAssignment(m) && <div className="text-xs text-slate-400 mt-1">historico</div>}
+                        {!isActiveAssignment(m) && (
+                          <div className="text-xs text-slate-600 mt-1">historico</div>
+                        )}
                       </TableCell>
 
                       <TableCell className="text-right">
@@ -681,7 +699,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         ) : (
-                          <span className="text-xs text-slate-400">-</span>
+                          <span className="text-xs text-slate-600">-</span>
                         )}
                       </TableCell>
                     </TableRow>
@@ -690,36 +708,42 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* Modal agregar */}
       <Dialog open={addOpen} onOpenChange={(v) => (savingAdd ? null : setAddOpen(v))}>
-        <DialogContent className="max-w-xl">
+        <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
-            <DialogTitle>
+            <DialogTitle className="text-slate-100">
               {directorMode ? "Asignar Director de Obra" : "Agregar miembro al equipo"}
             </DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingAdd && addForm.employee_id && addForm.employee_id !== "__none__")
+                handleAddMember()
+            }}
+          >
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">Rol en obra</label>
+              <label className="text-xs font-medium text-slate-400">Rol en obra</label>
 
               {directorMode ? (
-                <div className="flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
-                  <Crown className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span className="text-sm font-medium text-amber-800">Director de Obra</span>
+                <div className="flex items-center gap-2 rounded-md border border-amber-500/20 bg-amber-500/10 px-3 py-2">
+                  <Crown className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span className="text-sm font-medium text-amber-300">Director de Obra</span>
                 </div>
               ) : (
                 <Select
                   value={addForm.role_on_site}
                   onValueChange={(v) => setAddForm((f) => ({ ...f, role_on_site: v, employee_id: "" }))}
                 >
-                  <SelectTrigger>
+                  <SelectTrigger className={selectTriggerCls}>
                     <SelectValue />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent className={selectContentCls}>
                     {ROLE_ON_SITE_OPTIONS.filter((r) => r.value !== "director_obra").map((r) => (
                       <SelectItem key={r.value} value={r.value}>
                         {r.label}
@@ -737,7 +761,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             </div>
 
             <div className="flex flex-col gap-1.5">
-              <label className="text-xs font-medium text-slate-600">
+              <label className="text-xs font-medium text-slate-400">
                 Empleado *
               </label>
 
@@ -745,7 +769,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                 value={addForm.employee_id}
                 onValueChange={(v) => setAddForm((f) => ({ ...f, employee_id: v }))}
               >
-                <SelectTrigger>
+                <SelectTrigger className={selectTriggerCls}>
                   <SelectValue
                     placeholder={
                       employeesLoading
@@ -755,7 +779,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                   />
                 </SelectTrigger>
 
-                <SelectContent>
+                <SelectContent className={selectContentCls}>
                   {employeesForModal.length === 0 ? (
                     <SelectItem value="__none__" disabled>
                       {`No hay empleados con el rol "${normalizeRoleLabel(addForm.role_on_site)}" en el catalogo`}
@@ -779,12 +803,19 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             </div>
 
             <div className="flex justify-end gap-2 pt-2">
-              <Button type="button" variant="outline" onClick={() => setAddOpen(false)} disabled={savingAdd}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setAddOpen(false)}
+                disabled={savingAdd}
+                className={btnOutlineCls}
+              >
                 Cancelar
               </Button>
               <Button
                 onClick={handleAddMember}
                 disabled={savingAdd || !addForm.employee_id || addForm.employee_id === "__none__"}
+                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
               >
                 {savingAdd ? "Guardando..." : "Agregar"}
               </Button>
@@ -795,24 +826,29 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
 
       {/* Dialog de confirmacion de transferencia */}
       <Dialog open={transferConfirmOpen} onOpenChange={(v) => (savingTransfer ? null : setTransferConfirmOpen(v))}>
-        <DialogContent className="max-w-md">
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
-            <DialogTitle>Transferir empleado</DialogTitle>
+            <DialogTitle className="text-slate-100">Transferir empleado</DialogTitle>
           </DialogHeader>
 
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingTransfer) handleConfirmTransfer()
+            }}
+          >
             {transferInfo && (
-              <p className="text-sm text-slate-700 leading-relaxed">
+              <p className="text-sm text-slate-300 leading-relaxed">
                 Seguro que quieres agregar a{" "}
-                <span className="font-semibold">"{transferInfo.employeeName}"</span>{" "}
+                <span className="font-semibold text-slate-100">"{transferInfo.employeeName}"</span>{" "}
                 a esta obra? Actualmente se encuentra en el equipo de la obra{" "}
-                <span className="font-semibold">"{transferInfo.fromObraName}"</span>.
+                <span className="font-semibold text-slate-100">"{transferInfo.fromObraName}"</span>.
                 Si aceptas, sera transferido a esta obra y eliminado de la otra.
               </p>
             )}
 
             {error && (
-              <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
                 {error}
               </div>
             )}
@@ -823,6 +859,7 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
                 variant="outline"
                 onClick={handleCancelTransfer}
                 disabled={savingTransfer}
+                className={btnOutlineCls}
               >
                 Cancelar
               </Button>

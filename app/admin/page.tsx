@@ -57,8 +57,8 @@ export default function AdminDashboard() {
       change: "+12%",
       trend: "up",
       icon: Building2,
-      color: "text-blue-600",
-      bgColor: "bg-blue-50",
+      color: "text-blue-400",
+      bgColor: "bg-blue-500/15",
       href: "/admin/projects",
     },
     {
@@ -67,8 +67,8 @@ export default function AdminDashboard() {
       change: "+8%",
       trend: "up",
       icon: Users,
-      color: "text-green-600",
-      bgColor: "bg-green-50",
+      color: "text-green-400",
+      bgColor: "bg-green-500/15",
       href: "/admin/employees",
     },
     {
@@ -77,8 +77,8 @@ export default function AdminDashboard() {
       change: "-5%",
       trend: "down",
       icon: FileText,
-      color: "text-orange-600",
-      bgColor: "bg-orange-50",
+      color: "text-orange-400",
+      bgColor: "bg-orange-500/15",
     },
     {
       title: "Actividades recientes",
@@ -86,8 +86,8 @@ export default function AdminDashboard() {
       change: "+23%",
       trend: "up",
       icon: Activity,
-      color: "text-purple-600",
-      bgColor: "bg-purple-50",
+      color: "text-purple-400",
+      bgColor: "bg-purple-500/15",
     },
   ]
 
@@ -127,10 +127,10 @@ export default function AdminDashboard() {
       <AdminLayout>
         <div className="space-y-6">
           <div>
-            <h1 className="text-3xl font-bold text-slate-900">
+            <h1 className="text-3xl font-bold text-slate-100">
               Bienvenido de nuevo, {user?.display_name}
             </h1>
-            <p className="text-slate-600 mt-1">Esto es lo que está pasando hoy.</p>
+            <p className="text-slate-400 mt-1">Esto es lo que está pasando hoy.</p>
           </div>
 
           {/* Stats Grid */}
@@ -145,26 +145,26 @@ export default function AdminDashboard() {
                 <Card
                   key={stat.title}
                   onClick={() => stat.href && router.push(stat.href)}
-                  className={
+                  className={`bg-slate-800 border-slate-700 ${
                     clickable
-                      ? "cursor-pointer transition-transform transition-shadow transition duration-200 hover:shadow-lg hover:-translate-y-1 "
+                      ? "cursor-pointer transition-transform transition-shadow transition duration-200 hover:shadow-lg hover:-translate-y-1 hover:border-slate-600"
                       : ""
-                  }
+                  }`}
                 >
                   <CardContent className="p-6">
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
-                        <p className="text-sm font-medium text-slate-600">{stat.title}</p>
-                        <p className="text-3xl font-bold text-slate-900 mt-2">{stat.value}</p>
+                        <p className="text-sm font-medium text-slate-400">{stat.title}</p>
+                        <p className="text-3xl font-bold text-slate-100 mt-2">{stat.value}</p>
                         <div className="flex items-center gap-1 mt-2">
                           <TrendIcon
                             className={`w-4 h-4 ${
-                              stat.trend === "up" ? "text-green-600" : "text-red-600"
+                              stat.trend === "up" ? "text-green-400" : "text-red-400"
                             }`}
                           />
                           <span
                             className={`text-sm font-medium ${
-                              stat.trend === "up" ? "text-green-600" : "text-red-600"
+                              stat.trend === "up" ? "text-green-400" : "text-red-400"
                             }`}
                           >
                             {stat.change}
@@ -183,19 +183,19 @@ export default function AdminDashboard() {
           </div>
 
           {/* Actividades recientes */}
-          <Card>
+          <Card className="bg-slate-800 border-slate-700">
             <CardHeader>
-              <CardTitle>Actividades recientes</CardTitle>
+              <CardTitle className="text-slate-100">Actividades recientes</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
                 {actividadesRecientes.map((activity) => (
                   <div
                     key={activity.id}
-                    className="flex items-start gap-4 pb-4 border-b last:border-0 last:pb-0"
+                    className="flex items-start gap-4 pb-4 border-b border-slate-700 last:border-0 last:pb-0"
                   >
-                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center flex-shrink-0">
-                      <span className="text-sm font-semibold text-blue-600">
+                    <div className="w-10 h-10 rounded-full bg-[#0174bd]/20 flex items-center justify-center flex-shrink-0">
+                      <span className="text-sm font-semibold text-[#4da8e8]">
                         {activity.user
                           .split(" ")
                           .map((n) => n[0])
@@ -203,10 +203,10 @@ export default function AdminDashboard() {
                       </span>
                     </div>
                     <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-900">
-                        <span className="font-semibold">{activity.user}</span>{" "}
+                      <p className="text-sm text-slate-300">
+                        <span className="font-semibold text-slate-100">{activity.user}</span>{" "}
                         {activity.action}{" "}
-                        <span className="font-semibold">{activity.target}</span>
+                        <span className="font-semibold text-slate-100">{activity.target}</span>
                       </p>
                       <p className="text-xs text-slate-500 mt-1">{activity.time}</p>
                     </div>

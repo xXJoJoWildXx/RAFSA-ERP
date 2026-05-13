@@ -169,7 +169,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           : ""
 
   return (
-    <div className="min-h-screen bg-[#f0f2f5]">
+    <div className="min-h-screen bg-[#0f172a]">
       {/* ═══════════════════════════════════════
           Inline Styles for animations
          ═══════════════════════════════════════ */}
@@ -302,7 +302,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
          ═══════════════════════════════════════ */}
       {sidebarOpen && (
         <div
-          className="fixed inset-0 bg-[#003353]/80 backdrop-blur-sm z-40 lg:hidden"
+          className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm z-40 lg:hidden"
           style={{ animation: "navFadeIn 0.2s ease forwards" }}
           onClick={() => setSidebarOpen(false)}
         />
@@ -317,7 +317,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           sidebarOpen ? "translate-x-0" : "-translate-x-full"
         )}
         style={{
-          background: "linear-gradient(175deg, #002740 0%, #001520 50%, #000d14 100%)",
+          background: "linear-gradient(175deg, #1e293b 0%, #0f172a 50%, #0a1120 100%)",
           fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif",
         }}
       >
@@ -505,22 +505,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ═══════════════════════════════════════
-          MAIN CONTENT AREA — Light, clean
+          MAIN CONTENT AREA — Dark
          ═══════════════════════════════════════ */}
       <div className="lg:pl-[280px]" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
         {/* ── Header ── */}
-        <header
-          className="sticky top-0 z-30 h-16 bg-white/70 backdrop-blur-xl border-b border-slate-200/60"
-          style={{
-            boxShadow: "0 1px 3px rgba(0,51,83,0.04)",
-          }}
+        <header className="sticky top-0 z-30 h-16 bg-[#1e293b] border-b border-slate-700/60 backdrop-blur-xl"
+          style={{ boxShadow: "0 1px 0 rgba(0,0,0,0.2)" }}
         >
           <div className="flex items-center justify-between h-full px-6">
             {/* Mobile hamburger */}
-            <Button
-              variant="ghost"
-              size="icon"
-              className="lg:hidden rounded-lg text-slate-600 hover:text-[#003353] hover:bg-[#0174bd]/5 header-action-btn"
+            <Button variant="ghost" size="icon"
+              className="lg:hidden rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 header-action-btn"
               onClick={() => setSidebarOpen(true)}
             >
               <Menu className="w-5 h-5" />
@@ -528,10 +523,10 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
             {/* Page title + breadcrumb */}
             <div className="flex-1 lg:flex-none flex items-center gap-3">
-              <h2 className="hidden lg:block text-[15px] font-semibold text-[#003353] tracking-tight">
+              <h2 className="hidden lg:block text-[15px] font-semibold text-slate-200 tracking-tight">
                 {navigation.find((n) => n.href === pathname)?.name || "RAFSA ERP"}
               </h2>
-              <span className="hidden lg:block text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">
+              <span className="hidden lg:block text-[10px] font-medium text-[#4da8e8] bg-[#0174bd]/15 border border-[#0174bd]/20 px-2 py-0.5 rounded-full">
                 Admin
               </span>
             </div>
@@ -543,25 +538,23 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                 className={cn(
                   "search-expand relative flex items-center rounded-xl border overflow-hidden",
                   searchFocused
-                    ? "w-64 bg-white border-[#0174bd]/30 shadow-[0_0_0_3px_rgba(1,116,189,0.08)]"
-                    : "w-40 bg-slate-50 border-slate-200/60 hover:border-slate-300"
+                    ? "w-64 bg-slate-900 border-[#0174bd]/50 shadow-[0_0_0_3px_rgba(1,116,189,0.12)]"
+                    : "w-40 bg-slate-900/60 border-slate-700 hover:border-slate-600"
                 )}
               >
-                <Search className="absolute left-3 w-4 h-4 text-slate-400 pointer-events-none" />
+                <Search className="absolute left-3 w-4 h-4 text-slate-500 pointer-events-none" />
                 <input
                   type="text"
                   placeholder="Buscar..."
-                  className="w-full h-9 pl-9 pr-3 text-[13px] bg-transparent outline-none text-slate-700 placeholder:text-slate-400"
+                  className="w-full h-9 pl-9 pr-3 text-[13px] bg-transparent outline-none text-slate-300 placeholder:text-slate-600"
                   onFocus={() => setSearchFocused(true)}
                   onBlur={() => setSearchFocused(false)}
                 />
               </div>
 
               {/* Settings */}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="rounded-xl text-slate-400 hover:text-[#003353] hover:bg-[#0174bd]/5 header-action-btn hidden md:flex"
+              <Button variant="ghost" size="icon"
+                className="rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-700/60 header-action-btn hidden md:flex"
               >
                 <Settings className="w-[18px] h-[18px]" />
               </Button>
@@ -569,61 +562,36 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
               {/* Notifications */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="relative rounded-xl text-slate-400 hover:text-[#003353] hover:bg-[#0174bd]/5 header-action-btn"
+                  <Button variant="ghost" size="icon"
+                    className="relative rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-700/60 header-action-btn"
                   >
                     <Bell className="w-[18px] h-[18px]" />
-                    <span
-                      className="notif-dot absolute top-2 right-2 w-2 h-2 rounded-full"
-                      style={{
-                        backgroundColor: "#ef4444",
-                        boxShadow: "0 0 6px rgba(239,68,68,0.4)",
-                      }}
+                    <span className="notif-dot absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500"
+                      style={{ boxShadow: "0 0 6px rgba(239,68,68,0.5)" }}
                     />
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="w-80 rounded-2xl shadow-xl border-slate-200/80 bg-white p-0 overflow-hidden"
+                <DropdownMenuContent align="end"
+                  className="w-80 rounded-2xl shadow-2xl bg-slate-800 border-slate-700 p-0 overflow-hidden"
                 >
-                  {/* Notification header with dark accent */}
-                  <div
-                    className="px-4 py-3 border-b border-slate-100"
-                    style={{
-                      background: "linear-gradient(135deg, #003353, #002740)",
-                    }}
-                  >
-                    <p className="text-sm font-semibold text-white">Notificaciones</p>
+                  <div className="px-4 py-3 border-b border-slate-700 bg-slate-900/60">
+                    <p className="text-sm font-semibold text-slate-100">Notificaciones</p>
                     <p className="text-[10px] text-slate-400 mt-0.5">2 nuevas</p>
                   </div>
                   <div className="p-2 space-y-1">
-                    <div className="p-3 rounded-xl bg-[#0174bd]/[0.04] border border-[#0174bd]/10 hover:bg-[#0174bd]/[0.07] transition-colors duration-200 cursor-pointer">
-                      <p className="text-sm font-medium text-[#003353]">
-                        Nuevo documento subido
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Planos_Estructura_Q4.pdf — Carlos M.
-                      </p>
-                      <p className="text-[10px] text-[#0174bd] mt-1.5 font-medium">
-                        Hace 5 min
-                      </p>
+                    <div className="p-3 rounded-xl bg-[#0174bd]/8 border border-[#0174bd]/15 hover:bg-[#0174bd]/12 transition-colors cursor-pointer">
+                      <p className="text-sm font-medium text-slate-200">Nuevo documento subido</p>
+                      <p className="text-xs text-slate-400 mt-1">Planos_Estructura_Q4.pdf — Carlos M.</p>
+                      <p className="text-[10px] text-[#4da8e8] mt-1.5 font-medium">Hace 5 min</p>
                     </div>
-                    <div className="p-3 rounded-xl hover:bg-slate-50 transition-colors duration-200 cursor-pointer">
-                      <p className="text-sm font-medium text-[#003353]">
-                        Estatus de obra actualizado
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">
-                        Nave Industrial Apodaca → En Progreso
-                      </p>
-                      <p className="text-[10px] text-slate-400 mt-1.5 font-medium">
-                        Hace 1 hora
-                      </p>
+                    <div className="p-3 rounded-xl hover:bg-slate-700/40 transition-colors cursor-pointer">
+                      <p className="text-sm font-medium text-slate-300">Estatus de obra actualizado</p>
+                      <p className="text-xs text-slate-500 mt-1">Nave Industrial Apodaca → En Progreso</p>
+                      <p className="text-[10px] text-slate-600 mt-1.5 font-medium">Hace 1 hora</p>
                     </div>
                   </div>
-                  <div className="px-4 py-2.5 border-t border-slate-100">
-                    <button className="text-xs font-semibold text-[#0174bd] hover:text-[#003353] transition-colors duration-200 w-full text-center">
+                  <div className="px-4 py-2.5 border-t border-slate-700">
+                    <button className="text-xs font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors w-full text-center">
                       Ver todas las notificaciones
                     </button>
                   </div>
@@ -631,51 +599,33 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
               </DropdownMenu>
 
               {/* Divider */}
-              <div className="hidden md:block w-px h-8 mx-2 bg-slate-200" />
+              <div className="hidden md:block w-px h-8 mx-2 bg-slate-700" />
 
               {/* User menu */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    className="gap-2.5 rounded-xl px-2 hover:bg-[#0174bd]/5 header-action-btn"
-                  >
-                    <div
-                      className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold transition-all duration-300 hover:shadow-[0_0_12px_rgba(1,116,189,0.15)]"
-                      style={{
-                        background: "linear-gradient(135deg, #003353, #002740)",
-                        color: "#4da8e8",
-                        border: "1px solid rgba(1,116,189,0.2)",
-                      }}
+                  <Button variant="ghost" className="gap-2.5 rounded-xl px-2 hover:bg-slate-700/60 header-action-btn">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center text-xs font-bold"
+                      style={{ background: "linear-gradient(135deg, #003353, #0174bd)", color: "#ffffff" }}
                     >
                       {initials}
                     </div>
                     <div className="hidden md:flex flex-col items-start">
-                      <span className="text-[13px] font-semibold text-[#003353] leading-tight">
-                        {displayName}
-                      </span>
-                      <span className="text-[10px] text-slate-400 leading-tight">
-                        {roleLabel}
-                      </span>
+                      <span className="text-[13px] font-semibold text-slate-200 leading-tight">{displayName}</span>
+                      <span className="text-[10px] text-slate-500 leading-tight">{roleLabel}</span>
                     </div>
                   </Button>
                 </DropdownMenuTrigger>
-                <DropdownMenuContent
-                  align="end"
-                  className="w-56 rounded-2xl shadow-xl border-slate-200/80"
-                >
-                  <DropdownMenuLabel className="text-sm text-[#003353]">
-                    Mi cuenta
-                  </DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem className="rounded-lg cursor-pointer text-slate-600 hover:text-[#003353] focus:bg-[#0174bd]/5">
+                <DropdownMenuContent align="end" className="w-56 rounded-2xl shadow-2xl bg-slate-800 border-slate-700">
+                  <DropdownMenuLabel className="text-sm text-slate-300">Mi cuenta</DropdownMenuLabel>
+                  <DropdownMenuSeparator className="bg-slate-700" />
+                  <DropdownMenuItem className="rounded-lg cursor-pointer text-slate-400 focus:bg-slate-700/60 focus:text-slate-200">
                     <Settings className="w-4 h-4 mr-2" />
                     Configuración
                   </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    onClick={logout}
-                    className="rounded-lg cursor-pointer text-red-500 focus:text-red-600 focus:bg-red-50"
+                  <DropdownMenuSeparator className="bg-slate-700" />
+                  <DropdownMenuItem onClick={logout}
+                    className="rounded-lg cursor-pointer text-red-400 focus:text-red-300 focus:bg-red-500/10"
                   >
                     <LogOut className="w-4 h-4 mr-2" />
                     Cerrar sesión
@@ -687,7 +637,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         </header>
 
         {/* ── Page Content ── */}
-        <main className="p-6 text-slate-800">
+        <main className="p-6">
           {children}
         </main>
       </div>
