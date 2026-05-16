@@ -44,9 +44,9 @@ type NavItem = {
 
 const navigation: NavItem[] = [
   { name: "Dashboard", href: "/admin", icon: LayoutDashboard, badgeKey: null },
-  { name: "Proyectos", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
+  { name: "Obras", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
   { name: "Empleados", href: "/admin/employees", icon: Users, badgeKey: "empleados" },
-  { name: "Proveedores", href: "/admin/documents", icon: Truck, badgeKey: null },
+  { name: "Proveedores", href: "/admin/proveedores", icon: Truck, badgeKey: null },
 ]
 
 /* ───────────────────────────────────────────
@@ -505,7 +505,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       </aside>
 
       {/* ═══════════════════════════════════════
-          MAIN CONTENT AREA — Light, clean
+          MAIN CONTENT AREA — Dark
          ═══════════════════════════════════════ */}
       <div className="lg:pl-[280px]" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
         {/* ── Header ── */}
