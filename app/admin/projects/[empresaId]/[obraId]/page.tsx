@@ -317,7 +317,7 @@ export default function ProjectDetailPage() {
     note: "",
   })
 
-  // Cotizacion y Aditivos
+  // Cotizacion y Aditivas
   const [billingItems, setBillingItems] = useState<BillingItem[]>([])
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
@@ -1612,7 +1612,7 @@ export default function ProjectDetailPage() {
                   <div>
                     <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Total a cobrar</p>
                     <p className="text-2xl font-bold text-slate-100 mt-1">{formatCurrency(totalBilling, budgetCurrency)}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Cotizacion + Aditivos</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Cotización + Aditivas</p>
                   </div>
                   <div>
                     <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Cobrado</p>
@@ -1681,7 +1681,7 @@ export default function ProjectDetailPage() {
             {/* CARD 3 — Aditivos */}
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-slate-100">Aditivos</CardTitle>
+                <CardTitle className="text-slate-100">Aditivas</CardTitle>
                 <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("aditivo")}>
                   <Plus className="w-4 h-4 mr-1" />
                   Nuevo aditivo
@@ -1716,7 +1716,7 @@ export default function ProjectDetailPage() {
                           </TableRow>
                         ))}
                         <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
-                          <TableCell colSpan={2} className="text-slate-300">Total aditivos</TableCell>
+                          <TableCell colSpan={2} className="text-slate-300">Total aditivas</TableCell>
                           <TableCell className="text-right font-bold text-slate-100">
                             {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
                           </TableCell>
@@ -1726,7 +1726,7 @@ export default function ProjectDetailPage() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivos registrados aun.</p>
+                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivas registradas aun.</p>
                 )}
               </CardContent>
             </Card>

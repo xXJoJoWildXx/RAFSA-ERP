@@ -12,8 +12,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown } from "lucide-react"
+import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown, FileText, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
 
 type Empresa = {
   id: string
@@ -30,6 +31,11 @@ export default function EmpresasPage() {
   const [editMode, setEditMode]   = useState(false)
   const [selected, setSelected]   = useState<Set<string>>(new Set())
   const [deleting, setDeleting]   = useState(false)
+
+  // ── Modo EDC ──
+  const [edcMode, setEdcMode]             = useState(false)
+  const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
+  const [edcGenerating, setEdcGenerating] = useState(false)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [nombre, setNombre]         = useState("")
@@ -86,11 +92,91 @@ export default function EmpresasPage() {
     setCreateOpen(false); setSaving(false); await fetchEmpresas()
   }
 
-  function enterEditMode() { setSelected(new Set()); setEditMode(true) }
+  function enterEditMode() { setEdcMode(false); setEdcSelected(new Set()); setSelected(new Set()); setEditMode(true) }
   function exitEditMode()  { setEditMode(false); setSelected(new Set()) }
 
   function toggleSelect(id: string) {
     setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  // ── Funciones EDC ──
+  function enterEdcMode() { setEditMode(false); setSelected(new Set()); setEdcSelected(new Set()); setEdcMode(true) }
+  function exitEdcMode()  { setEdcMode(false); setEdcSelected(new Set()) }
+
+  function toggleEdcSelect(id: string) {
+    setEdcSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  async function handleGenerateEDC() {
+    if (edcSelected.size === 0 || edcGenerating) return
+    setEdcGenerating(true)
+    try {
+      const selectedIds = Array.from(edcSelected)
+
+      const { data: obrasData } = await supabase
+        .from("obras")
+        .select("id, code, name, location_text, status, empresa_id")
+        .in("empresa_id", selectedIds)
+        .order("created_at", { ascending: false })
+
+      const obras = (obrasData || []) as { id: string; code: string | null; name: string; location_text: string | null; status: string; empresa_id: string }[]
+      const obraIds = obras.map((o) => o.id)
+
+      const [billingRes, accountsRes] = await Promise.all([
+        supabase.from("obra_billing_items").select("obra_id, amount").in("obra_id", obraIds),
+        supabase.from("obra_state_accounts")
+          .select("obra_id, amount, concept, date")
+          .in("obra_id", obraIds)
+          .order("date", { ascending: true }),
+      ])
+
+      const budgetMap: Record<string, number> = {}
+      ;(billingRes.data || []).forEach((item: { obra_id: string; amount: number }) => {
+        budgetMap[item.obra_id] = (budgetMap[item.obra_id] || 0) + Number(item.amount || 0)
+      })
+
+      type AccountRow = { obra_id: string; amount: number; concept: "deposit"|"advance"|"retention"|"return"; date: string | null }
+      const spentMap: Record<string, number> = {}
+      const pagosMap: Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]> = {}
+      ;(accountsRes.data || []).forEach((a: AccountRow) => {
+        const sign = a.concept === "return" ? -1 : 1
+        spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
+        if (!pagosMap[a.obra_id]) pagosMap[a.obra_id] = []
+        pagosMap[a.obra_id].push({ concept: a.concept, date: a.date, amount: Number(a.amount || 0) })
+      })
+
+      const edcData: EDCEmpresa[] = selectedIds
+        .map((id) => {
+          const empresa = empresas.find((e) => e.id === id)
+          if (!empresa) return null
+          return {
+            id: empresa.id,
+            name: empresa.name,
+            obras: obras
+              .filter((o) => o.empresa_id === id)
+              .map((o) => ({
+                id: o.id,
+                code: o.code,
+                name: o.name,
+                location: o.location_text || "Sin ubicación",
+                status: o.status,
+                budget: budgetMap[o.id] ?? 0,
+                spent: spentMap[o.id] ?? 0,
+                pagos: pagosMap[o.id] ?? [],
+              })),
+          } as EDCEmpresa
+        })
+        .filter(Boolean) as EDCEmpresa[]
+
+      const { data: authData } = await supabase.auth.getUser()
+      const userLabel = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+      await generateEDCPdf(edcData, new Date(), userLabel)
+      exitEdcMode()
+    } catch (err) {
+      console.error("Error generando EDC:", err)
+    } finally {
+      setEdcGenerating(false)
+    }
   }
 
   async function openDeleteDialog() {
@@ -160,17 +246,43 @@ export default function EmpresasPage() {
                 <p className="text-slate-400 text-sm mt-1">
                   {editMode
                     ? "Selecciona las empresas que deseas eliminar o edita su información"
+                    : edcMode
+                    ? "Selecciona las empresas a incluir en el Estado de Cuenta"
                     : "Selecciona una empresa para ver y gestionar sus obras"}
                 </p>
               </div>
 
-              {!editMode ? (
+              {!editMode && !edcMode ? (
                 <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={enterEdcMode}
+                    className="font-semibold border-emerald-700/60 text-emerald-400 hover:bg-emerald-900/30 hover:text-emerald-300 hover:border-emerald-600"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />Generar EDC
+                  </Button>
                   <Button variant="outline" onClick={enterEditMode} className={`font-semibold ${btnOutline}`}>
                     <Pencil className="w-4 h-4 mr-2" />Editar
                   </Button>
                   <Button onClick={openCreate} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
                     <Plus className="w-4 h-4 mr-2" />Nueva empresa
+                  </Button>
+                </div>
+              ) : edcMode ? (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEdcMode} disabled={edcGenerating} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button
+                    onClick={handleGenerateEDC}
+                    disabled={edcSelected.size === 0 || edcGenerating}
+                    className="font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                  >
+                    {edcGenerating ? (
+                      <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
+                    ) : (
+                      <><FileText className="w-4 h-4 mr-2" />Generar PDF{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>
+                    )}
                   </Button>
                 </div>
               ) : (
@@ -212,36 +324,65 @@ export default function EmpresasPage() {
           {!loading && !error && empresas.length > 0 && (
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
               {empresas.map((empresa) => {
-                const isSelected = selected.has(empresa.id)
+                const isEditSelected = selected.has(empresa.id)
+                const isEdcSelected  = edcSelected.has(empresa.id)
+                const inAnyMode      = editMode || edcMode
 
                 const card = (
                   <div
                     className={`group relative rounded-2xl border-2 p-6 flex flex-col gap-4 transition-all duration-200 overflow-hidden
                       ${editMode
-                        ? isSelected
+                        ? isEditSelected
                           ? "border-red-500/70 shadow-lg shadow-red-950/40 -translate-y-0.5"
                           : "border-slate-700/60 hover:border-slate-600 cursor-pointer"
+                        : edcMode
+                        ? isEdcSelected
+                          ? "border-emerald-500/70 shadow-lg shadow-emerald-950/40 -translate-y-0.5"
+                          : "border-slate-700/60 hover:border-emerald-600/40 cursor-pointer"
                         : "border-slate-700/60 hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1 cursor-pointer"
                       }`}
                     style={{
-                      background: isSelected
+                      background: isEditSelected
                         ? "linear-gradient(135deg, #2d1515 0%, #1e0e0e 100%)"
+                        : isEdcSelected
+                        ? "linear-gradient(135deg, #0d2e1a 0%, #091f12 100%)"
                         : "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
                       boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
                     }}
-                    onClick={editMode ? () => toggleSelect(empresa.id) : undefined}
+                    onClick={
+                      editMode ? () => toggleSelect(empresa.id)
+                      : edcMode ? () => toggleEdcSelect(empresa.id)
+                      : undefined
+                    }
                   >
                     {/* Acento top — solo en hover normal */}
-                    {!editMode && (
+                    {!inAnyMode && (
                       <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
                     )}
+                    {edcMode && isEdcSelected && (
+                      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-300" />
+                    )}
 
-                    {/* Checkbox edición */}
+                    {/* Checkbox edición (rojo) */}
                     {editMode && (
                       <div className="absolute top-4 right-4">
                         <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
-                          ${isSelected ? "bg-red-500 border-red-500" : "bg-slate-700 border-slate-600"}`}>
-                          {isSelected && (
+                          ${isEditSelected ? "bg-red-500 border-red-500" : "bg-slate-700 border-slate-600"}`}>
+                          {isEditSelected && (
+                            <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+                              <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                            </svg>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Checkbox EDC (verde) */}
+                    {edcMode && (
+                      <div className="absolute top-4 right-4">
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all
+                          ${isEdcSelected ? "bg-emerald-500 border-emerald-500" : "bg-slate-700 border-slate-600"}`}>
+                          {isEdcSelected && (
                             <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
                               <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
                             </svg>
@@ -252,17 +393,22 @@ export default function EmpresasPage() {
 
                     <div className="flex items-start justify-between gap-3">
                       <div className={`p-3 rounded-xl transition-colors duration-300
-                        ${editMode ? "bg-slate-700/50" : "bg-slate-700/50 group-hover:bg-[#0174bd]/15"}`}>
+                        ${inAnyMode
+                          ? edcMode && isEdcSelected ? "bg-emerald-900/30" : "bg-slate-700/50"
+                          : "bg-slate-700/50 group-hover:bg-[#0174bd]/15"}`}>
                         <Building2 className={`w-6 h-6 transition-colors duration-300
-                          ${editMode ? "text-slate-400" : "text-slate-400 group-hover:text-[#4da8e8]"}`} />
+                          ${inAnyMode
+                            ? edcMode && isEdcSelected ? "text-emerald-400" : "text-slate-400"
+                            : "text-slate-400 group-hover:text-[#4da8e8]"}`} />
                       </div>
-                      <span className={`text-xs font-semibold bg-slate-700/60 text-slate-400 px-2.5 py-1 rounded-full ${editMode ? "mr-7" : ""}`}>
+                      <span className={`text-xs font-semibold bg-slate-700/60 text-slate-400 px-2.5 py-1 rounded-full ${inAnyMode ? "mr-7" : ""}`}>
                         {empresa.obra_count} {empresa.obra_count === 1 ? "obra" : "obras"}
                       </span>
                     </div>
 
                     <div>
-                      <h3 className="font-bold text-slate-100 text-lg leading-tight group-hover:text-white transition-colors duration-200">
+                      <h3 className={`font-bold text-lg leading-tight transition-colors duration-200
+                        ${isEdcSelected ? "text-emerald-100" : "text-slate-100 group-hover:text-white"}`}>
                         {empresa.name}
                       </h3>
                       <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
@@ -282,7 +428,7 @@ export default function EmpresasPage() {
                       </button>
                     )}
 
-                    {!editMode && (
+                    {!inAnyMode && (
                       <div className="absolute bottom-5 right-5 opacity-0 group-hover:opacity-100 transition-all duration-200 translate-x-1 group-hover:translate-x-0">
                         <ChevronRight className="w-5 h-5 text-[#4da8e8]" />
                       </div>
@@ -290,10 +436,40 @@ export default function EmpresasPage() {
                   </div>
                 )
 
-                return editMode
+                return inAnyMode
                   ? <div key={empresa.id}>{card}</div>
                   : <Link key={empresa.id} href={`/admin/projects/${empresa.id}`} className="block">{card}</Link>
               })}
+            </div>
+          )}
+
+          {/* ── Floating EDC Action Bar ── */}
+          {edcMode && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-emerald-600/40 shadow-2xl shadow-black/50"
+              style={{ background: "linear-gradient(135deg, #0d2e1a 0%, #0a1f12 100%)" }}>
+              <CheckSquare className="w-5 h-5 text-emerald-400 shrink-0" />
+              <span className="text-sm font-medium text-slate-200">
+                {edcSelected.size === 0
+                  ? "Selecciona las empresas para el EDC"
+                  : `${edcSelected.size} empresa${edcSelected.size !== 1 ? "s" : ""} seleccionada${edcSelected.size !== 1 ? "s" : ""}`}
+              </span>
+              <div className="w-px h-5 bg-slate-600" />
+              <Button
+                onClick={handleGenerateEDC}
+                disabled={edcSelected.size === 0 || edcGenerating}
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                {edcGenerating ? (
+                  <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
+                ) : (
+                  <><FileText className="w-3.5 h-3.5 mr-1.5" />Generar PDF</>
+                )}
+              </Button>
+              <button onClick={exitEdcMode} disabled={edcGenerating}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
 
