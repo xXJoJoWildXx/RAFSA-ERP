@@ -8,7 +8,8 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, RefreshCw, Trash2, UserPlus, Crown } from "lucide-react"
+import { Plus, RefreshCw, Trash2, UserPlus, Crown, FileDown, Loader2 } from "lucide-react"
+import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
 
 type EmployeeRow = {
   id: string
@@ -46,6 +47,7 @@ type TeamMember = {
 
 type Props = {
   obraId: string
+  obraInfo?: ObraInfoPDF
   allowManage?: boolean
   onTeamChange?: () => void
 }
@@ -92,11 +94,12 @@ const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
 const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
 const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
-export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Props) {
+export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamChange }: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const [members, setMembers] = useState<TeamMember[]>([])
+  const [generatingPdf, setGeneratingPdf] = useState(false)
 
   // filtros
   const [search, setSearch] = useState("")
@@ -349,6 +352,64 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
     onTeamChange?.()
   }
 
+  async function handleGeneratePDF() {
+    if (!obraInfo) return
+    setGeneratingPdf(true)
+    try {
+      // Obtenemos los employee_ids activos
+      const activeMembers = members.filter(isActiveAssignment)
+      const employeeIds   = [...new Set(activeMembers.map(m => m.employee_id))]
+
+      // Consultamos datos extra de empleados (birth_date, hire_date, photo_url)
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("id, birth_date, hire_date, photo_url")
+        .in("id", employeeIds)
+
+      const empMap: Record<string, { birth_date: string | null; hire_date: string | null; photo_url: string | null }> = {}
+      ;(empData || []).forEach((e: any) => { empMap[e.id] = e })
+
+      // Cargamos fotos en paralelo (máx 10 a la vez para no saturar)
+      const photoCache: Record<string, string | null> = {}
+      const withPhoto = employeeIds.filter(id => empMap[id]?.photo_url)
+      const BATCH = 8
+      for (let i = 0; i < withPhoto.length; i += BATCH) {
+        const slice = withPhoto.slice(i, i + BATCH)
+        const results = await Promise.all(
+          slice.map(id => loadPhotoDataUrl(empMap[id].photo_url!).then(d => ({ id, d })))
+        )
+        results.forEach(({ id, d }) => { photoCache[id] = d })
+      }
+
+      // Obtenemos el usuario generador
+      const { data: authData } = await supabase.auth.getUser()
+      const generatedBy = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+
+      // Armamos el array de TeamMemberPDF ordenando directores primero
+      const pdfMembers: TeamMemberPDF[] = activeMembers
+        .sort((a, b) => {
+          const aDir = a.role_on_site === "director_obra" ? 0 : 1
+          const bDir = b.role_on_site === "director_obra" ? 0 : 1
+          return aDir - bDir
+        })
+        .map(m => ({
+          employee_id:   m.employee_id,
+          full_name:     m.full_name,
+          position_title: m.position_title,
+          role_on_site:  m.role_on_site,
+          birth_date:    empMap[m.employee_id]?.birth_date ?? null,
+          hire_date:     empMap[m.employee_id]?.hire_date  ?? null,
+          photoDataUrl:  photoCache[m.employee_id] ?? null,
+        }))
+
+      await generateTeamPdf(obraInfo, pdfMembers, new Date(), generatedBy)
+    } catch (err) {
+      console.error("generateTeamPdf error:", err)
+    } finally {
+      setGeneratingPdf(false)
+    }
+  }
+
   useEffect(() => {
     fetchMembers()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -467,6 +528,20 @@ export function ProjectTeamTab({ obraId, allowManage = true, onTeamChange }: Pro
             <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
             Refrescar
           </Button>
+
+          {obraInfo && members.filter(isActiveAssignment).length > 0 && (
+            <Button
+              variant="outline"
+              onClick={handleGeneratePDF}
+              disabled={generatingPdf || loading}
+              className={btnOutlineCls}
+            >
+              {generatingPdf
+                ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                : <FileDown className="w-4 h-4 mr-2" />}
+              {generatingPdf ? "Generando..." : "Generar PDF"}
+            </Button>
+          )}
 
           {allowManage && (
             <Button onClick={handleOpenAdd} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">

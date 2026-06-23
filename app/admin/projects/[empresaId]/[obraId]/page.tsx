@@ -103,6 +103,7 @@ type BillingItem = {
   amount: number
   date: string
   created_at: string
+  with_iva: boolean
 }
 
 const EVIDENCE_BUCKET = "state-account-evidence"
@@ -326,6 +327,7 @@ export default function ProjectDetailPage() {
     description: "",
     amount: "",
     date: new Date().toISOString().slice(0, 10),
+    with_iva: true,
   })
   const [savingBilling, setSavingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
@@ -1117,7 +1119,7 @@ export default function ProjectDetailPage() {
             .eq("obra_id", obraId),
           supabase
             .from("obra_billing_items")
-            .select("id, obra_id, type, description, amount, date, created_at")
+            .select("id, obra_id, type, description, amount, date, created_at, with_iva")
             .eq("obra_id", obraId)
             .order("date", { ascending: true }),
         ])
@@ -1280,13 +1282,13 @@ export default function ProjectDetailPage() {
     if (editingBillingItem) {
       const { error } = await supabase
         .from("obra_billing_items")
-        .update({ description: billingForm.description || null, amount, date: billingForm.date })
+        .update({ description: billingForm.description || null, amount, date: billingForm.date, with_iva: billingForm.with_iva })
         .eq("id", editingBillingItem.id)
       if (error) { setBillingError("No se pudo actualizar."); setSavingBilling(false); return }
     } else {
       const { error } = await supabase.from("obra_billing_items").insert({
         obra_id: obra.id, type: billingForm.type, description: billingForm.description || null,
-        amount, date: billingForm.date, created_by,
+        amount, date: billingForm.date, created_by, with_iva: billingForm.with_iva,
       })
       if (error) { setBillingError("No se pudo guardar."); setSavingBilling(false); return }
     }
@@ -1297,11 +1299,14 @@ export default function ProjectDetailPage() {
     const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
-      .select("id, obra_id, type, description, amount, date, created_at")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
       .eq("obra_id", obraId)
       .order("date", { ascending: true })
     if (billingItemsError) console.error("billing items error", billingItemsError)
-    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({
+      ...item,
+      with_iva: item.with_iva ?? true,
+    })) as BillingItem[]
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
@@ -1323,11 +1328,11 @@ export default function ProjectDetailPage() {
     const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
-      .select("id, obra_id, type, description, amount, date, created_at")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
       .eq("obra_id", obraId)
       .order("date", { ascending: true })
     if (billingItemsError) console.error("billing items error", billingItemsError)
-    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
@@ -1335,14 +1340,14 @@ export default function ProjectDetailPage() {
 
   function openAddBillingItem(type: "cotizacion" | "aditivo") {
     setEditingBillingItem(null)
-    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10) })
+    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10), with_iva: true })
     setBillingError(null)
     setBillingDialogOpen(true)
   }
 
   function openEditBillingItem(item: BillingItem) {
     setEditingBillingItem(item)
-    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date })
+    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date, with_iva: item.with_iva })
     setBillingError(null)
     setBillingDialogOpen(true)
   }
@@ -1573,39 +1578,10 @@ export default function ProjectDetailPage() {
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Balance General de la Obra</CardTitle>
-                <Select
-                  value={ivaIncluded ? "con_iva" : "sin_iva"}
-                  onValueChange={(v) => handleIvaChange(v === "con_iva")}
-                >
-                  <SelectTrigger
-                    className={`w-36 h-9 cursor-pointer border-2 font-bold text-base ${
-                      ivaIncluded
-                        ? "bg-green-500/10 border-green-500/40 text-green-400 hover:bg-green-500/20"
-                        : "bg-red-500/10 border-red-500/40 text-red-400 hover:bg-red-500/20"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      {ivaIncluded
-                        ? <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        : <XCircle className="w-4 h-4 shrink-0" />}
-                      <span>{ivaIncluded ? "Con IVA" : "Sin IVA"}</span>
-                    </div>
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-800 border-slate-700">
-                    <SelectItem value="con_iva" className="focus:bg-slate-700">
-                      <div className="flex items-center gap-2 font-semibold text-green-400">
-                        <CheckCircle2 className="w-4 h-4" />
-                        Con IVA
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="sin_iva" className="focus:bg-slate-700">
-                      <div className="flex items-center gap-2 font-semibold text-red-400">
-                        <XCircle className="w-4 h-4" />
-                        Sin IVA
-                      </div>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                <span className="text-sm font-semibold text-green-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </span>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
@@ -1658,6 +1634,10 @@ export default function ProjectDetailPage() {
                             <p className="text-xs text-slate-400 mt-0.5">{cotizacion.description}</p>
                           )}
                           <p className="text-xs text-slate-500 mt-0.5">{cotizacion.date}</p>
+                          <span className={`inline-flex items-center gap-1 mt-1.5 text-xs font-semibold px-2 py-0.5 rounded-full ${cotizacion.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                            {cotizacion.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                            {cotizacion.with_iva ? "Con IVA 16%" : "Sin IVA"}
+                          </span>
                         </>
                       ) : (
                         <p className="text-sm text-slate-500 mt-1">Sin cotización registrada</p>
@@ -1695,6 +1675,7 @@ export default function ProjectDetailPage() {
                         <TableRow className="border-slate-700 hover:bg-slate-700/30">
                           <TableHead className="text-slate-400">Fecha</TableHead>
                           <TableHead className="text-slate-400">Descripcion</TableHead>
+                          <TableHead className="text-slate-400">IVA</TableHead>
                           <TableHead className="text-right text-slate-400">Monto</TableHead>
                           <TableHead className="text-right text-slate-400">Acciones</TableHead>
                         </TableRow>
@@ -1704,6 +1685,12 @@ export default function ProjectDetailPage() {
                           <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
                             <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
                             <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${item.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                                {item.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                {item.with_iva ? "Con IVA" : "Sin IVA"}
+                              </span>
+                            </TableCell>
                             <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-1">
@@ -1716,7 +1703,7 @@ export default function ProjectDetailPage() {
                           </TableRow>
                         ))}
                         <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
-                          <TableCell colSpan={2} className="text-slate-300">Total aditivas</TableCell>
+                          <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
                           <TableCell className="text-right font-bold text-slate-100">
                             {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
                           </TableCell>
@@ -1836,7 +1823,21 @@ export default function ProjectDetailPage() {
 
           {/* TEAM  */}
           <TabsContent value="team" forceMount className="space-y-6">
-            <ProjectTeamTab obraId={obra.id} allowManage onTeamChange={() => fetchTeamStats(obra.id)} />
+            <ProjectTeamTab
+              obraId={obra.id}
+              obraInfo={{
+                name:          obra.name,
+                code:          obra.code,
+                client_name:   obra.client_name,
+                location_text: obra.location_text,
+                status:        obra.status,
+                start_date:    obra.start_date_actual ?? obra.start_date_planned ?? null,
+                end_date:      obra.end_date_actual   ?? obra.end_date_planned   ?? null,
+                notes:         obra.notes,
+              }}
+              allowManage
+              onTeamChange={() => fetchTeamStats(obra.id)}
+            />
           </TabsContent>
 
           {/* ACTIVIDAD — en desarrollo */}
@@ -2397,6 +2398,35 @@ export default function ProjectDetailPage() {
                 placeholder={billingForm.type === "cotizacion" ? "Cotizacion inicial..." : "Trabajo extra, material adicional..."}
                 className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
               />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">IVA</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: true }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    billingForm.with_iva
+                      ? "bg-green-500/15 border-green-500/50 text-green-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: false }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    !billingForm.with_iva
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <XCircle className="w-4 h-4" />
+                  Sin IVA
+                </button>
+              </div>
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Monto *</label>
