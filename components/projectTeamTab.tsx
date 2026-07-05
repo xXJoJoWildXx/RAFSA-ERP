@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Plus, RefreshCw, Trash2, UserPlus, Crown, FileDown, Loader2 } from "lucide-react"
 import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
+import { logActivity } from "@/lib/activityLog"
 
 type EmployeeRow = {
   id: string
@@ -327,6 +328,14 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         return
       }
 
+      const addedEmp = employees.find((e) => e.id === addForm.employee_id)
+      const evType = addForm.role_on_site === "director_obra" ? "team.director_assigned" : "team.member_added"
+      logActivity({
+        event_type: evType,
+        entity_type: "team",
+        entity_label: addedEmp?.full_name ?? addForm.employee_id,
+        metadata: { obra_id: obraId, role_on_site: addForm.role_on_site },
+      })
       setAddOpen(false)
       setSavingAdd(false)
       await fetchMembers()
@@ -348,6 +357,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
       return
     }
 
+    logActivity({
+      event_type: "team.member_removed",
+      entity_type: "team",
+      entity_label: member.full_name,
+      metadata: { obra_id: obraId, role_on_site: member.role_on_site },
+    })
     await fetchMembers()
     onTeamChange?.()
   }
@@ -495,6 +510,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         return
       }
 
+      logActivity({
+        event_type: "team.member_added",
+        entity_type: "team",
+        entity_label: transferInfo.employeeName,
+        metadata: { obra_id: obraId, from_obra: transferInfo.fromObraName, role_on_site: addForm.role_on_site, transferred: true },
+      })
       setTransferConfirmOpen(false)
       setTransferInfo(null)
       setAddOpen(false)

@@ -14,6 +14,7 @@ import {
 } from "@/components/ui/dialog"
 import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown, FileText, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
 
 type Empresa = {
@@ -87,8 +88,14 @@ export default function EmpresasPage() {
     e.preventDefault()
     if (!nombre.trim()) return
     setSaving(true); setSaveError(null)
-    const { error } = await supabase.from("empresas").insert({ name: nombre.trim() })
+    const { data: insertedEmpresa, error } = await supabase.from("empresas").insert({ name: nombre.trim() }).select("id").single()
     if (error) { setSaveError("No se pudo crear la empresa. Intenta de nuevo."); setSaving(false); return }
+    logActivity({
+      event_type: "empresa.created",
+      entity_type: "empresa",
+      entity_id: insertedEmpresa?.id ?? null,
+      entity_label: nombre.trim(),
+    })
     setCreateOpen(false); setSaving(false); await fetchEmpresas()
   }
 
@@ -202,6 +209,13 @@ export default function EmpresasPage() {
     if (obrasErr) { alert("No se pudieron eliminar las obras asociadas."); setDeleting(false); return }
     const { error: empErr } = await supabase.from("empresas").delete().in("id", ids)
     if (empErr)  { alert("No se pudieron eliminar las empresas."); setDeleting(false); return }
+    const deletedNames = ids.map((id) => empresas.find((e) => e.id === id)?.name).filter(Boolean).join(", ")
+    logActivity({
+      event_type: "empresa.deleted",
+      entity_type: "empresa",
+      entity_label: deletedNames || `${ids.length} empresa(s)`,
+      metadata: { deleted_ids: ids },
+    })
     setDeleting(false); setDeleteDialogOpen(false); exitEditMode(); await fetchEmpresas()
   }
 
@@ -220,6 +234,12 @@ export default function EmpresasPage() {
     setEditSaving(true); setEditError(null)
     const { error } = await supabase.from("empresas").update({ name: editNombre.trim() }).eq("id", editingEmpresa.id)
     if (error) { setEditError("No se pudo actualizar el nombre."); setEditSaving(false); return }
+    logActivity({
+      event_type: "empresa.updated",
+      entity_type: "empresa",
+      entity_id: editingEmpresa.id,
+      entity_label: editNombre.trim(),
+    })
     setEditOpen(false); setEditSaving(false); await fetchEmpresas()
   }
 

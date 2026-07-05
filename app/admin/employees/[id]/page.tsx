@@ -53,6 +53,7 @@ import {
   LayoutDashboard,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 
 // -------------------- Tipos reales de la DB --------------------
 
@@ -1430,7 +1431,14 @@ export default function EmployeeDetailPage() {
 
     try {
       setDeleting(true)
+      const nameSnapshot = employee.name
       await deleteEmployeeCascade(id)
+      await logActivity({
+        event_type: "employee.deleted",
+        entity_type: "employee",
+        entity_id: id,
+        entity_label: nameSnapshot,
+      })
       setDeleteOpen(false)
       router.push("/admin/employees")
     } catch (e: any) {

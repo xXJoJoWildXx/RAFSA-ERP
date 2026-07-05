@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/dialog"
 import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, X, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
 
 // ----- Tipos -----
@@ -235,6 +236,13 @@ export default function EmpresaObrasPage() {
       if (error || !inserted) { setFormError("No se pudo crear la obra, intenta de nuevo."); return }
       const obra = inserted as ObraRow
       if (data.manager) await supabase.from("obra_assignments").insert({ obra_id: obra.id, employee_id: data.manager, role_on_site: "director_obra" })
+      logActivity({
+        event_type: "obra.created",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { empresa_id: empresaId, empresa_name: empresaNombre },
+      })
       setProjects((prev) => [mapObraToProject(obra), ...prev]); setOpenDialog(false)
     } catch { setFormError("Error inesperado al crear la obra.") }
     finally { setSaving(false) }

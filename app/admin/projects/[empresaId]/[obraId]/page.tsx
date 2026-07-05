@@ -37,6 +37,7 @@ import {
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -747,7 +748,25 @@ export default function ProjectDetailPage() {
       return
     }
 
-    setObra(data as ObraRow)
+    const updatedObra = data as ObraRow
+    const prevStatus = obra.status
+    setObra(updatedObra)
+    if (prevStatus !== updatedObra.status) {
+      logActivity({
+        event_type: "obra.status_changed",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { from: prevStatus, to: updatedObra.status },
+      })
+    } else {
+      logActivity({
+        event_type: "obra.updated",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+      })
+    }
     setEditOpen(false)
     setSavingEdit(false)
   }
@@ -763,6 +782,12 @@ export default function ProjectDetailPage() {
       return
     }
 
+    logActivity({
+      event_type: "obra.deleted",
+      entity_type: "obra",
+      entity_id: obra.id,
+      entity_label: obra.name,
+    })
     router.push(`/admin/projects/${params.empresaId}`)
   }
 
@@ -983,6 +1008,13 @@ export default function ProjectDetailPage() {
       return next
     })
 
+    logActivity({
+      event_type: "billing.payment_registered",
+      entity_type: "billing",
+      entity_id: (data as ObraStateAccountRow).id,
+      entity_label: obra ? `Pago en ${obra.name}` : "Pago registrado",
+      metadata: { concept: newPaymentForm.concept, amount: amountNumber, obra_id: obra?.id },
+    })
     setNewPaymentForm({
       concept: "deposit",
       amount: "",
@@ -1285,12 +1317,27 @@ export default function ProjectDetailPage() {
         .update({ description: billingForm.description || null, amount, date: billingForm.date, with_iva: billingForm.with_iva })
         .eq("id", editingBillingItem.id)
       if (error) { setBillingError("No se pudo actualizar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_updated" : "billing.aditivo_updated"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_id: editingBillingItem.id,
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
     } else {
       const { error } = await supabase.from("obra_billing_items").insert({
         obra_id: obra.id, type: billingForm.type, description: billingForm.description || null,
         amount, date: billingForm.date, created_by, with_iva: billingForm.with_iva,
       })
       if (error) { setBillingError("No se pudo guardar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_registered" : "billing.aditivo_added"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
     }
     setBillingDialogOpen(false)
     setEditingBillingItem(null)
@@ -1324,6 +1371,14 @@ export default function ProjectDetailPage() {
     if (!ok) return
     const { error } = await supabase.from("obra_billing_items").delete().eq("id", item.id)
     if (error) { console.error("delete billing item error:", error); return }
+    const evType = item.type === "cotizacion" ? "billing.cotizacion_deleted" : "billing.aditivo_deleted"
+    logActivity({
+      event_type: evType,
+      entity_type: "billing",
+      entity_id: item.id,
+      entity_label: obra ? `${item.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : item.type,
+      metadata: { obra_id: obra?.id, amount: item.amount, type: item.type },
+    })
     // Reload data
     const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
@@ -2270,6 +2325,12 @@ export default function ProjectDetailPage() {
                   if (error) {
                     console.error("delete payments error:", error)
                   } else {
+                    logActivity({
+                      event_type: "billing.payment_deleted",
+                      entity_type: "billing",
+                      entity_label: obra ? `${ids.length} pago(s) eliminado(s) en ${obra.name}` : `${ids.length} pago(s) eliminado(s)`,
+                      metadata: { obra_id: obra?.id, deleted_ids: ids, count: ids.length },
+                    })
                     setStateAccounts((prev) => prev.filter((a) => !selectedPaymentIds.has(a.id)))
                     setEvidenceMap((prev) => {
                       const next = { ...prev }

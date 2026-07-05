@@ -24,6 +24,7 @@ import {
   Settings,
   Search,
   Truck,
+  Activity,
 } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
@@ -31,6 +32,7 @@ import { usePathname } from "next/navigation"
 import { useState, useEffect, useCallback } from "react"
 import { cn } from "@/lib/utils"
 import { supabase } from "@/lib/supabaseClient"
+import { formatEventType, timeAgo } from "@/lib/activityLog"
 
 /* ───────────────────────────────────────────
    Navigation Config (badges are fetched live)
@@ -47,6 +49,7 @@ const navigation: NavItem[] = [
   { name: "Obras", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
   { name: "Empleados", href: "/admin/employees", icon: Users, badgeKey: "empleados" },
   { name: "Proveedores", href: "/admin/proveedores", icon: Truck, badgeKey: null },
+  { name: "Actividades", href: "/admin/activities", icon: Activity, badgeKey: null },
 ]
 
 /* ───────────────────────────────────────────
@@ -113,9 +116,28 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     obras: null,
     empleados: null,
   })
+  const [recentActivities, setRecentActivities] = useState<any[]>([])
+  const [recentCount, setRecentCount] = useState(0)
 
   useEffect(() => {
     setMounted(true)
+  }, [])
+
+  const fetchRecentActivities = useCallback(async () => {
+    try {
+      const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+      const [activitiesRes, countRes] = await Promise.all([
+        supabase.from("activity_log")
+          .select("id, event_type, entity_type, entity_label, actor_email, created_at")
+          .order("created_at", { ascending: false })
+          .limit(5),
+        supabase.from("activity_log")
+          .select("id", { count: "exact", head: true })
+          .gte("created_at", since24h),
+      ])
+      setRecentActivities(activitiesRes.data ?? [])
+      setRecentCount(countRes.count ?? 0)
+    } catch {}
   }, [])
 
   // Fetch live counts from Supabase
@@ -143,10 +165,31 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     fetchBadgeCounts()
-    // Refresh counts every 60 seconds
-    const interval = setInterval(fetchBadgeCounts, 60_000)
-    return () => clearInterval(interval)
-  }, [fetchBadgeCounts])
+    fetchRecentActivities()
+
+    // Refresh every 60 seconds as fallback
+    const interval = setInterval(() => {
+      fetchBadgeCounts()
+      fetchRecentActivities()
+    }, 60_000)
+
+    // Real-time subscription: re-fetch on any new activity_log INSERT
+    const channel = supabase
+      .channel("activity_log_realtime")
+      .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "activity_log" },
+        () => {
+          fetchRecentActivities()
+        }
+      )
+      .subscribe()
+
+    return () => {
+      clearInterval(interval)
+      supabase.removeChannel(channel)
+    }
+  }, [fetchBadgeCounts, fetchRecentActivities])
 
   const initials =
     user?.email
@@ -566,34 +609,53 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                     className="relative rounded-xl text-slate-500 hover:text-slate-300 hover:bg-slate-700/60 header-action-btn"
                   >
                     <Bell className="w-[18px] h-[18px]" />
-                    <span className="notif-dot absolute top-2 right-2 w-2 h-2 rounded-full bg-red-500"
-                      style={{ boxShadow: "0 0 6px rgba(239,68,68,0.5)" }}
-                    />
+                    {recentCount > 0 && (
+                      <span
+                        className="notif-dot absolute top-1.5 right-1.5 min-w-[16px] h-4 px-0.5 rounded-full bg-red-500 flex items-center justify-center text-[9px] font-bold text-white"
+                        style={{ boxShadow: "0 0 6px rgba(239,68,68,0.5)" }}
+                      >
+                        {recentCount > 99 ? "99+" : recentCount}
+                      </span>
+                    )}
                   </Button>
                 </DropdownMenuTrigger>
                 <DropdownMenuContent align="end"
-                  className="w-80 rounded-2xl shadow-2xl bg-slate-800 border-slate-700 p-0 overflow-hidden"
+                  className="w-96 rounded-2xl shadow-2xl bg-slate-800 border-slate-700 p-0 overflow-hidden"
                 >
-                  <div className="px-4 py-3 border-b border-slate-700 bg-slate-900/60">
-                    <p className="text-sm font-semibold text-slate-100">Notificaciones</p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">2 nuevas</p>
+                  <div className="px-4 py-3 border-b border-slate-700 bg-slate-900/60 flex items-center justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-100">Actividad reciente</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{recentCount} eventos en las últimas 24h</p>
+                    </div>
                   </div>
-                  <div className="p-2 space-y-1">
-                    <div className="p-3 rounded-xl bg-[#0174bd]/8 border border-[#0174bd]/15 hover:bg-[#0174bd]/12 transition-colors cursor-pointer">
-                      <p className="text-sm font-medium text-slate-200">Nuevo documento subido</p>
-                      <p className="text-xs text-slate-400 mt-1">Planos_Estructura_Q4.pdf — Carlos M.</p>
-                      <p className="text-[10px] text-[#4da8e8] mt-1.5 font-medium">Hace 5 min</p>
-                    </div>
-                    <div className="p-3 rounded-xl hover:bg-slate-700/40 transition-colors cursor-pointer">
-                      <p className="text-sm font-medium text-slate-300">Estatus de obra actualizado</p>
-                      <p className="text-xs text-slate-500 mt-1">Nave Industrial Apodaca → En Progreso</p>
-                      <p className="text-[10px] text-slate-600 mt-1.5 font-medium">Hace 1 hora</p>
-                    </div>
+                  <div className="p-2 space-y-0.5 max-h-80 overflow-y-auto">
+                    {recentActivities.length === 0 ? (
+                      <div className="py-8 text-center text-slate-500 text-sm">Sin actividad reciente</div>
+                    ) : (
+                      recentActivities.map((act) => (
+                        <div key={act.id} className="p-3 rounded-xl hover:bg-slate-700/40 transition-colors">
+                          <div className="flex items-start gap-2.5">
+                            <div className="w-7 h-7 rounded-lg bg-[#0174bd]/15 flex items-center justify-center shrink-0 mt-0.5">
+                              <Bell className="w-3.5 h-3.5 text-[#4da8e8]" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-slate-200">{formatEventType(act.event_type)}</p>
+                              {act.entity_label && <p className="text-xs text-slate-400 truncate">{act.entity_label}</p>}
+                              <div className="flex items-center gap-2 mt-1">
+                                <p className="text-[10px] text-slate-500 truncate">{act.actor_email ?? "Sistema"}</p>
+                                <span className="text-slate-700">·</span>
+                                <p className="text-[10px] text-[#4da8e8] font-medium shrink-0">{timeAgo(act.created_at)}</p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
                   <div className="px-4 py-2.5 border-t border-slate-700">
-                    <button className="text-xs font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors w-full text-center">
-                      Ver todas las notificaciones
-                    </button>
+                    <Link href="/admin/activities" className="block text-xs font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors text-center">
+                      Ver todas las actividades →
+                    </Link>
                   </div>
                 </DropdownMenuContent>
               </DropdownMenu>

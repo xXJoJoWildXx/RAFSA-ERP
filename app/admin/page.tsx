@@ -8,6 +8,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Building2, Users, FileText, Activity, TrendingUp, TrendingDown } from "lucide-react"
 import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
+import Link from "next/link"
+import { Button } from "@/components/ui/button"
+import { formatEventType, entityBadgeClass, timeAgo } from "@/lib/activityLog"
 
 type UserRole = "admin" | "user" | "worker"
 
@@ -28,6 +31,7 @@ export default function AdminDashboard() {
 
   const [obrasActivas, setObrasActivas] = useState<number>(0)
   const [empleadosActivos, setEmpleadosActivos] = useState<number>(0)
+  const [actividadesLog, setActividadesLog] = useState<any[]>([])
 
   useEffect(() => {
     const fetchStats = async () => {
@@ -45,6 +49,13 @@ export default function AdminDashboard() {
 
       setObrasActivas(obras?.length ?? 0)
       setEmpleadosActivos(empleados?.length ?? 0)
+
+      const { data: activities } = await supabase
+        .from("activity_log")
+        .select("id, event_type, entity_type, entity_label, actor_email, created_at")
+        .order("created_at", { ascending: false })
+        .limit(8)
+      setActividadesLog(activities ?? [])
     }
 
     fetchStats()
@@ -88,37 +99,6 @@ export default function AdminDashboard() {
       icon: Activity,
       color: "text-purple-400",
       bgColor: "bg-purple-500/15",
-    },
-  ]
-
-  const actividadesRecientes = [
-    {
-      id: 1,
-      user: "Sarah Johnson",
-      action: "subió un documento",
-      target: "Planes Q4.pdf",
-      time: "hace 5 minutos",
-    },
-    {
-      id: 2,
-      user: "Mike Chen",
-      action: "actualizó el estado de la obra",
-      target: "Plaza Centro",
-      time: "hace 1 hora",
-    },
-    {
-      id: 3,
-      user: "Emily Davis",
-      action: "completó una tarea",
-      target: "Inspección de seguridad",
-      time: "hace 2 horas",
-    },
-    {
-      id: 4,
-      user: "James Wilson",
-      action: "agregó un comentario",
-      target: "Proyecto Puente del Puerto",
-      time: "hace 3 horas",
     },
   ]
 
@@ -183,36 +163,56 @@ export default function AdminDashboard() {
           </div>
 
           {/* Actividades recientes */}
-          <Card className="bg-slate-800 border-slate-700">
-            <CardHeader>
-              <CardTitle className="text-slate-100">Actividades recientes</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="space-y-4">
-                {actividadesRecientes.map((activity) => (
-                  <div
-                    key={activity.id}
-                    className="flex items-start gap-4 pb-4 border-b border-slate-700 last:border-0 last:pb-0"
-                  >
-                    <div className="w-10 h-10 rounded-full bg-[#0174bd]/20 flex items-center justify-center flex-shrink-0">
-                      <span className="text-sm font-semibold text-[#4da8e8]">
-                        {activity.user
-                          .split(" ")
-                          .map((n) => n[0])
-                          .join("")}
-                      </span>
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="text-sm text-slate-300">
-                        <span className="font-semibold text-slate-100">{activity.user}</span>{" "}
-                        {activity.action}{" "}
-                        <span className="font-semibold text-slate-100">{activity.target}</span>
-                      </p>
-                      <p className="text-xs text-slate-500 mt-1">{activity.time}</p>
-                    </div>
-                  </div>
-                ))}
+          <Card className="bg-slate-800/60 border-slate-700/60">
+            <CardHeader className="flex flex-row items-center justify-between pb-4">
+              <div>
+                <CardTitle className="text-slate-100 text-base font-semibold">Actividades recientes</CardTitle>
+                <p className="text-xs text-slate-500 mt-0.5">Últimas acciones registradas en el sistema</p>
               </div>
+              <Link href="/admin/activities">
+                <Button size="sm" variant="outline"
+                  className="text-xs border-slate-600 text-slate-400 hover:text-slate-200 hover:bg-slate-700 bg-transparent cursor-pointer"
+                >
+                  Ver todas
+                </Button>
+              </Link>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {actividadesLog.length === 0 ? (
+                <div className="py-8 text-center text-slate-600 text-sm">Sin actividad registrada aún</div>
+              ) : (
+                <div className="space-y-0">
+                  {actividadesLog.map((act, idx) => (
+                    <div key={act.id}
+                      className={`flex items-start gap-3 py-3 ${idx < actividadesLog.length - 1 ? "border-b border-slate-700/50" : ""}`}
+                    >
+                      {/* Avatar */}
+                      <div className="w-8 h-8 rounded-full bg-[#0174bd]/20 border border-[#0174bd]/20 flex items-center justify-center shrink-0">
+                        <span className="text-xs font-bold text-[#4da8e8]">
+                          {(act.actor_email ?? "S")[0].toUpperCase()}
+                        </span>
+                      </div>
+                      {/* Content */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-start justify-between gap-2 flex-wrap">
+                          <p className="text-sm text-slate-300 leading-snug">
+                            <span className="font-semibold text-slate-100">{formatEventType(act.event_type)}</span>
+                            {act.entity_label && (
+                              <span className="text-slate-400"> — {act.entity_label}</span>
+                            )}
+                          </p>
+                          <span className={`shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full ${entityBadgeClass(act.entity_type)}`}>
+                            {act.entity_type}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {act.actor_email ?? "Sistema"} · {timeAgo(act.created_at)}
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
