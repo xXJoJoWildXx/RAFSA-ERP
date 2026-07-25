@@ -22,8 +22,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2 } from "lucide-react"
+import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, X, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
+import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
 
 // ----- Tipos -----
 
@@ -51,7 +53,12 @@ type ObraAssignmentWithEmployee = {
 }
 
 type SiteReportRow       = { obra_id: string; progress_percent: number | null; report_date: string | null }
-type ObraStateAccountRow = { obra_id: string; amount: number | null; concept: string }
+type ObraStateAccountRow = {
+  obra_id: string
+  amount: number | null
+  concept: "deposit" | "advance" | "retention" | "return"
+  date: string | null
+}
 
 // ----- Helpers -----
 
@@ -100,6 +107,17 @@ export default function EmpresaObrasPage() {
   const [saving, setSaving]               = useState(false)
   const [formError, setFormError]         = useState<string | null>(null)
 
+  // ── Raw financial data (para EDC) ──
+  const [rawBudgetMap, setRawBudgetMap] = useState<Record<string, number>>({})
+  const [rawSpentMap, setRawSpentMap]   = useState<Record<string, number>>({})
+  const [rawObrasMap, setRawObrasMap]   = useState<Record<string, ObraRow>>({})
+  const [rawPagosMap, setRawPagosMap]   = useState<Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]>>({})
+
+  // ── Modo EDC ──
+  const [edcMode, setEdcMode]             = useState(false)
+  const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
+  const [edcGenerating, setEdcGenerating] = useState(false)
+
   useEffect(() => {
     supabase.from("empresas").select("name").eq("id", empresaId).single()
       .then(({ data }) => { if (data) setEmpresaNombre(data.name) })
@@ -123,7 +141,7 @@ export default function EmpresaObrasPage() {
         supabase.from("obra_assignments").select("obra_id").in("obra_id", obraIds).is("assigned_to", null),
         supabase.from("site_reports").select("obra_id, progress_percent, report_date").in("obra_id", obraIds),
         supabase.from("obra_billing_items").select("obra_id, amount").in("obra_id", obraIds),
-        supabase.from("obra_state_accounts").select("obra_id, amount, concept").in("obra_id", obraIds),
+        supabase.from("obra_state_accounts").select("obra_id, amount, concept, date").in("obra_id", obraIds).order("date", { ascending: true }),
       ])
 
       const teamMap: Record<string, number> = {}
@@ -149,10 +167,25 @@ export default function EmpresaObrasPage() {
       })
 
       const spentMap: Record<string, number> = {}
+      const pagosMap: Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]> = {}
       ;(accountsRes.data as ObraStateAccountRow[] || []).forEach((a) => {
         const sign = (a.concept || "").toLowerCase() === "return" ? -1 : 1
         spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
+        if (!pagosMap[a.obra_id]) pagosMap[a.obra_id] = []
+        pagosMap[a.obra_id].push({
+          concept: a.concept as "deposit"|"advance"|"retention"|"return",
+          date: a.date,
+          amount: Number(a.amount || 0),
+        })
       })
+
+      // Guardar maps crudos para EDC
+      setRawBudgetMap(budgetMap)
+      setRawSpentMap(spentMap)
+      setRawPagosMap(pagosMap)
+      const obrasById: Record<string, ObraRow> = {}
+      obras.forEach((o) => { obrasById[o.id] = o })
+      setRawObrasMap(obrasById)
 
       setProjects(obras.map((obra) => {
         const budget = budgetMap[obra.id] ?? 0; const spent = spentMap[obra.id] ?? 0
@@ -203,9 +236,62 @@ export default function EmpresaObrasPage() {
       if (error || !inserted) { setFormError("No se pudo crear la obra, intenta de nuevo."); return }
       const obra = inserted as ObraRow
       if (data.manager) await supabase.from("obra_assignments").insert({ obra_id: obra.id, employee_id: data.manager, role_on_site: "director_obra" })
+      logActivity({
+        event_type: "obra.created",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { empresa_id: empresaId, empresa_name: empresaNombre },
+      })
       setProjects((prev) => [mapObraToProject(obra), ...prev]); setOpenDialog(false)
     } catch { setFormError("Error inesperado al crear la obra.") }
     finally { setSaving(false) }
+  }
+
+  // ── Funciones EDC ──
+  function enterEdcMode() { setEdcSelected(new Set()); setEdcMode(true) }
+  function exitEdcMode()  { setEdcMode(false); setEdcSelected(new Set()) }
+  function toggleEdcSelect(id: string) {
+    setEdcSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  async function handleGenerateEDC() {
+    if (edcSelected.size === 0 || edcGenerating) return
+    setEdcGenerating(true)
+    try {
+      const selectedIds = Array.from(edcSelected)
+      const edcObras = selectedIds
+        .map((id) => {
+          const obra = rawObrasMap[id]
+          if (!obra) return null
+          return {
+            id: obra.id,
+            code: obra.code,
+            name: obra.name,
+            location: obra.location_text || "Sin ubicación",
+            status: obra.status,
+            budget: rawBudgetMap[id] ?? 0,
+            spent: rawSpentMap[id] ?? 0,
+            pagos: rawPagosMap[id] ?? [],
+          }
+        })
+        .filter(Boolean) as EDCEmpresa["obras"]
+
+      const edcData: EDCEmpresa[] = [{
+        id: empresaId,
+        name: empresaNombre,
+        obras: edcObras,
+      }]
+
+      const { data: authData } = await supabase.auth.getUser()
+      const userLabel = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+      await generateEDCPdf(edcData, new Date(), userLabel)
+      exitEdcMode()
+    } catch (err) {
+      console.error("Error generando EDC:", err)
+    } finally {
+      setEdcGenerating(false)
+    }
   }
 
   const inputCls   = "bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-600 focus:border-[#0174bd]/60"
@@ -234,12 +320,41 @@ export default function EmpresaObrasPage() {
                 <p className="text-[#4da8e8]/60 text-xs font-medium uppercase tracking-widest mb-1">Empresa</p>
                 <h1 className="text-2xl font-bold text-slate-100">{empresaNombre || "Cargando..."}</h1>
                 <p className="text-slate-400 text-sm mt-0.5">
-                  {projects.length} {projects.length === 1 ? "obra registrada" : "obras registradas"}
+                  {edcMode
+                    ? "Selecciona las obras a incluir en el Estado de Cuenta"
+                    : `${projects.length} ${projects.length === 1 ? "obra registrada" : "obras registradas"}`}
                 </p>
               </div>
-              <Button onClick={() => setOpenDialog(true)} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
-                <Plus className="w-4 h-4 mr-2" />Nueva obra
-              </Button>
+              {!edcMode ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={enterEdcMode}
+                    disabled={projects.length === 0}
+                    className="font-semibold border-emerald-700/60 text-emerald-400 hover:bg-emerald-900/30 hover:text-emerald-300 hover:border-emerald-600 disabled:opacity-40"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />Generar EDC
+                  </Button>
+                  <Button onClick={() => setOpenDialog(true)} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    <Plus className="w-4 h-4 mr-2" />Nueva obra
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEdcMode} disabled={edcGenerating} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button
+                    onClick={handleGenerateEDC}
+                    disabled={edcSelected.size === 0 || edcGenerating}
+                    className="font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                  >
+                    {edcGenerating
+                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
+                      : <><FileText className="w-4 h-4 mr-2" />Generar PDF{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>}
+                  </Button>
+                </div>
+              )}
             </div>
           </div>
 
@@ -291,15 +406,53 @@ export default function EmpresaObrasPage() {
               )}
               {!loading && !error && filteredProjects.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
-                  {filteredProjects.map((project) => (
-                    <Link key={project.id} href={`/admin/projects/${empresaId}/${project.id}`} className="block">
-                      <ProjectCard project={project} statusClass={getStatusColor(project.status)} />
-                    </Link>
-                  ))}
+                  {filteredProjects.map((project) => {
+                    const isEdcSel = edcSelected.has(project.id)
+                    if (edcMode) {
+                      return (
+                        <div key={project.id} className="cursor-pointer" onClick={() => toggleEdcSelect(project.id)}>
+                          <ProjectCard project={project} statusClass={getStatusColor(project.status)} isEdcSelected={isEdcSel} />
+                        </div>
+                      )
+                    }
+                    return (
+                      <Link key={project.id} href={`/admin/projects/${empresaId}/${project.id}`} className="block">
+                        <ProjectCard project={project} statusClass={getStatusColor(project.status)} />
+                      </Link>
+                    )
+                  })}
                 </div>
               )}
             </div>
           </div>
+
+          {/* ── Floating EDC Action Bar ── */}
+          {edcMode && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-emerald-600/40 shadow-2xl shadow-black/50"
+              style={{ background: "linear-gradient(135deg, #0d2e1a 0%, #0a1f12 100%)" }}>
+              <CheckSquare className="w-5 h-5 text-emerald-400 shrink-0" />
+              <span className="text-sm font-medium text-slate-200">
+                {edcSelected.size === 0
+                  ? "Selecciona las obras para el EDC"
+                  : `${edcSelected.size} obra${edcSelected.size !== 1 ? "s" : ""} seleccionada${edcSelected.size !== 1 ? "s" : ""}`}
+              </span>
+              <div className="w-px h-5 bg-slate-600" />
+              <Button
+                onClick={handleGenerateEDC}
+                disabled={edcSelected.size === 0 || edcGenerating}
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                {edcGenerating
+                  ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
+                  : <><FileText className="w-3.5 h-3.5 mr-1.5" />Generar PDF</>}
+              </Button>
+              <button onClick={exitEdcMode} disabled={edcGenerating}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* ── Dialog nueva obra ── */}
           <Dialog open={openDialog} onOpenChange={setOpenDialog}>
@@ -321,20 +474,35 @@ export default function EmpresaObrasPage() {
 
 // ---------- CARD ----------
 
-function ProjectCard({ project, statusClass }: { project: Project; statusClass: string }) {
+function ProjectCard({ project, statusClass, isEdcSelected = false }: { project: Project; statusClass: string; isEdcSelected?: boolean }) {
   return (
     <div
-      className="group relative rounded-2xl border border-slate-700/60 p-5 flex flex-col gap-4
-        hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1
-        transition-all duration-200 cursor-pointer overflow-hidden"
+      className={`group relative rounded-2xl border-2 p-5 flex flex-col gap-4 transition-all duration-200 cursor-pointer overflow-hidden
+        ${isEdcSelected
+          ? "border-emerald-500/70 shadow-lg shadow-emerald-950/40 -translate-y-0.5"
+          : "border-slate-700/60 hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1"}`}
       style={{
-        background: "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+        background: isEdcSelected
+          ? "linear-gradient(145deg, #0d2e1a 0%, #091f12 60%, #0b2015 100%)"
+          : "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
       }}
     >
 
       {/* Acento top */}
-      <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      {isEdcSelected
+        ? <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-300" />
+        : <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      }
+
+      {/* Checkbox EDC */}
+      {isEdcSelected && (
+        <div className="absolute top-4 right-4 z-10 w-5 h-5 rounded border-2 bg-emerald-500 border-emerald-500 flex items-center justify-center">
+          <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      )}
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">

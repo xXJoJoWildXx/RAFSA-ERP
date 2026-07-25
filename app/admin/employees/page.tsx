@@ -28,6 +28,7 @@ import {
 import { Search, Plus, Phone, X, FileDown, Calendar, Clock, User } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 import { generateEmployeesPdf, type EmployeePdfData, type SalaryPdfData } from "@/lib/generateEmployeesPdf"
 
 // ----- Tipos que reflejan la DB real -----
@@ -711,6 +712,12 @@ export default function AdminEmployeesPage() {
       }
 
       setEmployees((prev) => [uiEmployee, ...prev])
+      logActivity({
+        event_type: "employee.created",
+        entity_type: "employee",
+        entity_id: employeeId,
+        entity_label: newEmployee.full_name.trim(),
+      })
       resetCreateForm()
     } catch (e) {
       console.error("Error inesperado creando empleado:", stringifyAnyError(e))

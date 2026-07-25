@@ -34,9 +34,13 @@ import {
   CreditCard,
   Activity,
   AlertTriangle,
+  Bell,
+  CalendarDays,
+  CheckCircle,
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
@@ -44,6 +48,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
+import { NominasTab } from "@/components/nominasTab"
 
 // ---------- Tipos DB basicos ----------
 
@@ -103,6 +108,17 @@ type BillingItem = {
   amount: number
   date: string
   created_at: string
+  with_iva: boolean
+}
+
+type BajadaNotification = {
+  id: string
+  obra_id: string
+  assignment_id: string
+  employee_id: string
+  bajada_date: string
+  status: "pending" | "confirmed" | "dismissed"
+  employee_name?: string
 }
 
 const EVIDENCE_BUCKET = "state-account-evidence"
@@ -317,7 +333,7 @@ export default function ProjectDetailPage() {
     note: "",
   })
 
-  // Cotizacion y Aditivos
+  // Cotizacion y Aditivas
   const [billingItems, setBillingItems] = useState<BillingItem[]>([])
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
@@ -326,9 +342,15 @@ export default function ProjectDetailPage() {
     description: "",
     amount: "",
     date: new Date().toISOString().slice(0, 10),
+    with_iva: true,
   })
   const [savingBilling, setSavingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
+
+  // Bajada notifications
+  const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
+  const [bajadaLoading, setBajadaLoading] = useState(false)
+  const [processingBajadaId, setProcessingBajadaId] = useState<string | null>(null)
 
   // ------------------ Documentos: UI + Modal (Opcion B) ------------------
 
@@ -745,7 +767,25 @@ export default function ProjectDetailPage() {
       return
     }
 
-    setObra(data as ObraRow)
+    const updatedObra = data as ObraRow
+    const prevStatus = obra.status
+    setObra(updatedObra)
+    if (prevStatus !== updatedObra.status) {
+      logActivity({
+        event_type: "obra.status_changed",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { from: prevStatus, to: updatedObra.status },
+      })
+    } else {
+      logActivity({
+        event_type: "obra.updated",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+      })
+    }
     setEditOpen(false)
     setSavingEdit(false)
   }
@@ -761,6 +801,12 @@ export default function ProjectDetailPage() {
       return
     }
 
+    logActivity({
+      event_type: "obra.deleted",
+      entity_type: "obra",
+      entity_id: obra.id,
+      entity_label: obra.name,
+    })
     router.push(`/admin/projects/${params.empresaId}`)
   }
 
@@ -981,6 +1027,13 @@ export default function ProjectDetailPage() {
       return next
     })
 
+    logActivity({
+      event_type: "billing.payment_registered",
+      entity_type: "billing",
+      entity_id: (data as ObraStateAccountRow).id,
+      entity_label: obra ? `Pago en ${obra.name}` : "Pago registrado",
+      metadata: { concept: newPaymentForm.concept, amount: amountNumber, obra_id: obra?.id },
+    })
     setNewPaymentForm({
       concept: "deposit",
       amount: "",
@@ -1040,6 +1093,154 @@ export default function ProjectDetailPage() {
     if (error) { console.error("fetchTeamStats error:", error); return }
     const today = new Date().toISOString().slice(0, 10)
     applyTeamStats((data || []) as ObraAssignmentRow[], today)
+  }
+
+  // ── Bajada notifications ──
+
+  function getNextFriday(from: Date): Date {
+    const d = new Date(from)
+    const day = d.getDay()
+    const diff = day <= 5 ? 5 - day : 6 // days until next Friday
+    d.setDate(d.getDate() + diff)
+    return d
+  }
+
+  async function generateAndFetchBajadaNotifications(obraId: string) {
+    setBajadaLoading(true)
+    const today = new Date()
+    const dayOfWeek = today.getDay() // 0=Sun, 1=Mon...
+
+    // Auto-generate notifications on Monday (or any day for testing)
+    // Find all foráneo assignments with a bajada_date that falls this coming Fri-Sun
+    const nextFri = getNextFriday(today)
+    const nextFriStr = nextFri.toISOString().slice(0, 10)
+
+    // Fetch foráneo assignments with bajada_date = this Friday
+    const { data: foraneoAssignments } = await supabase
+      .from("obra_assignments")
+      .select("id, employee_id, next_bajada_date, employees(full_name)")
+      .eq("obra_id", obraId)
+      .eq("is_foraneo", true)
+      .eq("next_bajada_date", nextFriStr)
+      .is("assigned_to", null)
+
+    if (foraneoAssignments && foraneoAssignments.length > 0) {
+      for (const a of foraneoAssignments as any[]) {
+        // Check if notification already exists for this assignment + date
+        const { data: existing } = await supabase
+          .from("bajada_notifications")
+          .select("id")
+          .eq("assignment_id", a.id)
+          .eq("bajada_date", nextFriStr)
+          .limit(1)
+
+        if (!existing || existing.length === 0) {
+          await supabase.from("bajada_notifications").insert({
+            obra_id: obraId,
+            assignment_id: a.id,
+            employee_id: a.employee_id,
+            bajada_date: nextFriStr,
+          })
+        }
+      }
+    }
+
+    // Now fetch all pending notifications for this obra
+    const { data: notifications } = await supabase
+      .from("bajada_notifications")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, status")
+      .eq("obra_id", obraId)
+      .eq("status", "pending")
+      .order("bajada_date", { ascending: true })
+
+    if (notifications && notifications.length > 0) {
+      const empIds = [...new Set(notifications.map((n: any) => n.employee_id))]
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("id, full_name")
+        .in("id", empIds)
+
+      const empMap = new Map<string, string>()
+      ;(empData || []).forEach((e: any) => empMap.set(e.id, e.full_name))
+
+      const enriched: BajadaNotification[] = notifications.map((n: any) => ({
+        ...n,
+        employee_name: empMap.get(n.employee_id) ?? "Empleado",
+      }))
+      setBajadaNotifications(enriched)
+    } else {
+      setBajadaNotifications([])
+    }
+    setBajadaLoading(false)
+  }
+
+  async function handleConfirmBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const resolvedBy = authData?.user?.id ?? null
+
+      // 1. Mark notification as confirmed
+      await supabase
+        .from("bajada_notifications")
+        .update({ status: "confirmed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
+        .eq("id", notification.id)
+
+      // 2. Auto-mark Friday and Saturday as present in obra_attendance
+      const fridayDate = notification.bajada_date
+      const satDate = new Date(fridayDate + "T00:00:00")
+      satDate.setDate(satDate.getDate() + 1)
+      const saturdayDate = satDate.toISOString().slice(0, 10)
+
+      for (const dateStr of [fridayDate, saturdayDate]) {
+        // Check if record exists
+        const { data: existing } = await supabase
+          .from("obra_attendance")
+          .select("id")
+          .eq("obra_id", notification.obra_id)
+          .eq("employee_id", notification.employee_id)
+          .eq("date", dateStr)
+          .limit(1)
+
+        if (existing && existing.length > 0) {
+          await supabase
+            .from("obra_attendance")
+            .update({ status: "bajada" })
+            .eq("id", existing[0].id)
+        } else {
+          await supabase.from("obra_attendance").insert({
+            obra_id: notification.obra_id,
+            employee_id: notification.employee_id,
+            date: dateStr,
+            status: "bajada",
+            marked_by: resolvedBy,
+          })
+        }
+      }
+
+      // 3. Keep next_bajada_date on the assignment (locked until weekend passes)
+
+      // 4. Remove from local state
+      setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+    } catch (e) {
+      console.error("confirmBajada error:", e)
+    } finally {
+      setProcessingBajadaId(null)
+    }
+  }
+
+  async function handleDismissBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    const { data: authData } = await supabase.auth.getUser()
+    const resolvedBy = authData?.user?.id ?? null
+
+    await supabase
+      .from("bajada_notifications")
+      .update({ status: "dismissed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
+      .eq("id", notification.id)
+
+    setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+    setProcessingBajadaId(null)
   }
 
   async function loadData() {
@@ -1117,7 +1318,7 @@ export default function ProjectDetailPage() {
             .eq("obra_id", obraId),
           supabase
             .from("obra_billing_items")
-            .select("id, obra_id, type, description, amount, date, created_at")
+            .select("id, obra_id, type, description, amount, date, created_at, with_iva")
             .eq("obra_id", obraId)
             .order("date", { ascending: true }),
         ])
@@ -1180,6 +1381,7 @@ export default function ProjectDetailPage() {
         applyTeamStats(assignments, today)
 
         await fetchDocuments(obraId)
+        await generateAndFetchBajadaNotifications(obraId)
       } catch (e) {
         console.error(e)
         setError("Error inesperado al cargar la obra.")
@@ -1190,6 +1392,29 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.obraId])
+
+  // Realtime subscription for bajada notifications
+  useEffect(() => {
+    const obraId = params.obraId as string
+    if (!obraId) return
+
+    const channel = supabase
+      .channel(`bajada-notif-${obraId}`)
+      .on(
+        "postgres_changes" as any,
+        { event: "INSERT", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId) }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId) }
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.obraId])
 
@@ -1280,15 +1505,30 @@ export default function ProjectDetailPage() {
     if (editingBillingItem) {
       const { error } = await supabase
         .from("obra_billing_items")
-        .update({ description: billingForm.description || null, amount, date: billingForm.date })
+        .update({ description: billingForm.description || null, amount, date: billingForm.date, with_iva: billingForm.with_iva })
         .eq("id", editingBillingItem.id)
       if (error) { setBillingError("No se pudo actualizar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_updated" : "billing.aditivo_updated"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_id: editingBillingItem.id,
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
     } else {
       const { error } = await supabase.from("obra_billing_items").insert({
         obra_id: obra.id, type: billingForm.type, description: billingForm.description || null,
-        amount, date: billingForm.date, created_by,
+        amount, date: billingForm.date, created_by, with_iva: billingForm.with_iva,
       })
       if (error) { setBillingError("No se pudo guardar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_registered" : "billing.aditivo_added"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
     }
     setBillingDialogOpen(false)
     setEditingBillingItem(null)
@@ -1297,11 +1537,14 @@ export default function ProjectDetailPage() {
     const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
-      .select("id, obra_id, type, description, amount, date, created_at")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
       .eq("obra_id", obraId)
       .order("date", { ascending: true })
     if (billingItemsError) console.error("billing items error", billingItemsError)
-    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({
+      ...item,
+      with_iva: item.with_iva ?? true,
+    })) as BillingItem[]
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
@@ -1319,15 +1562,23 @@ export default function ProjectDetailPage() {
     if (!ok) return
     const { error } = await supabase.from("obra_billing_items").delete().eq("id", item.id)
     if (error) { console.error("delete billing item error:", error); return }
+    const evType = item.type === "cotizacion" ? "billing.cotizacion_deleted" : "billing.aditivo_deleted"
+    logActivity({
+      event_type: evType,
+      entity_type: "billing",
+      entity_id: item.id,
+      entity_label: obra ? `${item.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : item.type,
+      metadata: { obra_id: obra?.id, amount: item.amount, type: item.type },
+    })
     // Reload data
     const obraId = params.obraId as string
     const { data: billingItemsData, error: billingItemsError } = await supabase
       .from("obra_billing_items")
-      .select("id, obra_id, type, description, amount, date, created_at")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
       .eq("obra_id", obraId)
       .order("date", { ascending: true })
     if (billingItemsError) console.error("billing items error", billingItemsError)
-    const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
@@ -1335,14 +1586,14 @@ export default function ProjectDetailPage() {
 
   function openAddBillingItem(type: "cotizacion" | "aditivo") {
     setEditingBillingItem(null)
-    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10) })
+    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10), with_iva: true })
     setBillingError(null)
     setBillingDialogOpen(true)
   }
 
   function openEditBillingItem(item: BillingItem) {
     setEditingBillingItem(item)
-    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date })
+    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date, with_iva: item.with_iva })
     setBillingError(null)
     setBillingDialogOpen(true)
   }
@@ -1424,6 +1675,7 @@ export default function ProjectDetailPage() {
                 { value: "milestones", icon: <FolderOpen className="w-4 h-4" />,      label: "Documentos" },
                 { value: "account",    icon: <CreditCard className="w-4 h-4" />,      label: "Estado de Cuenta" },
                 { value: "team",       icon: <Users className="w-4 h-4" />,            label: "Equipo" },
+                { value: "nominas",    icon: <DollarSign className="w-4 h-4" />,       label: "Nominas" },
                 { value: "activity",   icon: <Activity className="w-4 h-4" />,         label: "Actividad" },
               ].map(({ value, icon, label }) => (
                 <TabsTrigger
@@ -1494,6 +1746,88 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             </div>
+
+            {/* Notificaciones Pendientes (Bajadas) */}
+            {bajadaNotifications.length > 0 && (
+              <Card className="bg-slate-800 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.05)]">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-amber-500/15">
+                      <Bell className="w-4.5 h-4.5 text-amber-400" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-slate-100">Notificaciones Pendientes</CardTitle>
+                      <p className="text-xs text-slate-500 mt-0.5">Bajadas programadas para este fin de semana</p>
+                    </div>
+                  </div>
+                  <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25">
+                    {bajadaNotifications.length}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {bajadaNotifications.map((n: BajadaNotification) => {
+                    const bajadaDay = new Date(n.bajada_date + "T00:00:00")
+                    const satDay = new Date(bajadaDay)
+                    satDay.setDate(satDay.getDate() + 1)
+                    const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
+                    const friLabel = bajadaDay.toLocaleDateString("es-MX", fmtOpts)
+                    const satLabel = satDay.toLocaleDateString("es-MX", fmtOpts)
+                    const isProcessing = processingBajadaId === n.id
+
+                    return (
+                      <div
+                        key={n.id}
+                        className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-700/60 bg-slate-700/20 hover:bg-slate-700/30 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                            <CalendarDays className="w-4 h-4 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-200 truncate">
+                              {n.employee_name}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Bajada: {friLabel} y {satLabel}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={isProcessing}
+                            onClick={() => handleDismissBajada(n)}
+                            className="bg-transparent border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 text-xs"
+                          >
+                            Descartar
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={isProcessing}
+                            onClick={() => handleConfirmBajada(n)}
+                            className="bg-amber-600 hover:bg-amber-700 text-white text-xs"
+                          >
+                            {isProcessing ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <>
+                                <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                                Confirmar
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <p className="text-[11px] text-slate-600 text-center pt-1">
+                    Al confirmar, se marcara asistencia automatica para viernes y sabado.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Detalles de la obra */}
             <Card className="bg-slate-800 border-slate-700">
@@ -1573,46 +1907,17 @@ export default function ProjectDetailPage() {
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Balance General de la Obra</CardTitle>
-                <Select
-                  value={ivaIncluded ? "con_iva" : "sin_iva"}
-                  onValueChange={(v) => handleIvaChange(v === "con_iva")}
-                >
-                  <SelectTrigger
-                    className={`w-36 h-9 cursor-pointer border-2 font-bold text-base ${
-                      ivaIncluded
-                        ? "bg-green-500/10 border-green-500/40 text-green-400 hover:bg-green-500/20"
-                        : "bg-red-500/10 border-red-500/40 text-red-400 hover:bg-red-500/20"
-                    }`}
-                  >
-                    <div className="flex items-center gap-1.5">
-                      {ivaIncluded
-                        ? <CheckCircle2 className="w-4 h-4 shrink-0" />
-                        : <XCircle className="w-4 h-4 shrink-0" />}
-                      <span>{ivaIncluded ? "Con IVA" : "Sin IVA"}</span>
-                    </div>
-                  </SelectTrigger>
-                  <SelectContent className="bg-slate-800 border-slate-700">
-                    <SelectItem value="con_iva" className="focus:bg-slate-700">
-                      <div className="flex items-center gap-2 font-semibold text-green-400">
-                        <CheckCircle2 className="w-4 h-4" />
-                        Con IVA
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="sin_iva" className="focus:bg-slate-700">
-                      <div className="flex items-center gap-2 font-semibold text-red-400">
-                        <XCircle className="w-4 h-4" />
-                        Sin IVA
-                      </div>
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                <span className="text-sm font-semibold text-green-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </span>
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
                   <div>
                     <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Total a cobrar</p>
                     <p className="text-2xl font-bold text-slate-100 mt-1">{formatCurrency(totalBilling, budgetCurrency)}</p>
-                    <p className="text-xs text-slate-500 mt-0.5">Cotizacion + Aditivos</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Cotización + Aditivas</p>
                   </div>
                   <div>
                     <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Cobrado</p>
@@ -1658,6 +1963,10 @@ export default function ProjectDetailPage() {
                             <p className="text-xs text-slate-400 mt-0.5">{cotizacion.description}</p>
                           )}
                           <p className="text-xs text-slate-500 mt-0.5">{cotizacion.date}</p>
+                          <span className={`inline-flex items-center gap-1 mt-1.5 text-xs font-semibold px-2 py-0.5 rounded-full ${cotizacion.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                            {cotizacion.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                            {cotizacion.with_iva ? "Con IVA 16%" : "Sin IVA"}
+                          </span>
                         </>
                       ) : (
                         <p className="text-sm text-slate-500 mt-1">Sin cotización registrada</p>
@@ -1681,7 +1990,7 @@ export default function ProjectDetailPage() {
             {/* CARD 3 — Aditivos */}
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-slate-100">Aditivos</CardTitle>
+                <CardTitle className="text-slate-100">Aditivas</CardTitle>
                 <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("aditivo")}>
                   <Plus className="w-4 h-4 mr-1" />
                   Nuevo aditivo
@@ -1695,6 +2004,7 @@ export default function ProjectDetailPage() {
                         <TableRow className="border-slate-700 hover:bg-slate-700/30">
                           <TableHead className="text-slate-400">Fecha</TableHead>
                           <TableHead className="text-slate-400">Descripcion</TableHead>
+                          <TableHead className="text-slate-400">IVA</TableHead>
                           <TableHead className="text-right text-slate-400">Monto</TableHead>
                           <TableHead className="text-right text-slate-400">Acciones</TableHead>
                         </TableRow>
@@ -1704,6 +2014,12 @@ export default function ProjectDetailPage() {
                           <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
                             <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
                             <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${item.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                                {item.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                {item.with_iva ? "Con IVA" : "Sin IVA"}
+                              </span>
+                            </TableCell>
                             <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
                             <TableCell className="text-right">
                               <div className="flex justify-end gap-1">
@@ -1716,7 +2032,7 @@ export default function ProjectDetailPage() {
                           </TableRow>
                         ))}
                         <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
-                          <TableCell colSpan={2} className="text-slate-300">Total aditivos</TableCell>
+                          <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
                           <TableCell className="text-right font-bold text-slate-100">
                             {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
                           </TableCell>
@@ -1726,7 +2042,7 @@ export default function ProjectDetailPage() {
                     </Table>
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivos registrados aun.</p>
+                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivas registradas aun.</p>
                 )}
               </CardContent>
             </Card>
@@ -1836,7 +2152,26 @@ export default function ProjectDetailPage() {
 
           {/* TEAM  */}
           <TabsContent value="team" forceMount className="space-y-6">
-            <ProjectTeamTab obraId={obra.id} allowManage onTeamChange={() => fetchTeamStats(obra.id)} />
+            <ProjectTeamTab
+              obraId={obra.id}
+              obraInfo={{
+                name:          obra.name,
+                code:          obra.code,
+                client_name:   obra.client_name,
+                location_text: obra.location_text,
+                status:        obra.status,
+                start_date:    obra.start_date_actual ?? obra.start_date_planned ?? null,
+                end_date:      obra.end_date_actual   ?? obra.end_date_planned   ?? null,
+                notes:         obra.notes,
+              }}
+              allowManage
+              onTeamChange={() => fetchTeamStats(obra.id)}
+            />
+          </TabsContent>
+
+          {/* NOMINAS */}
+          <TabsContent value="nominas" className="space-y-6">
+            <NominasTab obraId={obra.id} />
           </TabsContent>
 
           {/* ACTIVIDAD — en desarrollo */}
@@ -2269,6 +2604,12 @@ export default function ProjectDetailPage() {
                   if (error) {
                     console.error("delete payments error:", error)
                   } else {
+                    logActivity({
+                      event_type: "billing.payment_deleted",
+                      entity_type: "billing",
+                      entity_label: obra ? `${ids.length} pago(s) eliminado(s) en ${obra.name}` : `${ids.length} pago(s) eliminado(s)`,
+                      metadata: { obra_id: obra?.id, deleted_ids: ids, count: ids.length },
+                    })
                     setStateAccounts((prev) => prev.filter((a) => !selectedPaymentIds.has(a.id)))
                     setEvidenceMap((prev) => {
                       const next = { ...prev }
@@ -2397,6 +2738,35 @@ export default function ProjectDetailPage() {
                 placeholder={billingForm.type === "cotizacion" ? "Cotizacion inicial..." : "Trabajo extra, material adicional..."}
                 className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
               />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">IVA</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: true }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    billingForm.with_iva
+                      ? "bg-green-500/15 border-green-500/50 text-green-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: false }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    !billingForm.with_iva
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <XCircle className="w-4 h-4" />
+                  Sin IVA
+                </button>
+              </div>
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Monto *</label>
