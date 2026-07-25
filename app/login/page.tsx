@@ -140,7 +140,7 @@ export default function LoginPage() {
 
       if (role === "admin")       router.push("/admin")
       else if (role === "user")   router.push("/employee")
-      else if (role === "worker") router.push("/obras")
+      else if (role === "worker") router.push("/worker")
       else                        router.push("/dashboard")
 
     } catch (err) {

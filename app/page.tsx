@@ -14,6 +14,8 @@ export default function Home() {
         // Redirect based on role
         if (user.role === "admin") {
           router.push("/admin")
+        } else if (user.role === "worker") {
+          router.push("/worker")
         } else {
           router.push("/employee")
         }

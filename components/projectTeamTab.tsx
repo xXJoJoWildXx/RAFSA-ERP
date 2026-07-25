@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import React, { useEffect, useMemo, useState } from "react"
 import { supabase } from "@/lib/supabaseClient"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, RefreshCw, Trash2, UserPlus, Crown, FileDown, Loader2 } from "lucide-react"
+import { Plus, RefreshCw, Trash2, UserPlus, Crown, FileDown, Loader2, CalendarDays, Check } from "lucide-react"
 import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
 import { logActivity } from "@/lib/activityLog"
 
@@ -27,6 +27,8 @@ type AssignmentRow = {
   role_on_site: string | null
   assigned_from: string
   assigned_to: string | null
+  is_foraneo: boolean
+  next_bajada_date: string | null
   created_at: string
   employees:
     | { full_name: string; position_title: string | null; status: string }
@@ -43,6 +45,8 @@ type TeamMember = {
   role_on_site: string | null
   assigned_from: string
   assigned_to: string | null
+  is_foraneo: boolean
+  next_bajada_date: string | null
   created_at: string
 }
 
@@ -102,6 +106,9 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
   const [members, setMembers] = useState<TeamMember[]>([])
   const [generatingPdf, setGeneratingPdf] = useState(false)
 
+  // Confirmed bajada tracking: assignment_id → bajada_date (Saturday)
+  const [confirmedBajadas, setConfirmedBajadas] = useState<Map<string, string>>(new Map())
+
   // filtros
   const [search, setSearch] = useState("")
   const [roleFilter, setRoleFilter] = useState<"all" | string>("all")
@@ -147,6 +154,8 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         role_on_site,
         assigned_from,
         assigned_to,
+        is_foraneo,
+        next_bajada_date,
         created_at,
         employees(full_name, position_title, status)
       `,
@@ -175,12 +184,40 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         role_on_site: r.role_on_site,
         assigned_from: r.assigned_from,
         assigned_to: r.assigned_to,
+        is_foraneo: r.is_foraneo ?? false,
+        next_bajada_date: r.next_bajada_date ?? null,
         created_at: r.created_at,
       }
     })
 
     setMembers(ui)
     setLoading(false)
+  }
+
+  async function fetchConfirmedBajadas() {
+    if (!obraId) return
+    const { data } = await supabase
+      .from("bajada_notifications")
+      .select("assignment_id, bajada_date")
+      .eq("obra_id", obraId)
+      .eq("status", "confirmed")
+
+    const map = new Map<string, string>()
+    ;(data || []).forEach((row: { assignment_id: string; bajada_date: string }) => {
+      map.set(row.assignment_id, row.bajada_date)
+    })
+    setConfirmedBajadas(map)
+  }
+
+  /** Returns true if the assignment is locked (confirmed bajada, weekend hasn't passed) */
+  function isBajadaLocked(member: TeamMember): boolean {
+    const bajadaDate = confirmedBajadas.get(member.assignment_id)
+    if (!bajadaDate) return false
+    // Locked until after Saturday (bajada_date is Friday, so Saturday = +1)
+    const saturday = new Date(bajadaDate + "T23:59:59")
+    saturday.setDate(saturday.getDate() + 1)
+    const now = new Date()
+    return now <= saturday
   }
 
   async function fetchEmployees() {
@@ -427,6 +464,25 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
 
   useEffect(() => {
     fetchMembers()
+    fetchConfirmedBajadas()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [obraId])
+
+  // Realtime: refresh confirmed bajadas and members when bajada_notifications change
+  useEffect(() => {
+    if (!obraId) return
+    const channel = supabase
+      .channel(`bajada-team-${obraId}`)
+      .on(
+        "postgres_changes" as any,
+        { event: "*", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => {
+          fetchConfirmedBajadas()
+          fetchMembers()
+        }
+      )
+      .subscribe()
+    return () => { supabase.removeChannel(channel) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
 
@@ -533,6 +589,69 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     setTransferInfo(null)
     setSavingTransfer(false)
     setAddOpen(true)
+  }
+
+  // ── Residencia (Foráneo) toggle ──
+  async function handleToggleForaneo(member: TeamMember) {
+    const newVal = !member.is_foraneo
+    // Optimistic update
+    setMembers((prev: TeamMember[]) =>
+      prev.map((m: TeamMember) =>
+        m.assignment_id === member.assignment_id
+          ? { ...m, is_foraneo: newVal, next_bajada_date: newVal ? m.next_bajada_date : null }
+          : m
+      )
+    )
+    const updatePayload: Record<string, unknown> = { is_foraneo: newVal }
+    if (!newVal) updatePayload.next_bajada_date = null
+    const { error: updErr } = await supabase
+      .from("obra_assignments")
+      .update(updatePayload)
+      .eq("id", member.assignment_id)
+    if (updErr) {
+      console.error("toggle foraneo error:", updErr)
+      // Revert
+      setMembers((prev: TeamMember[]) =>
+        prev.map((m: TeamMember) =>
+          m.assignment_id === member.assignment_id
+            ? { ...m, is_foraneo: !newVal, next_bajada_date: member.next_bajada_date }
+            : m
+        )
+      )
+    }
+  }
+
+  // ── Fecha de bajada ──
+  function isFriday(dateStr: string) {
+    const d = new Date(dateStr + "T00:00:00")
+    return d.getDay() === 5
+  }
+
+  async function handleSetBajadaDate(member: TeamMember, dateStr: string) {
+    if (dateStr && !isFriday(dateStr)) {
+      alert("La fecha de bajada debe ser un viernes.")
+      return
+    }
+    const val = dateStr || null
+    setMembers((prev: TeamMember[]) =>
+      prev.map((m: TeamMember) =>
+        m.assignment_id === member.assignment_id ? { ...m, next_bajada_date: val } : m
+      )
+    )
+    const { error: updErr } = await supabase
+      .from("obra_assignments")
+      .update({ next_bajada_date: val })
+      .eq("id", member.assignment_id)
+    if (updErr) {
+      console.error("set bajada date error:", updErr)
+      setMembers((prev: TeamMember[]) =>
+        prev.map((m: TeamMember) =>
+          m.assignment_id === member.assignment_id
+            ? { ...m, next_bajada_date: member.next_bajada_date }
+            : m
+        )
+      )
+    }
   }
 
   return (
@@ -751,6 +870,8 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                     <TableHead className="text-slate-400">Empleado</TableHead>
                     <TableHead className="text-slate-400">Puesto</TableHead>
                     <TableHead className="text-slate-400">Rol en obra</TableHead>
+                    <TableHead className="text-slate-400 text-center">Residencia</TableHead>
+                    <TableHead className="text-slate-400">Fecha de bajada</TableHead>
                     <TableHead className="text-slate-400">Asignacion</TableHead>
                     <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
@@ -777,6 +898,89 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                         <Badge className="bg-slate-700/60 text-slate-300 border border-slate-600">
                           {normalizeRoleLabel(m.role_on_site)}
                         </Badge>
+                      </TableCell>
+
+                      {/* Residencia (Foráneo toggle) */}
+                      <TableCell className="text-center">
+                        {(() => {
+                          const locked = isBajadaLocked(m)
+                          if (locked) {
+                            // Confirmed bajada — green with check, not clickable
+                            return (
+                              <span
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border bg-emerald-500/15 text-emerald-300 border-emerald-500/25 cursor-default"
+                                title="Bajada confirmada — bloqueado hasta que pase el fin de semana"
+                              >
+                                <Check className="w-3 h-3" />
+                                Foraneo
+                              </span>
+                            )
+                          }
+                          if (allowManage) {
+                            return (
+                              <button
+                                onClick={() => handleToggleForaneo(m)}
+                                className={`
+                                  inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold
+                                  transition-all duration-200 cursor-pointer border
+                                  ${m.is_foraneo
+                                    ? "bg-amber-500/15 text-amber-300 border-amber-500/25 hover:bg-amber-500/25"
+                                    : "bg-slate-700/40 text-slate-500 border-slate-600/50 hover:bg-slate-700/60 hover:text-slate-400"
+                                  }
+                                `}
+                              >
+                                <span className={`w-2 h-2 rounded-full ${m.is_foraneo ? "bg-amber-400" : "bg-slate-600"}`} />
+                                {m.is_foraneo ? "Foraneo" : "Local"}
+                              </button>
+                            )
+                          }
+                          return (
+                            <span className={`text-xs font-medium ${m.is_foraneo ? "text-amber-300" : "text-slate-500"}`}>
+                              {m.is_foraneo ? "Foraneo" : "Local"}
+                            </span>
+                          )
+                        })()}
+                      </TableCell>
+
+                      {/* Fecha de bajada */}
+                      <TableCell>
+                        {(() => {
+                          const locked = isBajadaLocked(m)
+                          if (!m.is_foraneo && !locked) {
+                            return <span className="text-xs text-slate-600">-</span>
+                          }
+                          if (locked) {
+                            // Show date as locked (not editable)
+                            const d = new Date((m.next_bajada_date ?? "") + "T00:00:00")
+                            const label = d.toLocaleDateString("es-MX", { weekday: "short", day: "numeric", month: "short" })
+                            return (
+                              <div className="flex items-center gap-1.5" title="Fecha bloqueada — bajada confirmada">
+                                <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                <span className="text-xs text-emerald-300 font-medium">{label}</span>
+                              </div>
+                            )
+                          }
+                          if (allowManage) {
+                            return (
+                              <div className="flex items-center gap-1.5">
+                                <CalendarDays className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                <input
+                                  type="date"
+                                  value={m.next_bajada_date ?? ""}
+                                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                                    handleSetBajadaDate(m, e.target.value)
+                                  }
+                                  className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-300 focus:border-[#0174bd]/60 outline-none w-[130px]"
+                                />
+                              </div>
+                            )
+                          }
+                          return (
+                            <span className="text-xs text-slate-400 font-mono">
+                              {m.next_bajada_date ?? "-"}
+                            </span>
+                          )
+                        })()}
                       </TableCell>
 
                       <TableCell className="text-sm text-slate-400">

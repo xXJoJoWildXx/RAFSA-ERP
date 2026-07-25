@@ -34,6 +34,9 @@ import {
   CreditCard,
   Activity,
   AlertTriangle,
+  Bell,
+  CalendarDays,
+  CheckCircle,
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
@@ -45,6 +48,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
+import { NominasTab } from "@/components/nominasTab"
 
 // ---------- Tipos DB basicos ----------
 
@@ -105,6 +109,16 @@ type BillingItem = {
   date: string
   created_at: string
   with_iva: boolean
+}
+
+type BajadaNotification = {
+  id: string
+  obra_id: string
+  assignment_id: string
+  employee_id: string
+  bajada_date: string
+  status: "pending" | "confirmed" | "dismissed"
+  employee_name?: string
 }
 
 const EVIDENCE_BUCKET = "state-account-evidence"
@@ -332,6 +346,11 @@ export default function ProjectDetailPage() {
   })
   const [savingBilling, setSavingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
+
+  // Bajada notifications
+  const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
+  const [bajadaLoading, setBajadaLoading] = useState(false)
+  const [processingBajadaId, setProcessingBajadaId] = useState<string | null>(null)
 
   // ------------------ Documentos: UI + Modal (Opcion B) ------------------
 
@@ -1076,6 +1095,154 @@ export default function ProjectDetailPage() {
     applyTeamStats((data || []) as ObraAssignmentRow[], today)
   }
 
+  // ── Bajada notifications ──
+
+  function getNextFriday(from: Date): Date {
+    const d = new Date(from)
+    const day = d.getDay()
+    const diff = day <= 5 ? 5 - day : 6 // days until next Friday
+    d.setDate(d.getDate() + diff)
+    return d
+  }
+
+  async function generateAndFetchBajadaNotifications(obraId: string) {
+    setBajadaLoading(true)
+    const today = new Date()
+    const dayOfWeek = today.getDay() // 0=Sun, 1=Mon...
+
+    // Auto-generate notifications on Monday (or any day for testing)
+    // Find all foráneo assignments with a bajada_date that falls this coming Fri-Sun
+    const nextFri = getNextFriday(today)
+    const nextFriStr = nextFri.toISOString().slice(0, 10)
+
+    // Fetch foráneo assignments with bajada_date = this Friday
+    const { data: foraneoAssignments } = await supabase
+      .from("obra_assignments")
+      .select("id, employee_id, next_bajada_date, employees(full_name)")
+      .eq("obra_id", obraId)
+      .eq("is_foraneo", true)
+      .eq("next_bajada_date", nextFriStr)
+      .is("assigned_to", null)
+
+    if (foraneoAssignments && foraneoAssignments.length > 0) {
+      for (const a of foraneoAssignments as any[]) {
+        // Check if notification already exists for this assignment + date
+        const { data: existing } = await supabase
+          .from("bajada_notifications")
+          .select("id")
+          .eq("assignment_id", a.id)
+          .eq("bajada_date", nextFriStr)
+          .limit(1)
+
+        if (!existing || existing.length === 0) {
+          await supabase.from("bajada_notifications").insert({
+            obra_id: obraId,
+            assignment_id: a.id,
+            employee_id: a.employee_id,
+            bajada_date: nextFriStr,
+          })
+        }
+      }
+    }
+
+    // Now fetch all pending notifications for this obra
+    const { data: notifications } = await supabase
+      .from("bajada_notifications")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, status")
+      .eq("obra_id", obraId)
+      .eq("status", "pending")
+      .order("bajada_date", { ascending: true })
+
+    if (notifications && notifications.length > 0) {
+      const empIds = [...new Set(notifications.map((n: any) => n.employee_id))]
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("id, full_name")
+        .in("id", empIds)
+
+      const empMap = new Map<string, string>()
+      ;(empData || []).forEach((e: any) => empMap.set(e.id, e.full_name))
+
+      const enriched: BajadaNotification[] = notifications.map((n: any) => ({
+        ...n,
+        employee_name: empMap.get(n.employee_id) ?? "Empleado",
+      }))
+      setBajadaNotifications(enriched)
+    } else {
+      setBajadaNotifications([])
+    }
+    setBajadaLoading(false)
+  }
+
+  async function handleConfirmBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const resolvedBy = authData?.user?.id ?? null
+
+      // 1. Mark notification as confirmed
+      await supabase
+        .from("bajada_notifications")
+        .update({ status: "confirmed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
+        .eq("id", notification.id)
+
+      // 2. Auto-mark Friday and Saturday as present in obra_attendance
+      const fridayDate = notification.bajada_date
+      const satDate = new Date(fridayDate + "T00:00:00")
+      satDate.setDate(satDate.getDate() + 1)
+      const saturdayDate = satDate.toISOString().slice(0, 10)
+
+      for (const dateStr of [fridayDate, saturdayDate]) {
+        // Check if record exists
+        const { data: existing } = await supabase
+          .from("obra_attendance")
+          .select("id")
+          .eq("obra_id", notification.obra_id)
+          .eq("employee_id", notification.employee_id)
+          .eq("date", dateStr)
+          .limit(1)
+
+        if (existing && existing.length > 0) {
+          await supabase
+            .from("obra_attendance")
+            .update({ status: "bajada" })
+            .eq("id", existing[0].id)
+        } else {
+          await supabase.from("obra_attendance").insert({
+            obra_id: notification.obra_id,
+            employee_id: notification.employee_id,
+            date: dateStr,
+            status: "bajada",
+            marked_by: resolvedBy,
+          })
+        }
+      }
+
+      // 3. Keep next_bajada_date on the assignment (locked until weekend passes)
+
+      // 4. Remove from local state
+      setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+    } catch (e) {
+      console.error("confirmBajada error:", e)
+    } finally {
+      setProcessingBajadaId(null)
+    }
+  }
+
+  async function handleDismissBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    const { data: authData } = await supabase.auth.getUser()
+    const resolvedBy = authData?.user?.id ?? null
+
+    await supabase
+      .from("bajada_notifications")
+      .update({ status: "dismissed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
+      .eq("id", notification.id)
+
+    setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+    setProcessingBajadaId(null)
+  }
+
   async function loadData() {
       setLoading(true)
       setError(null)
@@ -1214,6 +1381,7 @@ export default function ProjectDetailPage() {
         applyTeamStats(assignments, today)
 
         await fetchDocuments(obraId)
+        await generateAndFetchBajadaNotifications(obraId)
       } catch (e) {
         console.error(e)
         setError("Error inesperado al cargar la obra.")
@@ -1224,6 +1392,29 @@ export default function ProjectDetailPage() {
 
   useEffect(() => {
     loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.obraId])
+
+  // Realtime subscription for bajada notifications
+  useEffect(() => {
+    const obraId = params.obraId as string
+    if (!obraId) return
+
+    const channel = supabase
+      .channel(`bajada-notif-${obraId}`)
+      .on(
+        "postgres_changes" as any,
+        { event: "INSERT", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId) }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId) }
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.obraId])
 
@@ -1484,6 +1675,7 @@ export default function ProjectDetailPage() {
                 { value: "milestones", icon: <FolderOpen className="w-4 h-4" />,      label: "Documentos" },
                 { value: "account",    icon: <CreditCard className="w-4 h-4" />,      label: "Estado de Cuenta" },
                 { value: "team",       icon: <Users className="w-4 h-4" />,            label: "Equipo" },
+                { value: "nominas",    icon: <DollarSign className="w-4 h-4" />,       label: "Nominas" },
                 { value: "activity",   icon: <Activity className="w-4 h-4" />,         label: "Actividad" },
               ].map(({ value, icon, label }) => (
                 <TabsTrigger
@@ -1554,6 +1746,88 @@ export default function ProjectDetailPage() {
                 </div>
               </div>
             </div>
+
+            {/* Notificaciones Pendientes (Bajadas) */}
+            {bajadaNotifications.length > 0 && (
+              <Card className="bg-slate-800 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.05)]">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-amber-500/15">
+                      <Bell className="w-4.5 h-4.5 text-amber-400" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-slate-100">Notificaciones Pendientes</CardTitle>
+                      <p className="text-xs text-slate-500 mt-0.5">Bajadas programadas para este fin de semana</p>
+                    </div>
+                  </div>
+                  <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25">
+                    {bajadaNotifications.length}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {bajadaNotifications.map((n: BajadaNotification) => {
+                    const bajadaDay = new Date(n.bajada_date + "T00:00:00")
+                    const satDay = new Date(bajadaDay)
+                    satDay.setDate(satDay.getDate() + 1)
+                    const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
+                    const friLabel = bajadaDay.toLocaleDateString("es-MX", fmtOpts)
+                    const satLabel = satDay.toLocaleDateString("es-MX", fmtOpts)
+                    const isProcessing = processingBajadaId === n.id
+
+                    return (
+                      <div
+                        key={n.id}
+                        className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-700/60 bg-slate-700/20 hover:bg-slate-700/30 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                            <CalendarDays className="w-4 h-4 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-200 truncate">
+                              {n.employee_name}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              Bajada: {friLabel} y {satLabel}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={isProcessing}
+                            onClick={() => handleDismissBajada(n)}
+                            className="bg-transparent border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 text-xs"
+                          >
+                            Descartar
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={isProcessing}
+                            onClick={() => handleConfirmBajada(n)}
+                            className="bg-amber-600 hover:bg-amber-700 text-white text-xs"
+                          >
+                            {isProcessing ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <>
+                                <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                                Confirmar
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <p className="text-[11px] text-slate-600 text-center pt-1">
+                    Al confirmar, se marcara asistencia automatica para viernes y sabado.
+                  </p>
+                </CardContent>
+              </Card>
+            )}
 
             {/* Detalles de la obra */}
             <Card className="bg-slate-800 border-slate-700">
@@ -1893,6 +2167,11 @@ export default function ProjectDetailPage() {
               allowManage
               onTeamChange={() => fetchTeamStats(obra.id)}
             />
+          </TabsContent>
+
+          {/* NOMINAS */}
+          <TabsContent value="nominas" className="space-y-6">
+            <NominasTab obraId={obra.id} />
           </TabsContent>
 
           {/* ACTIVIDAD — en desarrollo */}
