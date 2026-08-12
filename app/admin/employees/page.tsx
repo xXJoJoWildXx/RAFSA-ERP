@@ -735,16 +735,6 @@ export default function AdminEmployeesPage() {
     try {
       const ids = employees.map((e) => e.id)
 
-      const { data: empExtra } = await supabase
-        .from("employees")
-        .select("id, termination_date")
-        .in("id", ids)
-
-      const terminationMap: Record<string, string | null> = {}
-      ;(empExtra || []).forEach((e: any) => {
-        terminationMap[e.id] = e.termination_date ?? null
-      })
-
       const { data: salaryData } = await supabase
         .from("employee_salary_history")
         .select("employee_id, real_salary, payroll_salary, bonus_amount, overtime_hour_cost, viatics_amount, valid_from, valid_to")
@@ -769,7 +759,6 @@ export default function AdminEmployeesPage() {
         full_name: emp.name,
         status: emp.status === "Activo" ? "active" : "inactive",
         hire_date: emp.joinDate || null,
-        termination_date: terminationMap[emp.id] ?? null,
         tenure: calculateTenure(emp.joinDate || null),
         roles: emp.roles.map((r) => ({ name: r.name })),
         signedPhotoUrl: emp.signedPhotoUrl ?? null,

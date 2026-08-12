@@ -1105,8 +1105,8 @@ export default function ProjectDetailPage() {
     return d
   }
 
-  async function generateAndFetchBajadaNotifications(obraId: string) {
-    setBajadaLoading(true)
+  async function generateAndFetchBajadaNotifications(obraId: string, silent = false) {
+    if (!silent) setBajadaLoading(true)
     const today = new Date()
     const dayOfWeek = today.getDay() // 0=Sun, 1=Mon...
 
@@ -1115,17 +1115,21 @@ export default function ProjectDetailPage() {
     const nextFri = getNextFriday(today)
     const nextFriStr = nextFri.toISOString().slice(0, 10)
 
-    // Fetch foráneo assignments with bajada_date = this Friday
+    // Fetch active assignments whose employee is foráneo with bajada_date = this Friday
     const { data: foraneoAssignments } = await supabase
       .from("obra_assignments")
-      .select("id, employee_id, next_bajada_date, employees(full_name)")
+      .select("id, employee_id, employees(full_name, is_foraneo, next_bajada_date)")
       .eq("obra_id", obraId)
-      .eq("is_foraneo", true)
-      .eq("next_bajada_date", nextFriStr)
       .is("assigned_to", null)
 
-    if (foraneoAssignments && foraneoAssignments.length > 0) {
-      for (const a of foraneoAssignments as any[]) {
+    // Filter client-side: only employees that are foráneo with matching bajada date
+    const matchingAssignments = (foraneoAssignments || []).filter((a: any) => {
+      const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
+      return emp?.is_foraneo === true && emp?.next_bajada_date === nextFriStr
+    })
+
+    if (matchingAssignments.length > 0) {
+      for (const a of matchingAssignments as any[]) {
         // Check if notification already exists for this assignment + date
         const { data: existing } = await supabase
           .from("bajada_notifications")
@@ -1171,7 +1175,7 @@ export default function ProjectDetailPage() {
     } else {
       setBajadaNotifications([])
     }
-    setBajadaLoading(false)
+    if (!silent) setBajadaLoading(false)
   }
 
   async function handleConfirmBajada(notification: BajadaNotification) {
@@ -1405,12 +1409,17 @@ export default function ProjectDetailPage() {
       .on(
         "postgres_changes" as any,
         { event: "INSERT", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
-        () => { generateAndFetchBajadaNotifications(obraId) }
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
       )
       .on(
         "postgres_changes" as any,
         { event: "UPDATE", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
-        () => { generateAndFetchBajadaNotifications(obraId) }
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "employees" },
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
       )
       .subscribe()
 

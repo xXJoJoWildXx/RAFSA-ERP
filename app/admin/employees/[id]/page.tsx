@@ -51,6 +51,8 @@ import {
   Wallet,
   X,
   LayoutDashboard,
+  MapPin,
+  Home,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
@@ -64,7 +66,6 @@ type EmployeeRow = {
   phone: string | null
   status: string
   hire_date: string | null
-  termination_date: string | null
   photo_url: string | null
   imss_number: string | null
   rfc: string | null
@@ -77,6 +78,9 @@ type EmployeeRow = {
   account_number: string | null
   interbank_clabe: string | null
   emergency_contact: string | null
+  is_foraneo: boolean
+  residence_location: string | null
+  next_bajada_date: string | null
   created_at: string
 }
 
@@ -127,7 +131,7 @@ type EmployeeDetail = {
   statusUi: "Activo" | "Inactivo" | "De permiso"
   statusRaw: string
   joinDate: string | null
-  terminationDate: string | null
+
   avatar: string
   imss_number: string | null
   rfc: string | null
@@ -140,6 +144,9 @@ type EmployeeDetail = {
   account_number: string | null
   interbank_clabe: string | null
   emergency_contact: string | null
+  is_foraneo: boolean
+  residence_location: string | null
+  next_bajada_date: string | null
   created_at: string
   photo_url: string | null
   roles: EmployeeRole[]
@@ -151,7 +158,7 @@ type EditEmployeeForm = {
   phone: string
   status: "active" | "inactive"
   hire_date: string
-  termination_date: string
+
   birth_date: string
   imss_number: string
   rfc: string
@@ -424,7 +431,6 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     statusUi,
     statusRaw: row.status,
     joinDate: row.hire_date ?? null,
-    terminationDate: row.termination_date ?? null,
     avatar: makeAvatarInitials(row.full_name),
     imss_number: row.imss_number,
     rfc: row.rfc,
@@ -437,6 +443,9 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     account_number: row.account_number ?? null,
     interbank_clabe: row.interbank_clabe ?? null,
     emergency_contact: row.emergency_contact,
+    is_foraneo: row.is_foraneo ?? false,
+    residence_location: row.residence_location ?? null,
+    next_bajada_date: row.next_bajada_date ?? null,
     created_at: row.created_at,
     photo_url: row.photo_url ?? null,
     roles: [],
@@ -841,6 +850,9 @@ export default function EmployeeDetailPage() {
   const [laborOpen, setLaborOpen] = useState(false)
   const [payrollOpen, setPayrollOpen] = useState(false)
 
+  // Residencia foráneo/local
+  const [savingResidencia, setSavingResidencia] = useState(false)
+
   const [salaryHistoryOpen, setSalaryHistoryOpen] = useState(false)
   const [salaryHistoryLoading, setSalaryHistoryLoading] = useState(false)
   const [salaryHistoryError, setSalaryHistoryError] = useState<string | null>(null)
@@ -961,7 +973,7 @@ export default function EmployeeDetailPage() {
             phone,
             status,
             hire_date,
-            termination_date,
+
             photo_url,
             imss_number,
             rfc,
@@ -974,6 +986,9 @@ export default function EmployeeDetailPage() {
             account_number,
             interbank_clabe,
             emergency_contact,
+            is_foraneo,
+            residence_location,
+            next_bajada_date,
             created_at
           `,
           )
@@ -1248,7 +1263,7 @@ export default function EmployeeDetailPage() {
       phone: employee.phone ?? "",
       status: mapUiStatusToDb(employee.statusUi),
       hire_date: employee.joinDate ?? "",
-      termination_date: employee.terminationDate ?? "",
+
       birth_date: employee.birth_date ?? "",
       imss_number: employee.imss_number ?? "",
       rfc: employee.rfc ?? "",
@@ -1271,6 +1286,43 @@ export default function EmployeeDetailPage() {
     setEditForm((prev) => (prev ? { ...prev, [field]: value } : prev))
   }
 
+  // ── Residencia toggle + fields ──
+  const handleToggleForaneo = async () => {
+    if (!employee || !id) return
+    setSavingResidencia(true)
+    const newVal = !employee.is_foraneo
+    const payload: Record<string, any> = { is_foraneo: newVal }
+    if (!newVal) {
+      // switching to local → clear foráneo fields
+      payload.residence_location = null
+      payload.next_bajada_date = null
+    }
+    const { error: err } = await supabase.from("employees").update(payload).eq("id", id)
+    if (!err) {
+      setEmployee((prev: EmployeeDetail | null) =>
+        prev
+          ? {
+              ...prev,
+              is_foraneo: newVal,
+              ...(newVal ? {} : { residence_location: null, next_bajada_date: null }),
+            }
+          : prev,
+      )
+    }
+    setSavingResidencia(false)
+  }
+
+  const handleResidenciaFieldSave = async (field: "residence_location" | "next_bajada_date", value: string) => {
+    if (!employee || !id) return
+    setSavingResidencia(true)
+    const dbVal = value.trim() || null
+    const { error: err } = await supabase.from("employees").update({ [field]: dbVal }).eq("id", id)
+    if (!err) {
+      setEmployee((prev: EmployeeDetail | null) => (prev ? { ...prev, [field]: dbVal } : prev))
+    }
+    setSavingResidencia(false)
+  }
+
   const handleSave = async () => {
     if (!editForm || !id) return
     if (!editForm.full_name.trim()) {
@@ -1286,7 +1338,7 @@ export default function EmployeeDetailPage() {
       phone: editForm.phone.trim() || null,
       status: editForm.status,
       hire_date: editForm.hire_date || null,
-      termination_date: editForm.termination_date || null,
+
       birth_date: editForm.birth_date || null,
       imss_number: editForm.imss_number.trim() || null,
       rfc: editForm.rfc.trim() || null,
@@ -1306,7 +1358,6 @@ export default function EmployeeDetailPage() {
           phone,
           status,
           hire_date,
-          termination_date,
           photo_url,
           imss_number,
           rfc,
@@ -1363,11 +1414,9 @@ export default function EmployeeDetailPage() {
 
       if (result?.employee) {
         const updatedRow = result.employee as EmployeeRow
-        setEmployee((prev) => {
+        setEmployee((prev: EmployeeDetail | null) => {
           const next = mapRowToDetail(updatedRow)
           next.roles = prev?.roles || []
-          next.terminationDate =
-            updatedRow.termination_date ?? prev?.terminationDate ?? null
           return next
         })
       }
@@ -1896,18 +1945,6 @@ export default function EmployeeDetailPage() {
                         />
                       </div>
 
-                      <div className="space-y-2 md:col-span-2">
-                        <Label htmlFor="termination_date" className={labelCls}>Fecha de bajada</Label>
-                        <Input
-                          id="termination_date"
-                          type="date"
-                          className={inputCls}
-                          value={editForm.termination_date ?? ""}
-                          onChange={(e) =>
-                            handleEditChange("termination_date", e.target.value)
-                          }
-                        />
-                      </div>
                     </div>
                   </div>
                 )}
@@ -2369,12 +2406,63 @@ export default function EmployeeDetailPage() {
                     </span>
                   </div>
 
+                  {/* ── Residencia foráneo/local ── */}
                   <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
-                    <span className="text-slate-400">
-                      Fecha de bajada: {formatDate(employee.terminationDate)}
-                    </span>
+                    <Home className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                    <span className="text-slate-400 mr-1">Residencia:</span>
+                    <button
+                      onClick={handleToggleForaneo}
+                      disabled={savingResidencia}
+                      className={`
+                        px-2.5 py-0.5 rounded-full text-xs font-medium transition-all duration-200 border
+                        ${employee.is_foraneo
+                          ? "bg-amber-500/15 text-amber-400 border-amber-500/30 hover:bg-amber-500/25"
+                          : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30 hover:bg-emerald-500/25"
+                        }
+                        ${savingResidencia ? "opacity-50 cursor-wait" : "cursor-pointer"}
+                      `}
+                    >
+                      {employee.is_foraneo ? "Foráneo" : "Local"}
+                    </button>
                   </div>
+
+                  {employee.is_foraneo && (
+                    <>
+                      <div className="border-t border-slate-700/40 my-1" />
+                      <div className="flex items-center gap-3 text-sm">
+                        <MapPin className="w-4 h-4 text-amber-500/70 flex-shrink-0" />
+                        <span className="text-slate-500 text-xs w-20 flex-shrink-0">Lugar:</span>
+                        <input
+                          type="text"
+                          placeholder="Lugar de residencia"
+                          defaultValue={employee.residence_location ?? ""}
+                          onBlur={(e) => handleResidenciaFieldSave("residence_location", e.target.value)}
+                          className="flex-1 bg-slate-900/50 border border-slate-700/50 rounded-lg px-2.5 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-amber-500/40 transition-colors"
+                        />
+                      </div>
+                      <div className="flex items-center gap-3 text-sm">
+                        <Calendar className="w-4 h-4 text-amber-500/70 flex-shrink-0" />
+                        <span className="text-slate-500 text-xs w-20 flex-shrink-0">Bajada:</span>
+                        <input
+                          type="date"
+                          defaultValue={employee.next_bajada_date ?? ""}
+                          onBlur={(e: React.FocusEvent<HTMLInputElement>) => {
+                            const val = e.target.value
+                            if (val) {
+                              const d = new Date(val + "T00:00:00")
+                              if (d.getDay() !== 5) {
+                                alert("Solo se permiten fechas de Viernes.")
+                                e.target.value = employee.next_bajada_date ?? ""
+                                return
+                              }
+                            }
+                            handleResidenciaFieldSave("next_bajada_date", val)
+                          }}
+                          className="flex-1 bg-slate-900/50 border border-slate-700/50 rounded-lg px-2.5 py-1 text-xs text-slate-300 focus:outline-none focus:border-amber-500/40 transition-colors"
+                        />
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
           </div>

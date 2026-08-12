@@ -30,6 +30,9 @@ import {
   CheckCircle2,
   Ban,
   HardHat,
+  Plus,
+  Minus,
+  Timer,
 } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
@@ -66,6 +69,7 @@ type AttendanceRecord = {
   date: string
   status: AttendanceStatus
   note: string | null
+  overtime_hours: number
 }
 
 type ViewMode = "day" | "week"
@@ -168,6 +172,8 @@ export default function WorkerObraDetailPage() {
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
   const [loadingAttendance, setLoadingAttendance] = useState(false)
   const [savingCell, setSavingCell] = useState<string | null>(null) // "employeeId-date"
+  const [overtimeOpen, setOvertimeOpen] = useState<string | null>(null) // employeeId with open overtime panel
+  const [savingOvertime, setSavingOvertime] = useState<string | null>(null)
 
   // Transfer state
   const [myEmployeeId, setMyEmployeeId] = useState<string | null>(null)
@@ -265,7 +271,7 @@ export default function WorkerObraDetailPage() {
 
     const { data } = await supabase
       .from("obra_attendance")
-      .select("id, employee_id, date, status, note")
+      .select("id, employee_id, date, status, note, overtime_hours")
       .eq("obra_id", id)
       .gte("date", startDate)
       .lte("date", endDate)
@@ -311,7 +317,7 @@ export default function WorkerObraDetailPage() {
           status: nextStatus,
           recorded_by: user.id,
         })
-        .select("id, employee_id, date, status, note")
+        .select("id, employee_id, date, status, note, overtime_hours")
         .single()
 
       if (!error && data) {
@@ -323,7 +329,7 @@ export default function WorkerObraDetailPage() {
         .from("obra_attendance")
         .update({ status: nextStatus, updated_at: new Date().toISOString() })
         .eq("id", existing.id)
-        .select("id, employee_id, date, status, note")
+        .select("id, employee_id, date, status, note, overtime_hours")
         .single()
 
       if (!error && data) {
@@ -332,6 +338,47 @@ export default function WorkerObraDetailPage() {
     }
 
     setSavingCell(null)
+  }
+
+  /* ─── Update overtime hours ─── */
+  const updateOvertime = async (employeeId: string, date: string, hours: number) => {
+    if (!user || !id) return
+    const clamped = Math.max(0, Math.min(24, hours))
+    setSavingOvertime(`${employeeId}-${date}`)
+
+    const existing = attendance.find((a: AttendanceRecord) => a.employee_id === employeeId && a.date === date)
+
+    if (existing) {
+      const { data, error } = await supabase
+        .from("obra_attendance")
+        .update({ overtime_hours: clamped, updated_at: new Date().toISOString() })
+        .eq("id", existing.id)
+        .select("id, employee_id, date, status, note, overtime_hours")
+        .single()
+
+      if (!error && data) {
+        setAttendance((prev: AttendanceRecord[]) => prev.map((a: AttendanceRecord) => (a.id === existing.id ? data as AttendanceRecord : a)))
+      }
+    } else {
+      // Create attendance record with overtime (default present)
+      const { data, error } = await supabase
+        .from("obra_attendance")
+        .insert({
+          obra_id: id,
+          employee_id: employeeId,
+          date,
+          status: "present",
+          overtime_hours: clamped,
+          recorded_by: user.id,
+        })
+        .select("id, employee_id, date, status, note, overtime_hours")
+        .single()
+
+      if (!error && data) {
+        setAttendance((prev: AttendanceRecord[]) => [...prev, data as AttendanceRecord])
+      }
+    }
+    setSavingOvertime(null)
   }
 
   /* ─── Week navigation ─── */
@@ -750,48 +797,103 @@ export default function WorkerObraDetailPage() {
                   const record = getAttendanceForCell(member.id, today)
                   const cfg = record ? ATTENDANCE_CONFIG[record.status as AttendanceStatus] : null
                   const isSaving = savingCell === `${member.id}-${today}`
+                  const isOvertimeOpen = overtimeOpen === member.id
+                  const currentOT = record?.overtime_hours ?? 0
+                  const isSavingOT = savingOvertime === `${member.id}-${today}`
 
                   return (
-                    <div key={member.id} className="flex items-center gap-3 px-4 py-3">
-                      {/* Name */}
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-slate-200 truncate">
-                          {member.full_name}
-                        </p>
-                        <p className="text-[11px] text-slate-500 truncate">
-                          {formatRoleName(member.role_on_site || member.position_title)}
-                        </p>
+                    <div key={member.id}>
+                      <div className="flex items-center gap-3 px-4 py-3">
+                        {/* Name */}
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-semibold text-slate-200 truncate">
+                            {member.full_name}
+                          </p>
+                          <p className="text-[11px] text-slate-500 truncate">
+                            {formatRoleName(member.role_on_site || member.position_title)}
+                          </p>
+                        </div>
+
+                        {/* Overtime toggle tab */}
+                        <button
+                          onClick={() => setOvertimeOpen(isOvertimeOpen ? null : member.id)}
+                          className={cn(
+                            "shrink-0 w-10 h-12 rounded-lg border flex flex-col items-center justify-center transition-all text-xs font-medium",
+                            currentOT > 0
+                              ? "bg-orange-500/15 border-orange-500/30 text-orange-400"
+                              : "bg-slate-800/40 border-slate-700/40 text-slate-500 hover:text-slate-300",
+                            isOvertimeOpen && "ring-1 ring-orange-500/50"
+                          )}
+                        >
+                          <Timer className="w-3.5 h-3.5" />
+                          <span className="text-[9px] mt-0.5">{currentOT > 0 ? `${currentOT}h` : "HE"}</span>
+                        </button>
+
+                        {/* Attendance button — large touch target */}
+                        {(() => {
+                          const isBajada = record?.status === "bajada"
+                          return (
+                            <button
+                              onClick={() => !isBajada && cycleAttendance(member.id, today)}
+                              disabled={isSaving || isBajada}
+                              className={cn(
+                                "shrink-0 w-16 h-12 rounded-xl border-2 flex flex-col items-center justify-center transition-all font-semibold",
+                                isSaving && "opacity-50",
+                                isBajada ? "cursor-not-allowed" : "active:scale-90",
+                                cfg
+                                  ? `${cfg.bg} ${cfg.border} ${cfg.color}`
+                                  : "bg-slate-800/60 border-slate-700/50 text-slate-600"
+                              )}
+                            >
+                              {isSaving ? (
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                              ) : cfg ? (
+                                <>
+                                  {(() => { const Icon = cfg.icon; return <Icon className="w-5 h-5" /> })()}
+                                  <span className="text-[9px] mt-0.5">{cfg.short}</span>
+                                </>
+                              ) : (
+                                <span className="text-lg">—</span>
+                              )}
+                            </button>
+                          )
+                        })()}
                       </div>
 
-                      {/* Attendance button — large touch target */}
-                      {(() => {
-                        const isBajada = record?.status === "bajada"
-                        return (
-                          <button
-                            onClick={() => !isBajada && cycleAttendance(member.id, today)}
-                            disabled={isSaving || isBajada}
-                            className={cn(
-                              "shrink-0 w-16 h-12 rounded-xl border-2 flex flex-col items-center justify-center transition-all font-semibold",
-                              isSaving && "opacity-50",
-                              isBajada ? "cursor-not-allowed" : "active:scale-90",
-                              cfg
-                                ? `${cfg.bg} ${cfg.border} ${cfg.color}`
-                                : "bg-slate-800/60 border-slate-700/50 text-slate-600"
-                            )}
-                          >
-                            {isSaving ? (
-                              <Loader2 className="w-4 h-4 animate-spin" />
-                            ) : cfg ? (
-                              <>
-                                {(() => { const Icon = cfg.icon; return <Icon className="w-5 h-5" /> })()}
-                                <span className="text-[9px] mt-0.5">{cfg.short}</span>
-                              </>
-                            ) : (
-                              <span className="text-lg">—</span>
-                            )}
-                          </button>
-                        )
-                      })()}
+                      {/* Overtime panel (slide-down) */}
+                      {isOvertimeOpen && (
+                        <div className="px-4 pb-3 flex items-center gap-3 justify-end animate-in slide-in-from-top-1 duration-150">
+                          <span className="text-xs text-slate-400">Horas extras:</span>
+                          <div className="flex items-center gap-1.5 bg-slate-800 rounded-lg border border-slate-700 p-1">
+                            <button
+                              onClick={() => updateOvertime(member.id, today, currentOT - 1)}
+                              disabled={currentOT <= 0 || !!isSavingOT}
+                              className="w-8 h-8 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 flex items-center justify-center disabled:opacity-30 transition-colors"
+                            >
+                              <Minus className="w-3.5 h-3.5" />
+                            </button>
+                            <input
+                              type="number"
+                              min={0}
+                              max={24}
+                              value={currentOT}
+                              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                                const v = parseFloat(e.target.value)
+                                if (!isNaN(v)) updateOvertime(member.id, today, v)
+                              }}
+                              className="w-12 h-8 text-center bg-transparent text-slate-100 font-semibold text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            />
+                            <button
+                              onClick={() => updateOvertime(member.id, today, currentOT + 1)}
+                              disabled={currentOT >= 24 || !!isSavingOT}
+                              className="w-8 h-8 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 flex items-center justify-center disabled:opacity-30 transition-colors"
+                            >
+                              <Plus className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          {isSavingOT && <Loader2 className="w-4 h-4 text-orange-400 animate-spin" />}
+                        </div>
+                      )}
                     </div>
                   )
                 })}

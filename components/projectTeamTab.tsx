@@ -8,7 +8,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { Plus, RefreshCw, Trash2, UserPlus, Crown, FileDown, Loader2, CalendarDays, Check } from "lucide-react"
+import { Plus, Trash2, UserPlus, Crown, FileDown, Loader2, CalendarDays, Check } from "lucide-react"
 import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
 import { logActivity } from "@/lib/activityLog"
 
@@ -27,12 +27,10 @@ type AssignmentRow = {
   role_on_site: string | null
   assigned_from: string
   assigned_to: string | null
-  is_foraneo: boolean
-  next_bajada_date: string | null
   created_at: string
   employees:
-    | { full_name: string; position_title: string | null; status: string }
-    | { full_name: string; position_title: string | null; status: string }[]
+    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null }
+    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null }[]
     | null
 }
 
@@ -46,6 +44,7 @@ type TeamMember = {
   assigned_from: string
   assigned_to: string | null
   is_foraneo: boolean
+  residence_location: string | null
   next_bajada_date: string | null
   created_at: string
 }
@@ -139,10 +138,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     assignmentIds: string[]
   } | null>(null)
 
-  async function fetchMembers() {
+  async function fetchMembers(silent = false) {
     if (!obraId) return
-    setLoading(true)
-    setError(null)
+    if (!silent) {
+      setLoading(true)
+      setError(null)
+    }
 
     const { data, error } = await supabase
       .from("obra_assignments")
@@ -154,10 +155,8 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         role_on_site,
         assigned_from,
         assigned_to,
-        is_foraneo,
-        next_bajada_date,
         created_at,
-        employees(full_name, position_title, status)
+        employees(full_name, position_title, status, is_foraneo, residence_location, next_bajada_date)
       `,
       )
       .eq("obra_id", obraId)
@@ -165,9 +164,11 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
 
     if (error) {
       console.error("fetchMembers error:", error)
-      setMembers([])
-      setError("No se pudo cargar el equipo.")
-      setLoading(false)
+      if (!silent) {
+        setMembers([])
+        setError("No se pudo cargar el equipo.")
+        setLoading(false)
+      }
       return
     }
 
@@ -184,14 +185,15 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         role_on_site: r.role_on_site,
         assigned_from: r.assigned_from,
         assigned_to: r.assigned_to,
-        is_foraneo: r.is_foraneo ?? false,
-        next_bajada_date: r.next_bajada_date ?? null,
+        is_foraneo: e?.is_foraneo ?? false,
+        residence_location: e?.residence_location ?? null,
+        next_bajada_date: e?.next_bajada_date ?? null,
         created_at: r.created_at,
       }
     })
 
     setMembers(ui)
-    setLoading(false)
+    if (!silent) setLoading(false)
   }
 
   async function fetchConfirmedBajadas() {
@@ -468,7 +470,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
 
-  // Realtime: refresh confirmed bajadas and members when bajada_notifications change
+  // Realtime: refresh on bajada_notifications changes AND employee updates (residencia/bajada)
   useEffect(() => {
     if (!obraId) return
     const channel = supabase
@@ -478,7 +480,14 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         { event: "*", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
         () => {
           fetchConfirmedBajadas()
-          fetchMembers()
+          fetchMembers(true)
+        }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "employees" },
+        () => {
+          fetchMembers(true)
         }
       )
       .subscribe()
@@ -591,30 +600,44 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     setAddOpen(true)
   }
 
-  // ── Residencia (Foráneo) toggle ──
+  // ── Residencia (Foráneo) toggle — writes to employees table ──
   async function handleToggleForaneo(member: TeamMember) {
     const newVal = !member.is_foraneo
     // Optimistic update
     setMembers((prev: TeamMember[]) =>
       prev.map((m: TeamMember) =>
-        m.assignment_id === member.assignment_id
-          ? { ...m, is_foraneo: newVal, next_bajada_date: newVal ? m.next_bajada_date : null }
+        m.employee_id === member.employee_id
+          ? { ...m, is_foraneo: newVal, ...(newVal ? {} : { next_bajada_date: null, residence_location: null }) }
           : m
       )
     )
     const updatePayload: Record<string, unknown> = { is_foraneo: newVal }
-    if (!newVal) updatePayload.next_bajada_date = null
+    if (!newVal) {
+      updatePayload.next_bajada_date = null
+      updatePayload.residence_location = null
+    }
     const { error: updErr } = await supabase
-      .from("obra_assignments")
+      .from("employees")
       .update(updatePayload)
-      .eq("id", member.assignment_id)
+      .eq("id", member.employee_id)
+
+    // If switching to local, delete any pending bajada notifications for this employee
+    if (!newVal) {
+      await supabase
+        .from("bajada_notifications")
+        .delete()
+        .eq("employee_id", member.employee_id)
+        .eq("obra_id", obraId)
+        .eq("status", "pending")
+    }
+
     if (updErr) {
       console.error("toggle foraneo error:", updErr)
       // Revert
       setMembers((prev: TeamMember[]) =>
         prev.map((m: TeamMember) =>
-          m.assignment_id === member.assignment_id
-            ? { ...m, is_foraneo: !newVal, next_bajada_date: member.next_bajada_date }
+          m.employee_id === member.employee_id
+            ? { ...m, is_foraneo: !newVal, next_bajada_date: member.next_bajada_date, residence_location: member.residence_location }
             : m
         )
       )
@@ -635,18 +658,18 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     const val = dateStr || null
     setMembers((prev: TeamMember[]) =>
       prev.map((m: TeamMember) =>
-        m.assignment_id === member.assignment_id ? { ...m, next_bajada_date: val } : m
+        m.employee_id === member.employee_id ? { ...m, next_bajada_date: val } : m
       )
     )
     const { error: updErr } = await supabase
-      .from("obra_assignments")
+      .from("employees")
       .update({ next_bajada_date: val })
-      .eq("id", member.assignment_id)
+      .eq("id", member.employee_id)
     if (updErr) {
       console.error("set bajada date error:", updErr)
       setMembers((prev: TeamMember[]) =>
         prev.map((m: TeamMember) =>
-          m.assignment_id === member.assignment_id
+          m.employee_id === member.employee_id
             ? { ...m, next_bajada_date: member.next_bajada_date }
             : m
         )
@@ -664,17 +687,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         </div>
 
         <div className="flex gap-2">
-          <Button variant="outline" onClick={fetchMembers} disabled={loading} className={btnOutlineCls}>
-            <RefreshCw className={`w-4 h-4 mr-2 ${loading ? "animate-spin" : ""}`} />
-            Refrescar
-          </Button>
-
           {obraInfo && members.filter(isActiveAssignment).length > 0 && (
             <Button
               variant="outline"
               onClick={handleGeneratePDF}
               disabled={generatingPdf || loading}
-              className={btnOutlineCls}
+              className={`${btnOutlineCls} cursor-pointer`}
             >
               {generatingPdf
                 ? <Loader2 className="w-4 h-4 mr-2 animate-spin" />
@@ -684,7 +702,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
           )}
 
           {allowManage && (
-            <Button onClick={handleOpenAdd} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+            <Button onClick={handleOpenAdd} className="bg-[#0174bd] hover:bg-[#015a94] text-white cursor-pointer">
               <UserPlus className="w-4 h-4 mr-2" />
               Agregar miembro
             </Button>
@@ -868,11 +886,11 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                 <TableHeader>
                   <TableRow className="border-slate-700/60 hover:bg-slate-800/40">
                     <TableHead className="text-slate-400">Empleado</TableHead>
-                    <TableHead className="text-slate-400">Puesto</TableHead>
                     <TableHead className="text-slate-400">Rol en obra</TableHead>
                     <TableHead className="text-slate-400 text-center">Residencia</TableHead>
+                    <TableHead className="text-slate-400">Lugar</TableHead>
                     <TableHead className="text-slate-400">Fecha de bajada</TableHead>
-                    <TableHead className="text-slate-400">Asignacion</TableHead>
+                    <TableHead className="text-slate-400">Asignación</TableHead>
                     <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -885,13 +903,6 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                           <p className="font-medium text-slate-200">{m.full_name}</p>
                           <p className="text-xs text-slate-600 font-mono">{m.employee_id}</p>
                         </div>
-                      </TableCell>
-
-                      <TableCell className="text-sm text-slate-400">
-                        {m.position_title ?? "-"}
-                        {String(m.employee_status).toLowerCase() !== "active" && (
-                          <span className="ml-2 text-xs text-red-400">(inactive)</span>
-                        )}
                       </TableCell>
 
                       <TableCell>
@@ -940,6 +951,15 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                             </span>
                           )
                         })()}
+                      </TableCell>
+
+                      {/* Lugar (residence_location) */}
+                      <TableCell className="text-sm">
+                        {m.is_foraneo && m.residence_location ? (
+                          <span className="text-slate-300">{m.residence_location}</span>
+                        ) : (
+                          <span className="text-slate-600">—</span>
+                        )}
                       </TableCell>
 
                       {/* Fecha de bajada */}
