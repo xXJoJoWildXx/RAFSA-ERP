@@ -264,6 +264,14 @@ function isAllowedDoc(file: File) {
 
 // ---------- Pagina de detalle ----------
 
+/** Return YYYY-MM-DD in local timezone (avoids UTC shift at night) */
+function toLocalDateStr(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 export default function ProjectDetailPage() {
   const params = useParams()
   const router = useRouter()
@@ -327,7 +335,7 @@ export default function ProjectDetailPage() {
     concept: "deposit" as ObraStateAccountRow["concept"],
     amount: "",
     method: "transfer" as ObraStateAccountRow["method"],
-    date: new Date().toISOString().slice(0, 10),
+    date: toLocalDateStr(new Date()),
     bank_ref: "",
     invoice_number: "",
     note: "",
@@ -341,7 +349,7 @@ export default function ProjectDetailPage() {
     type: "aditivo" as "cotizacion" | "aditivo",
     description: "",
     amount: "",
-    date: new Date().toISOString().slice(0, 10),
+    date: toLocalDateStr(new Date()),
     with_iva: true,
   })
   const [savingBilling, setSavingBilling] = useState(false)
@@ -1039,7 +1047,7 @@ export default function ProjectDetailPage() {
       amount: "",
       invoice_number: "",
       method: "transfer",
-      date: new Date().toISOString().slice(0, 10),
+      date: toLocalDateStr(new Date()),
       bank_ref: "",
       note: "",
     })
@@ -1091,29 +1099,38 @@ export default function ProjectDetailPage() {
       .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
       .eq("obra_id", obraId)
     if (error) { console.error("fetchTeamStats error:", error); return }
-    const today = new Date().toISOString().slice(0, 10)
+    const today = toLocalDateStr(new Date())
     applyTeamStats((data || []) as ObraAssignmentRow[], today)
   }
 
   // ── Bajada notifications ──
 
-  function getNextFriday(from: Date): Date {
+  /**
+   * Returns this week's Friday date.
+   * - Sun(0)–Fri(5): returns the coming (or current) Friday
+   * - Sat(6): returns yesterday (Friday that just passed)
+   * This way notifications stay visible on Friday and Saturday.
+   */
+  function getRelevantFriday(from: Date): Date {
     const d = new Date(from)
     const day = d.getDay()
-    const diff = day <= 5 ? 5 - day : 6 // days until next Friday
-    d.setDate(d.getDate() + diff)
+    if (day === 6) {
+      // Saturday → go back 1 day to Friday
+      d.setDate(d.getDate() - 1)
+    } else {
+      // Sun(0)–Fri(5) → advance to Friday
+      d.setDate(d.getDate() + (5 - day))
+    }
     return d
   }
 
   async function generateAndFetchBajadaNotifications(obraId: string, silent = false) {
     if (!silent) setBajadaLoading(true)
     const today = new Date()
-    const dayOfWeek = today.getDay() // 0=Sun, 1=Mon...
 
-    // Auto-generate notifications on Monday (or any day for testing)
-    // Find all foráneo assignments with a bajada_date that falls this coming Fri-Sun
-    const nextFri = getNextFriday(today)
-    const nextFriStr = nextFri.toISOString().slice(0, 10)
+    // Find the relevant Friday for this week (stays valid on Fri & Sat too)
+    const relevantFri = getRelevantFriday(today)
+    const nextFriStr = toLocalDateStr(relevantFri)
 
     // Fetch active assignments whose employee is foráneo with bajada_date = this Friday
     const { data: foraneoAssignments } = await supabase
@@ -1192,9 +1209,9 @@ export default function ProjectDetailPage() {
 
       // 2. Auto-mark Friday and Saturday as present in obra_attendance
       const fridayDate = notification.bajada_date
-      const satDate = new Date(fridayDate + "T00:00:00")
+      const satDate = new Date(fridayDate + "T12:00:00")
       satDate.setDate(satDate.getDate() + 1)
-      const saturdayDate = satDate.toISOString().slice(0, 10)
+      const saturdayDate = toLocalDateStr(satDate)
 
       for (const dateStr of [fridayDate, saturdayDate]) {
         // Check if record exists
@@ -1217,7 +1234,7 @@ export default function ProjectDetailPage() {
             employee_id: notification.employee_id,
             date: dateStr,
             status: "bajada",
-            marked_by: resolvedBy,
+            recorded_by: resolvedBy,
           })
         }
       }
@@ -1380,7 +1397,7 @@ export default function ProjectDetailPage() {
         const progressValue = lastReport[0]?.progress_percent
         setProgress(progressValue !== null && progressValue !== undefined ? Number(progressValue) : 0)
 
-        const today = new Date().toISOString().slice(0, 10)
+        const today = toLocalDateStr(new Date())
         const assignments = (assignmentsData || []) as ObraAssignmentRow[]
         applyTeamStats(assignments, today)
 
@@ -1595,7 +1612,7 @@ export default function ProjectDetailPage() {
 
   function openAddBillingItem(type: "cotizacion" | "aditivo") {
     setEditingBillingItem(null)
-    setBillingForm({ type, description: "", amount: "", date: new Date().toISOString().slice(0, 10), with_iva: true })
+    setBillingForm({ type, description: "", amount: "", date: toLocalDateStr(new Date()), with_iva: true })
     setBillingError(null)
     setBillingDialogOpen(true)
   }

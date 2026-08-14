@@ -128,7 +128,7 @@ function getWeekDates(monday: Date): string[] {
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday)
     d.setDate(d.getDate() + i)
-    return d.toISOString().split("T")[0]
+    return toDateStr(d)
   })
 }
 
@@ -143,7 +143,10 @@ function formatMonthYear(dateStr: string): string {
 }
 
 function toDateStr(d: Date): string {
-  return d.toISOString().split("T")[0]
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
 }
 
 function formatRoleName(role: string | null): string {
@@ -627,7 +630,7 @@ export default function WorkerObraDetailPage() {
   /* ─── Attendance summary for week ─── */
   const weekSummary = team.map((member: TeamMember) => {
     const days = weekDates.map((date: string) => getAttendanceForCell(member.id, date))
-    const presentCount = days.filter((d: AttendanceRecord | undefined) => d?.status === "present").length
+    const presentCount = days.filter((d: AttendanceRecord | undefined) => d?.status === "present" || d?.status === "bajada").length
     const absentCount = days.filter((d: AttendanceRecord | undefined) => d?.status === "absent").length
     const halfCount = days.filter((d: AttendanceRecord | undefined) => d?.status === "half_day").length
     return { member, presentCount, absentCount, halfCount }
