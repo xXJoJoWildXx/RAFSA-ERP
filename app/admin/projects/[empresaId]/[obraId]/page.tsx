@@ -49,6 +49,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
 import { NominasTab } from "@/components/nominasTab"
+import { EstimacionesFacturasCards } from "@/components/estimacionesFacturasCards"
 
 // ---------- Tipos DB basicos ----------
 
@@ -67,6 +68,8 @@ type ObraRow = {
   end_date_actual: string | null
   notes: string | null
   iva_included: boolean
+  garantia_amount: number | null
+  garantia_status: "none" | "pending" | "invoiced" | "paid"
 }
 
 type ContractRow = {
@@ -354,6 +357,20 @@ export default function ProjectDetailPage() {
   })
   const [savingBilling, setSavingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
+
+  // Fondo de garantía
+  const [garantiaDialogOpen, setGarantiaDialogOpen] = useState(false)
+  const [garantiaAmount, setGarantiaAmount] = useState("")
+  const [savingGarantia, setSavingGarantia] = useState(false)
+  const [garantiaFactura, setGarantiaFactura] = useState<AttachmentRow | null>(null)
+  const [garantiaPago, setGarantiaPago] = useState<AttachmentRow | null>(null)
+  const [uploadingGarantiaFile, setUploadingGarantiaFile] = useState<"factura" | "pago" | null>(null)
+  const garantiaFileRef = useRef<HTMLInputElement | null>(null)
+  const [garantiaPayDialogOpen, setGarantiaPayDialogOpen] = useState(false)
+  const [garantiaPayForm, setGarantiaPayForm] = useState({ amount: "", note: "", method: "transfer", bank_ref: "" })
+  const [savingGarantiaPay, setSavingGarantiaPay] = useState(false)
+  const [garantiaPreviewUrl, setGarantiaPreviewUrl] = useState<string | null>(null)
+  const [garantiaPreviewName, setGarantiaPreviewName] = useState("")
 
   // Bajada notifications
   const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
@@ -764,7 +781,10 @@ export default function ProjectDetailPage() {
         start_date_actual,
         end_date_planned,
         end_date_actual,
-        notes
+        notes,
+        iva_included,
+        garantia_amount,
+        garantia_status
       `,
       )
       .single()
@@ -1092,6 +1112,163 @@ export default function ProjectDetailPage() {
     setManagerName(foundManagerName)
   }
 
+  // Re-fetcha state accounts (pagos) para refrescar después de un pago desde facturas
+  async function refreshStateAccounts() {
+    if (!obra) return
+    const { data } = await supabase
+      .from("obra_state_accounts")
+      .select("*")
+      .eq("obra_id", obra.id)
+      .order("date", { ascending: false })
+    const accounts = (data || []) as ObraStateAccountRow[]
+    setStateAccounts(accounts)
+    const totalSpent = accounts.reduce((sum, m) => {
+      const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+      return sum + (val || 0)
+    }, 0)
+    setSpentTotal(totalSpent)
+
+    // Reload evidences
+    if (accounts.length > 0) {
+      const accountIds = accounts.map((a) => a.id)
+      const { data: evidenceData } = await supabase
+        .from("attachments")
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .eq("ref_table", "obra_state_accounts")
+        .in("ref_id", accountIds)
+      const map: Record<string, AttachmentRow> = {}
+      ;(evidenceData || []).forEach((a: any) => { map[a.ref_id] = a as AttachmentRow })
+      setEvidenceMap(map)
+    }
+  }
+
+  // ── Fondo de garantía handlers ──
+
+  async function handleSaveGarantiaAmount() {
+    if (!obra) return
+    setSavingGarantia(true)
+    const amount = parseFloat(garantiaAmount.replace(/[^0-9.]/g, ""))
+    if (isNaN(amount) || amount <= 0) { setSavingGarantia(false); return }
+
+    const { data, error } = await supabase
+      .from("obras")
+      .update({ garantia_amount: amount, garantia_status: "pending" })
+      .eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status")
+      .single()
+
+    if (!error && data) setObra(data as ObraRow)
+    setGarantiaDialogOpen(false)
+    setSavingGarantia(false)
+  }
+
+  async function handleUploadGarantiaFile(type: "factura" | "pago", file: File) {
+    if (!obra) return
+    setUploadingGarantiaFile(type)
+
+    const { data: authData } = await supabase.auth.getUser()
+    const userId = authData?.user?.id ?? null
+    const refTable = type === "factura" ? "obra_garantia_factura" : "obra_garantia_pago"
+
+    // Delete previous if exists
+    const prev = type === "factura" ? garantiaFactura : garantiaPago
+    if (prev) {
+      await supabase.from("attachments").delete().eq("id", prev.id)
+      const ext = prev.file_name?.split(".").pop() || "pdf"
+      await supabase.storage.from("obra-facturas").remove([`garantia/${obra.id}-${type}.${ext}`])
+    }
+
+    // Upload file
+    const ext = file.name.split(".").pop() || "pdf"
+    const path = `garantia/${obra.id}-${type}.${ext}`
+    const { error: uploadErr } = await supabase.storage
+      .from("obra-facturas")
+      .upload(path, file, { upsert: true })
+
+    if (uploadErr) { console.error("upload garantia error:", uploadErr); setUploadingGarantiaFile(null); return }
+
+    const { data: urlData } = supabase.storage.from("obra-facturas").getPublicUrl(path)
+
+    const { data: inserted } = await supabase.from("attachments").insert({
+      ref_table: refTable,
+      ref_id: obra.id,
+      file_url: urlData.publicUrl,
+      file_name: file.name,
+      mime_type: file.type,
+      size_bytes: file.size,
+      uploaded_by: userId,
+    }).select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at").single()
+
+    if (inserted) {
+      if (type === "factura") {
+        setGarantiaFactura(inserted as AttachmentRow)
+        // Update status to invoiced
+        const { data: d } = await supabase.from("obras").update({ garantia_status: "invoiced" }).eq("id", obra.id)
+          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status").single()
+        if (d) setObra(d as ObraRow)
+      } else {
+        setGarantiaPago(inserted as AttachmentRow)
+      }
+    }
+    setUploadingGarantiaFile(null)
+  }
+
+  async function handleGarantiaPayment() {
+    if (!obra) return
+    setSavingGarantiaPay(true)
+
+    const payAmount = obra.garantia_amount ? Number(obra.garantia_amount) : 0
+    const { data: authData } = await supabase.auth.getUser()
+    const userId = authData?.user?.id ?? null
+
+    // Insert payment into state accounts
+    await supabase.from("obra_state_accounts").insert({
+      obra_id: obra.id,
+      concept: "deposit",
+      date: toLocalDateStr(new Date()),
+      amount: payAmount,
+      method: garantiaPayForm.method,
+      bank_ref: garantiaPayForm.bank_ref.trim() || null,
+      note: garantiaPayForm.note.trim() || `Cobro fondo de garantía`,
+      uploaded_by: userId,
+    })
+
+    // Update obra status to paid
+    const { data: d } = await supabase.from("obras").update({ garantia_status: "paid" }).eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status").single()
+    if (d) setObra(d as ObraRow)
+
+    setGarantiaPayDialogOpen(false)
+    setSavingGarantiaPay(false)
+    await refreshStateAccounts()
+  }
+
+  async function handleDownloadFile(url: string, filename: string) {
+    const res = await fetch(url)
+    const blob = await res.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = blobUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(blobUrl)
+  }
+
+  async function handleViewGarantiaFile(type: "factura" | "pago") {
+    if (!obra) return
+    const att = type === "factura" ? garantiaFactura : garantiaPago
+    if (!att) return
+    const ext = att.file_name?.split(".").pop() || "pdf"
+    const path = `garantia/${obra.id}-${type}.${ext}`
+    const { data } = await supabase.storage.from("obra-facturas").createSignedUrl(path, 300)
+    if (data?.signedUrl) {
+      setGarantiaPreviewUrl(data.signedUrl)
+      setGarantiaPreviewName(att.file_name || `garantia-${type}.${ext}`)
+    }
+  }
+
   // Re-fetcha solo los datos de equipo (para refrescar el card Overview)
   async function fetchTeamStats(obraId: string) {
     const { data, error } = await supabase
@@ -1288,7 +1465,9 @@ export default function ProjectDetailPage() {
             end_date_planned,
             end_date_actual,
             notes,
-            iva_included
+            iva_included,
+            garantia_amount,
+            garantia_status
           `,
           )
           .eq("id", obraId)
@@ -1386,6 +1565,17 @@ export default function ProjectDetailPage() {
           })
           setEvidenceMap(map)
         }
+
+        // Cargar attachments del fondo de garantía
+        const { data: garantiaAtts } = await supabase
+          .from("attachments")
+          .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+          .in("ref_table", ["obra_garantia_factura", "obra_garantia_pago"])
+          .eq("ref_id", obraId)
+        ;(garantiaAtts || []).forEach((a: any) => {
+          if (a.ref_table === "obra_garantia_factura") setGarantiaFactura(a as AttachmentRow)
+          if (a.ref_table === "obra_garantia_pago") setGarantiaPago(a as AttachmentRow)
+        })
 
         const totalSpent = stateAccounts.reduce((sum, m) => {
           const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
@@ -2013,67 +2203,14 @@ export default function ProjectDetailPage() {
               </CardContent>
             </Card>
 
-            {/* CARD 3 — Aditivos */}
-            <Card className="bg-slate-800 border-slate-700">
-              <CardHeader className="flex flex-row items-center justify-between">
-                <CardTitle className="text-slate-100">Aditivas</CardTitle>
-                <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("aditivo")}>
-                  <Plus className="w-4 h-4 mr-1" />
-                  Nuevo aditivo
-                </Button>
-              </CardHeader>
-              <CardContent>
-                {aditivos.length > 0 ? (
-                  <div className="rounded-md border border-slate-700 overflow-hidden">
-                    <Table>
-                      <TableHeader>
-                        <TableRow className="border-slate-700 hover:bg-slate-700/30">
-                          <TableHead className="text-slate-400">Fecha</TableHead>
-                          <TableHead className="text-slate-400">Descripcion</TableHead>
-                          <TableHead className="text-slate-400">IVA</TableHead>
-                          <TableHead className="text-right text-slate-400">Monto</TableHead>
-                          <TableHead className="text-right text-slate-400">Acciones</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {aditivos.map((item) => (
-                          <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
-                            <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
-                            <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
-                            <TableCell>
-                              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${item.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
-                                {item.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
-                                {item.with_iva ? "Con IVA" : "Sin IVA"}
-                              </span>
-                            </TableCell>
-                            <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
-                            <TableCell className="text-right">
-                              <div className="flex justify-end gap-1">
-                                <Button size="sm" variant="ghost" className="cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-all duration-150" onClick={() => openEditBillingItem(item)}>Editar</Button>
-                                <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(item)}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                        <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
-                          <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
-                          <TableCell className="text-right font-bold text-slate-100">
-                            {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
-                          </TableCell>
-                          <TableCell />
-                        </TableRow>
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivas registradas aun.</p>
-                )}
-              </CardContent>
-            </Card>
+            {/* CARD 3 & 4 — Estimaciones + Facturas */}
+            <EstimacionesFacturasCards
+              obraId={obra.id}
+              currency={budgetCurrency}
+              onPaymentRegistered={refreshStateAccounts}
+            />
 
-            {/* CARD 3 — Pagos y Movimientos */}
+            {/* CARD 5 — Pagos y Movimientos */}
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Pagos y movimientos</CardTitle>
@@ -2091,9 +2228,6 @@ export default function ProjectDetailPage() {
                       Editar
                     </Button>
                   )}
-                  <Button size="sm" className="cursor-pointer" onClick={() => setNewPaymentOpen(true)}>
-                    + Nuevo deposito
-                  </Button>
                 </div>
               </CardHeader>
               <CardContent>
@@ -2170,6 +2304,253 @@ export default function ProjectDetailPage() {
                         })}
                       </TableBody>
                     </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARD 6 — Aditivas */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-slate-100">Aditivas</CardTitle>
+                <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("aditivo")}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Nuevo aditivo
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {aditivos.length > 0 ? (
+                  <div className="rounded-md border border-slate-700 overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-slate-700 hover:bg-slate-700/30">
+                          <TableHead className="text-slate-400">Fecha</TableHead>
+                          <TableHead className="text-slate-400">Descripcion</TableHead>
+                          <TableHead className="text-slate-400">IVA</TableHead>
+                          <TableHead className="text-right text-slate-400">Monto</TableHead>
+                          <TableHead className="text-right text-slate-400">Acciones</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {aditivos.map((item) => (
+                          <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
+                            <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
+                            <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${item.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                                {item.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                {item.with_iva ? "Con IVA" : "Sin IVA"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
+                            <TableCell className="text-right">
+                              <div className="flex justify-end gap-1">
+                                <Button size="sm" variant="ghost" className="cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-all duration-150" onClick={() => openEditBillingItem(item)}>Editar</Button>
+                                <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(item)}>
+                                  <Trash2 className="w-4 h-4" />
+                                </Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                        <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
+                          <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
+                          <TableCell className="text-right font-bold text-slate-100">
+                            {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
+                          </TableCell>
+                          <TableCell />
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivas registradas aún.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARD 7 — Fondo de Garantía */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <ShieldCheck className="w-5 h-5 text-slate-400" />
+                  <CardTitle className="text-slate-100">Fondo de Garantía</CardTitle>
+                </div>
+                {obra.garantia_status === "none" && (
+                  <Button size="sm" className="cursor-pointer" onClick={() => { setGarantiaAmount(""); setGarantiaDialogOpen(true) }}>
+                    <Plus className="w-4 h-4 mr-1" />
+                    Configurar
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                {/* Hidden file input for garantia uploads */}
+                <input
+                  ref={garantiaFileRef}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.xml,.jpg,.jpeg,.png"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ""
+                    if (file && uploadingGarantiaFile) {
+                      handleUploadGarantiaFile(uploadingGarantiaFile, file)
+                    }
+                  }}
+                />
+
+                {obra.garantia_status === "none" ? (
+                  <p className="text-sm text-slate-500 text-center py-4">
+                    No se ha configurado un fondo de garantía para esta obra.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Amount display */}
+                    <div className="rounded-lg border border-slate-600 bg-slate-700/40 p-4">
+                      <div className="flex items-start justify-between flex-wrap gap-3">
+                        <div>
+                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Monto retenido</p>
+                          <p className="text-2xl font-bold text-slate-100 mt-1">
+                            {formatCurrency(Number(obra.garantia_amount || 0), budgetCurrency)}
+                          </p>
+                        </div>
+                        <Badge className={`text-xs border ${
+                          obra.garantia_status === "pending"
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : obra.garantia_status === "invoiced"
+                            ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                            : "bg-green-500/15 text-green-400 border-green-500/30"
+                        }`}>
+                          {obra.garantia_status === "pending" && "Esperando factura"}
+                          {obra.garantia_status === "invoiced" && "Facturado — Pendiente de cobro"}
+                          {obra.garantia_status === "paid" && "Cobrado — Obra completada"}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {/* Stepper visual */}
+                    <div className="grid grid-cols-3 gap-3">
+                      {/* Step 1: Factura */}
+                      <div className={`rounded-lg border p-3 ${
+                        garantiaFactura
+                          ? "border-green-500/30 bg-green-500/5"
+                          : obra.garantia_status !== "none" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">1. Factura del cliente</p>
+                        {garantiaFactura ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              {garantiaFactura.file_name || "Archivo subido"}
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                              onClick={() => handleViewGarantiaFile("factura")}
+                            >
+                              <Eye className="w-3 h-3 mr-1" />
+                              Ver
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!!uploadingGarantiaFile}
+                            className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                            onClick={() => { setUploadingGarantiaFile("factura"); garantiaFileRef.current?.click() }}
+                          >
+                            {uploadingGarantiaFile === "factura" ? (
+                              <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
+                            ) : (
+                              <><Upload className="w-3 h-3 mr-1" />Subir factura</>
+                            )}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Step 2: Cobro */}
+                      <div className={`rounded-lg border p-3 ${
+                        obra.garantia_status === "paid"
+                          ? "border-green-500/30 bg-green-500/5"
+                          : obra.garantia_status === "invoiced" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">2. Cobro</p>
+                        {obra.garantia_status === "paid" ? (
+                          <p className="text-xs text-green-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Cobrado
+                          </p>
+                        ) : obra.garantia_status === "invoiced" ? (
+                          <Button
+                            size="sm"
+                            className="cursor-pointer text-xs h-7 bg-green-600 hover:bg-green-700 text-white w-full"
+                            onClick={() => {
+                              setGarantiaPayForm({ amount: String(obra.garantia_amount || 0), note: "Cobro fondo de garantía", method: "transfer", bank_ref: "" })
+                              setGarantiaPayDialogOpen(true)
+                            }}
+                          >
+                            <DollarSign className="w-3 h-3 mr-1" />
+                            Registrar cobro
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">Pendiente de factura</p>
+                        )}
+                      </div>
+
+                      {/* Step 3: Comprobante */}
+                      <div className={`rounded-lg border p-3 ${
+                        garantiaPago
+                          ? "border-green-500/30 bg-green-500/5"
+                          : obra.garantia_status === "paid" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">3. Comprobante</p>
+                        {garantiaPago ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              {garantiaPago.file_name || "Archivo subido"}
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                              onClick={() => handleViewGarantiaFile("pago")}
+                            >
+                              <Eye className="w-3 h-3 mr-1" />
+                              Ver
+                            </Button>
+                          </div>
+                        ) : obra.garantia_status === "paid" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!!uploadingGarantiaFile}
+                            className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                            onClick={() => { setUploadingGarantiaFile("pago"); garantiaFileRef.current?.click() }}
+                          >
+                            {uploadingGarantiaFile === "pago" ? (
+                              <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
+                            ) : (
+                              <><Upload className="w-3 h-3 mr-1" />Subir comprobante</>
+                            )}
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">Pendiente de cobro</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Final status message */}
+                    {obra.garantia_status === "paid" && garantiaPago && (
+                      <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-center">
+                        <p className="text-sm font-semibold text-green-400 flex items-center justify-center gap-2">
+                          <CheckCircle className="w-4 h-4" />
+                          Obra oficialmente completada y totalmente pagada
+                        </p>
+                      </div>
+                    )}
                   </div>
                 )}
               </CardContent>
@@ -2807,6 +3188,117 @@ export default function ProjectDetailPage() {
                 {savingBilling ? "Guardando..." : "Guardar"}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Configurar Fondo de Garantía */}
+      <Dialog open={garantiaDialogOpen} onOpenChange={(v) => (!savingGarantia ? setGarantiaDialogOpen(v) : null)}>
+        <DialogContent className="max-w-sm bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Configurar Fondo de Garantía</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Monto retenido *</label>
+              <Input
+                value={garantiaAmount}
+                onChange={(e) => setGarantiaAmount(e.target.value)}
+                placeholder="0.00"
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+              />
+            </div>
+            <p className="text-xs text-slate-500">
+              Este monto se retiene hasta que la obra sea completada, revisada y aceptada por el cliente.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setGarantiaDialogOpen(false)} disabled={savingGarantia} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
+              <Button onClick={handleSaveGarantiaAmount} disabled={savingGarantia} className="cursor-pointer">
+                {savingGarantia ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Registrar cobro del Fondo de Garantía */}
+      <Dialog open={garantiaPayDialogOpen} onOpenChange={(v) => (!savingGarantiaPay ? setGarantiaPayDialogOpen(v) : null)}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Registrar Cobro — Fondo de Garantía</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="rounded-md border border-slate-600 bg-slate-700/40 p-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Monto del fondo:</span>
+                <span className="text-slate-200 font-medium">{formatCurrency(Number(obra?.garantia_amount || 0), budgetCurrency)}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Método</label>
+                <select
+                  value={garantiaPayForm.method}
+                  onChange={(e) => setGarantiaPayForm((f) => ({ ...f, method: e.target.value }))}
+                  className="h-10 rounded-md border border-slate-600 bg-slate-700/60 px-3 text-sm text-slate-100 focus:border-[#0174bd] outline-none"
+                >
+                  <option value="transfer">Transferencia</option>
+                  <option value="cash">Efectivo</option>
+                  <option value="check">Cheque</option>
+                  <option value="other">Otro</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Ref. bancaria</label>
+                <Input
+                  value={garantiaPayForm.bank_ref}
+                  onChange={(e) => setGarantiaPayForm((f) => ({ ...f, bank_ref: e.target.value }))}
+                  placeholder="Opcional"
+                  className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Nota (opcional)</label>
+              <Textarea
+                value={garantiaPayForm.note}
+                onChange={(e) => setGarantiaPayForm((f) => ({ ...f, note: e.target.value }))}
+                placeholder="Observaciones..."
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                rows={2}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setGarantiaPayDialogOpen(false)} disabled={savingGarantiaPay} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
+              <Button onClick={handleGarantiaPayment} disabled={savingGarantiaPay} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white">
+                {savingGarantiaPay ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" />Registrando...</> : "Registrar cobro"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* File Preview Dialog (Garantía) */}
+      <Dialog open={!!garantiaPreviewUrl} onOpenChange={(v) => { if (!v) setGarantiaPreviewUrl(null) }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] bg-slate-800 border-slate-700 text-slate-100 flex flex-col p-0">
+          <DialogHeader className="px-6 pt-6 pb-3 border-b border-slate-700">
+            <DialogTitle className="text-slate-100 truncate">{garantiaPreviewName}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 px-6 pt-3">
+            {garantiaPreviewUrl && (/\.(png|jpe?g|gif|webp|svg)$/i.test(garantiaPreviewName) ? (
+              <img src={garantiaPreviewUrl} alt={garantiaPreviewName} className="max-w-full max-h-[65vh] mx-auto rounded-md object-contain" />
+            ) : (
+              <iframe src={garantiaPreviewUrl} title={garantiaPreviewName} className="w-full h-[65vh] rounded-md border border-slate-600 bg-white" />
+            ))}
+          </div>
+          <div className="flex justify-end px-6 py-4 border-t border-slate-700">
+            <Button
+              className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white"
+              onClick={() => garantiaPreviewUrl && handleDownloadFile(garantiaPreviewUrl, garantiaPreviewName)}
+            >
+              <Download className="w-4 h-4 mr-1.5" />
+              Descargar
+            </Button>
           </div>
         </DialogContent>
       </Dialog>
