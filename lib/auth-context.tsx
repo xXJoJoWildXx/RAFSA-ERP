@@ -5,7 +5,7 @@ import { createContext, useContext, useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
 
-type UserRole = "admin" | "user" | "worker"
+type UserRole = "admin" | "user" | "worker" | "almacen"
 
 interface User {
   id: string

@@ -24,6 +24,7 @@ import {
   Settings,
   Search,
   Truck,
+  Package,
   Activity,
 } from "lucide-react"
 import Link from "next/link"
@@ -49,6 +50,7 @@ const navigation: NavItem[] = [
   { name: "Obras", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
   { name: "Empleados", href: "/admin/employees", icon: Users, badgeKey: "empleados" },
   { name: "Proveedores", href: "/admin/proveedores", icon: Truck, badgeKey: null },
+  { name: "Inventario", href: "/admin/inventario", icon: Package, badgeKey: null },
   { name: "Actividades", href: "/admin/activities", icon: Activity, badgeKey: null },
 ]
 

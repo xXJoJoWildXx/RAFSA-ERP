@@ -1,27 +1,76 @@
 /**
  * RAFSA – Generador de Estado de Cuenta (EDC) en PDF
- * Diseño editorial: jerarquía por tipografía y grises, sin rellenos de color.
+ *
+ * Estructura inspirada en el formato preferido por el cliente:
+ *   • Página 1 (VERTICAL): resumen ejecutivo de todo lo que abarca el EDC
+ *     — resumen por obra (monto, pagado, saldo, % pagado), subtotales por
+ *     empresa, total general, saldo exigible y notas.
+ *   • Páginas siguientes (HORIZONTAL): desarrollo detallado por empresa y obra
+ *     — resumen de contrato (anticipo, fondo de garantía, neto a facturar,
+ *     facturado), estimaciones como columnas (EST 1..N), aditivas, y las
+ *     columnas SUMA PAGOS / SUMA TRABAJOS / SALDO.
  */
 
-import jsPDF from "jspdf"
+import { jsPDF } from "jspdf"
 
 // ── Tipos públicos ──────────────────────────────────────────────────────────
 
 export type EDCPago = {
   concept: "deposit" | "advance" | "retention" | "return"
   date: string | null
-  amount: number   // siempre positivo; el concepto indica si es cargo o abono
+  amount: number
+}
+
+export type EDCEstimacion = {
+  number: number
+  label: string
+  description: string
+  isAnticipo: boolean
+  status: string
+  amount: number
+  retencion: number
+  amortizacion: number
+  neto: number
+  facturaNumber: string | null
+  facturaAmount: number | null
+  facturaPaid: number
+  facturaStatus: string | null
+}
+
+export type EDCAditiva = {
+  description: string
+  amount: number
+  facturaNumber: string | null
+  facturaAmount: number | null
+  facturaPaid: number
+  facturaStatus: string | null
 }
 
 export type EDCObra = {
   id: string
   code: string | null
   name: string
+  clientName: string | null
   location: string
-  status: string        // DB: planned | in_progress | paused | closed
-  budget: number        // cotización total
-  spent: number         // cobrado neto
-  pagos: EDCPago[]      // pagos individuales ordenados por fecha
+  status: string
+
+  contractTotal: number
+  cotizacion: number
+  aditivasTotal: number
+  budget: number
+  anticipoPct: number
+  anticipoAmount: number
+  anticipoPaid: number
+  garantiaPct: number
+  garantiaAmount: number
+  saldoContrato: number
+
+  estimaciones: EDCEstimacion[]
+  aditivas: EDCAditiva[]
+  facturadoTotal: number
+
+  spent: number
+  pagos: EDCPago[]
 }
 
 export type EDCEmpresa = {
@@ -30,89 +79,59 @@ export type EDCEmpresa = {
   obras: EDCObra[]
 }
 
-// ── Paleta (escala de grises + acento header) ────────────────────────────────
+// ── Colores ───────────────────────────────────────────────────────────────────
 
-const PAGE_W    = 210
-const PAGE_H    = 297
-const MARGIN    = 14
-const CONTENT_W = PAGE_W - MARGIN * 2   // 182 mm
+type RGB = { r: number; g: number; b: number }
+const BLUE_BAR = { r: 31, g: 113, b: 181 }   // barras de sección
+const BLUE_DK = { r: 20, g: 74, b: 138 }     // totales / títulos
+const BLUE_TXT = { r: 21, g: 92, b: 158 }    // subtítulos
+const GRAY_HDR = { r: 219, g: 222, b: 226 }  // encabezado de columnas
+const GRAY_SUB = { r: 232, g: 235, b: 238 }  // subtotales
+const BG_COT = { r: 237, g: 240, b: 243 }    // fila de totales de tabla
+const INK = { r: 33, g: 37, b: 41 }
+const MID = { r: 90, g: 96, b: 104 }
+const LITE = { r: 140, g: 146, b: 154 }
+const RULE = { r: 196, g: 201, b: 207 }
+const WHITE = { r: 255, g: 255, b: 255 }
+const GREEN = { r: 33, g: 138, b: 60 }
+const ORANGE = { r: 214, g: 104, b: 20 }
+const AMBER_HL = { r: 255, g: 228, b: 130 }
+const RED_DED = { r: 178, g: 34, b: 34 }
 
-// Azul RAFSA — sólo para el membrete superior y pie de página
-const BLUE_R = 1,   BLUE_G = 116, BLUE_B = 189
+// ── Geometría ───────────────────────────────────────────────────────────────
 
-// Escala de grises para el cuerpo
-const INK   = { r: 28,  g: 28,  b: 28  }   // casi negro — texto principal
-const MID   = { r: 95,  g: 95,  b: 95  }   // gris medio — texto secundario
-const LITE  = { r: 155, g: 155, b: 155 }   // gris claro — etiquetas/subtexto
-const RULE  = { r: 210, g: 210, b: 210 }   // gris muy claro — líneas divisorias
-const BG_ROW_ALT = { r: 248, g: 248, b: 248 }  // fila alternada casi blanca
-const BG_COT     = { r: 238, g: 238, b: 238 }  // franja cotización
-const BG_PAY_HDR = { r: 30,  g: 70,  b: 115 }  // encabezado tabla pagos
-const BG_OBR_HDR = { r: 245, g: 245, b: 245 }  // cabecera de obra (claro)
-const BG_EMP     = { r: 12,  g: 40,  b: 78  }  // banda empresa — azul marino
-const BG_SUBTOT  = { r: 22,  g: 58,  b: 100 }  // subtotal empresa
-const BG_SUM1    = { r: 238, g: 238, b: 238 }  // total cobrado obra
-const BG_SUM2    = { r: 250, g: 250, b: 250 }  // saldo pendiente obra
+const MARGIN = 12
+const HEADER_BOTTOM = 48          // inicio de contenido en la página 1 (vertical)
+const DETAIL_HEADER_BOTTOM = 31   // inicio de contenido en la 1ª página horizontal
+const DETAIL_TOP = 14             // inicio de contenido en páginas horizontales sin encabezado
 
-// Color semántico — único uso de color en el cuerpo
-const RED_DED = { r: 180, g: 30, b: 30 }   // montos de retención/devolución
+// ── Helpers de dibujo ─────────────────────────────────────────────────────────
 
-// Columnas de la sección de pagos
-// indent(6) + concepto(90) + fecha(30) + monto(56) = 182 = CONTENT_W ✓
-const PAY_IND   = 6
-const PAY_CON_W = 90
-const PAY_FEC_W = 30
-const PAY_MON_W = 56
-const PAY_CON_X   = MARGIN + PAY_IND
-const PAY_FEC_X   = PAY_CON_X + PAY_CON_W
-const PAY_MON_END = PAY_FEC_X + PAY_FEC_W + PAY_MON_W  // = PAGE_W − MARGIN ✓
+const fill = (doc: jsPDF, c: RGB) => doc.setFillColor(c.r, c.g, c.b)
+const txt = (doc: jsPDF, c: RGB) => doc.setTextColor(c.r, c.g, c.b)
+const stroke = (doc: jsPDF, c: RGB) => doc.setDrawColor(c.r, c.g, c.b)
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmtCurrency(n: number): string {
-  if (n === 0) return "$0.00"
-  return n.toLocaleString("es-MX", {
-    style: "currency",
-    currency: "MXN",
-    maximumFractionDigits: 2,
-  })
+function fmtNum(n: number): string {
+  return (n || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
-
-function statusLabel(s: string): string {
-  const m: Record<string, string> = {
-    planned:     "Planeación",
-    in_progress: "En progreso",
-    paused:      "En pausa",
-    closed:      "Completada",
-  }
-  return m[s] ?? s
+function fmtMoney(n: number): string {
+  return "$" + fmtNum(n)
 }
-
-function conceptLabel(c: string): string {
-  const m: Record<string, string> = {
-    deposit:   "Depósito",
-    advance:   "Anticipo",
-    retention: "Retención",
-    return:    "Devolución",
-  }
-  return m[c] ?? c
-}
-
-function formatDate(d: string | null): string {
-  if (!d) return "—"
-  return new Date(d + "T12:00:00").toLocaleDateString("es-MX", {
-    day: "2-digit",
-    month: "short",
-    year: "numeric",
-  })
-}
-
 function trunc(text: string, max: number): string {
-  if (text.length <= max) return text
-  return text.slice(0, max - 1) + "…"
+  if (!text) return ""
+  return text.length <= max ? text : text.slice(0, max - 1) + "…"
 }
 
-/** Carga el logo RAFSA desde /public como dataURL (para jsPDF.addImage). */
+function statusStyle(s: string): { label: string; color: RGB } {
+  switch (s) {
+    case "closed": return { label: "TERMINADA", color: GREEN }
+    case "in_progress": return { label: "EN PROGRESO", color: BLUE_BAR }
+    case "paused": return { label: "EN PAUSA", color: MID }
+    default: return { label: "POR INICIAR", color: ORANGE }
+  }
+}
+const isEjecutada = (s: string) => s !== "planned"
+
 async function loadLogoDataUrl(): Promise<string | null> {
   try {
     const res = await fetch("/brand/rafsa-logo.png")
@@ -121,7 +140,7 @@ async function loadLogoDataUrl(): Promise<string | null> {
     return await new Promise<string>((resolve, reject) => {
       const reader = new FileReader()
       reader.onloadend = () => resolve(reader.result as string)
-      reader.onerror   = () => reject(null)
+      reader.onerror = () => reject(null)
       reader.readAsDataURL(blob)
     })
   } catch {
@@ -129,581 +148,789 @@ async function loadLogoDataUrl(): Promise<string | null> {
   }
 }
 
-// ── Función principal (exportada) ────────────────────────────────────────────
+// ── Función principal ──────────────────────────────────────────────────────────
 
-/**
- * Genera y descarga el PDF de Estado de Cuenta.
- * @param empresas    Empresas con sus obras y pagos.
- * @param date        Fecha del documento (default = hoy).
- * @param generatedBy Nombre o email del usuario que genera el reporte.
- */
 export async function generateEDCPdf(
   empresas: EDCEmpresa[],
   date: Date = new Date(),
-  generatedBy = "Sistema"
+  generatedBy = "Sistema",
 ): Promise<void> {
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" })
+  const logo = await loadLogoDataUrl()
+  const multi = empresas.length > 1
+  const subtitle = multi ? "RESUMEN CONSOLIDADO DE EMPRESAS" : (empresas[0]?.name || "").toUpperCase()
 
-  // Cargar logo (silenciosamente si falla)
-  const logoDataUrl = await loadLogoDataUrl()
+  // ═══════════ PÁGINA 1 — RESUMEN (VERTICAL) ═══════════
+  const WP = doc.internal.pageSize.getWidth()
+  drawDocHeader(doc, WP, date, logo, subtitle, false, generatedBy, false)
+  drawResumenPage(doc, empresas, date, generatedBy, multi, logo)
 
-  // 1. Membrete
-  drawHeader(doc, date, logoDataUrl, generatedBy)
-  let y = drawIntro(doc, 45, empresas.length)
+  // ═══════════ DETALLE (HORIZONTAL) ═══════════
+  doc.addPage("letter", "landscape")
+  const WL = doc.internal.pageSize.getWidth()
+  const HL = doc.internal.pageSize.getHeight()
+  drawDocHeader(doc, WL, date, logo, subtitle, true, generatedBy)
 
-  // 2. Cuerpo
-  let grandBudget = 0
-  let grandSpent  = 0
-  let firstEmpresa = true
+  let y = DETAIL_HEADER_BOTTOM
 
-  type EmpresaSummary = { name: string; obraCount: number; spent: number; saldo: number }
-  const empresaSummaries: EmpresaSummary[] = []
+  // Acumuladores para TOTALES
+  let ejPagos = 0, ejTrab = 0, ejSaldo = 0
+  let perPagos = 0, perTrab = 0, perSaldo = 0
 
-  for (let empIdx = 0; empIdx < empresas.length; empIdx++) {
-    const empresa = empresas[empIdx]
-    const secNum = empIdx + 1
-
-    // Separación visual entre empresas
-    if (!firstEmpresa) {
-      y += 8
-      doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-      doc.setLineWidth(0.4)
-      doc.line(MARGIN, y - 4, MARGIN + CONTENT_W, y - 4)
-    }
-    firstEmpresa = false
-
-    if (y > PAGE_H - 80) { doc.addPage(); y = MARGIN }
-
-    // Etiqueta "Inicio sección #X"
-    y = drawSectionLabel(doc, y, `Inicio sección #${secNum}`)
-
-    y = drawEmpresaBand(doc, y, empresa)
-
-    let empBudget = 0
-    let empSpent  = 0
-
-    for (let obraIdx = 0; obraIdx < empresa.obras.length; obraIdx++) {
-      const obra = empresa.obras[obraIdx]
-      const minH = 34 + (obra.pagos.length > 0 ? obra.pagos.length * 7 + 8 : 10) + 23
-      if (y + minH > PAGE_H - 22) { doc.addPage(); y = MARGIN }
-
-      y = drawObraSection(doc, y, obra, obraIdx + 1)
-      empBudget   += obra.budget
-      empSpent    += obra.spent
-      grandBudget += obra.budget
-      grandSpent  += obra.spent
-    }
-
-    if (y + 10 > PAGE_H - 22) { doc.addPage(); y = MARGIN }
-    y = drawEmpresaSubtotal(doc, y, empBudget, empSpent, empresa.name, empresa.obras.length)
-    empresaSummaries.push({ name: empresa.name, obraCount: empresa.obras.length, spent: empSpent, saldo: empBudget - empSpent })
-
-    // Etiqueta "Final sección #X"
-    y = drawSectionLabel(doc, y, `Final sección #${secNum}`)
+  // Las páginas horizontales siguientes NO llevan encabezado ni pie.
+  const newLandscape = () => {
+    doc.addPage("letter", "landscape")
+    return DETAIL_TOP
   }
 
-  // 3. Resumen general
-  const summaryH = 14 + empresaSummaries.length * 8 + 14
-  if (y + summaryH > PAGE_H - 22) { doc.addPage(); y = MARGIN }
-  drawGrandTotal(doc, y, grandBudget, grandSpent, empresaSummaries)
+  for (let ei = 0; ei < empresas.length; ei++) {
+    const empresa = empresas[ei]
 
-  // Etiqueta "Final del Documento" — después del resumen
-  const finalY = y + 10 + 4 + 10 + (empresaSummaries.length * 8) + 12 + 8
-  drawSectionLabel(doc, finalY, "Final del Documento")
+    if (multi) {
+      if (y + 14 > HL - 16) y = newLandscape()
+      y = drawDetailEmpresaBar(doc, y, WL, empresa.name)
+    }
 
-  // 4. Pie de página en cada hoja
-  const totalPages = doc.getNumberOfPages()
-  for (let pg = 1; pg <= totalPages; pg++) {
-    doc.setPage(pg)
-    drawPageFooter(doc, pg, totalPages)
+    for (const obra of empresa.obras) {
+      y = drawObraDetail(doc, y, obra, newLandscape)
+
+      const saldo = obra.budget - obra.spent
+      if (isEjecutada(obra.status)) { ejPagos += obra.spent; ejTrab += obra.budget; ejSaldo += saldo }
+      else { perPagos += obra.spent; perTrab += obra.budget; perSaldo += saldo }
+    }
+    y += 2
   }
 
-  // 5. Descargar
+  // TOTALES
+  const totalesH = 7 + 8 * 3
+  if (y + totalesH > HL - 16) y = newLandscape()
+  drawTotales(doc, y, WL, { ejPagos, ejTrab, ejSaldo, perPagos, perTrab, perSaldo })
+
+  // ── Pie de página SOLO en la última hoja ──
+  const lastPage = doc.getNumberOfPages()
+  doc.setPage(lastPage)
+  drawFooter(doc, doc.internal.pageSize.getWidth(), doc.internal.pageSize.getHeight())
+
   const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
   doc.save(`EDC_RAFSA_${ymd}.pdf`)
 }
 
-// ── Funciones de dibujo ──────────────────────────────────────────────────────
+// ── Membrete ────────────────────────────────────────────────────────────────
 
-/** Etiqueta pequeña centrada de sección (inicio/final/fin de documento). */
-function drawSectionLabel(doc: jsPDF, y: number, text: string): number {
-  const H = 6
-  doc.setFont("helvetica", "italic")
-  doc.setFontSize(6)
-  doc.setTextColor(LITE.r, LITE.g, LITE.b)
-  doc.text(text, PAGE_W / 2, y + 4, { align: "center" })
-  return y + H
-}
+function drawDocHeader(doc: jsPDF, W: number, date: Date, logo: string | null, subtitle: string, detail: boolean, generatedBy = "Sistema", showDate = true) {
+  const rx = W - MARGIN
+  const dateStrUpper = date.toLocaleDateString("es-MX", { day: "2-digit", month: "long", year: "numeric" }).toUpperCase()
 
-/**
- * Párrafo introductorio del documento.
- * Contextualiza al lector antes de los bloques de empresa.
- */
-function drawIntro(doc: jsPDF, y: number, empresaCount: number): number {
-  const intro =
-    `El presente documento refleja el estado financiero de las obras contratadas con ` +
-    `${empresaCount === 1 ? "la empresa indicada" : `las ${empresaCount} empresas indicadas`}, ` +
-    `incluyendo el valor cotizado, los movimientos registrados y el saldo pendiente por proyecto.`
-
-  doc.setFont("helvetica", "italic")
-  doc.setFontSize(7.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-
-  // splitTextToSize respeta el ancho del contenido
-  const lines = doc.splitTextToSize(intro, CONTENT_W - 4)
-  doc.text(lines, MARGIN + 2, y + 5)
-
-  const blockH = lines.length * 4.5 + 8
-
-  // Línea separadora antes del cuerpo
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.2)
-  doc.line(MARGIN, y + blockH - 2, MARGIN + CONTENT_W, y + blockH - 2)
-
-  return y + blockH + 2
-}
-
-/** Membrete superior con fondo oscuro y logo. */
-function drawHeader(doc: jsPDF, date: Date, logoDataUrl: string | null, generatedBy = "Sistema") {
-  // Barra oscura principal
-  doc.setFillColor(8, 18, 42)
-  doc.rect(0, 0, PAGE_W, 26, "F")
-
-  // Acento azul debajo del header
-  doc.setFillColor(BLUE_R, BLUE_G, BLUE_B)
-  doc.rect(0, 26, PAGE_W, 1, "F")
-
-  // Logo (derecha, proporción 1748×1241 ≈ 1.41:1)
-  if (logoDataUrl) {
-    const logoH = 21
-    const logoW = logoH * (1748 / 1241)
-    doc.addImage(logoDataUrl, "PNG", PAGE_W - MARGIN - logoW, 2.5, logoW, logoH)
-  }
-
-  // Nombre de la empresa
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(15)
-  doc.setTextColor(255, 255, 255)
-  doc.text("RAFSA INDUSTRIAL COATINGS", MARGIN, 13)
-
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7.5)
-  doc.setTextColor(155, 190, 240)
-  doc.text(`Guadalajara, Jalisco  ·  Generado por: ${generatedBy}`, MARGIN, 20)
-
-  // Título del documento
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(13)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("ESTADO DE CUENTA", PAGE_W / 2, 33, { align: "center" })
-
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.3)
-  doc.line(PAGE_W / 2 - 30, 35, PAGE_W / 2 + 30, 35)
-
-  // Fecha y folio
-  const dateStr = date.toLocaleDateString("es-MX", {
-    day: "2-digit", month: "long", year: "numeric",
-  })
-  const folio = `EDC-${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
-
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(`Fecha: ${dateStr}`, MARGIN, 42)
-  doc.text(`Folio: ${folio}`, PAGE_W - MARGIN, 42, { align: "right" })
-}
-
-/** Banda de encabezado de empresa. Fondo casi negro, texto blanco prominente. */
-function drawEmpresaBand(doc: jsPDF, y: number, empresa: EDCEmpresa): number {
-  const H = 14
-
-  // Fondo casi negro
-  doc.setFillColor(BG_EMP.r, BG_EMP.g, BG_EMP.b)
-  doc.rect(MARGIN, y, CONTENT_W, H, "F")
-
-  // Acento izquierdo — gris medio (no color)
-  doc.setFillColor(100, 100, 100)
-  doc.rect(MARGIN, y, 3.5, H, "F")
-
-  // Label "EMPRESA"
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(5.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text("EMPRESA", MARGIN + 6.5, y + 4.8)
-
-  // Nombre en grande
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(11)
-  doc.setTextColor(255, 255, 255)
-  doc.text(trunc(empresa.name.toUpperCase(), 55), MARGIN + 6.5, y + 11)
-
-  // Cantidad de obras (derecha)
-  const obraCount = empresa.obras.length
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7)
-  doc.setTextColor(255, 255, 255)
-  doc.text(`${obraCount} obra${obraCount !== 1 ? "s" : ""} en contrato`, PAGE_W - MARGIN - 2, y + 11, { align: "right" })
-
-  return y + H + 2
-}
-
-/** Bloque completo de una obra: cabecera + cotización + pagos + totales. */
-function drawObraSection(doc: jsPDF, y: number, obra: EDCObra, obraNum: number): number {
-  const HDR_H = 17   // más alto para acomodar el número + nombre centrado
-  const COT_H = 5.5
-
-  // Línea separadora — encima del bloque, antes del número de obra
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.15)
-  doc.line(MARGIN, y, MARGIN + CONTENT_W, y)
-
-  y += 1.5   // pequeño respiro entre la línea y el contenido
-
-  // ── Cabecera de obra — fondo gris claro, texto oscuro ──
-  doc.setFillColor(BG_OBR_HDR.r, BG_OBR_HDR.g, BG_OBR_HDR.b)
-  doc.rect(MARGIN, y, CONTENT_W, HDR_H, "F")
-
-  // Acento izquierdo — gris medio
-  doc.setFillColor(180, 180, 180)
-  doc.rect(MARGIN, y, 2.5, HDR_H, "F")
-
-  const textX = MARGIN + 7   // margen izquierdo con espacio del acento
-
-  // Fila única de metadatos: Obra #X  ·  código | estatus
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(6.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(`Obra #${obraNum}`, textX, y + 6)
-  if (obra.code) {
-    const obraNumW = doc.getTextWidth(`Obra #${obraNum}`)
-    doc.setFontSize(6)
-    doc.text(`· ${trunc(obra.code, 12)}`, textX + obraNumW + 2, y + 6)
-  }
-  doc.setFontSize(6.5)
-  doc.text(statusLabel(obra.status), PAGE_W - MARGIN - 2, y + 6, { align: "right" })
-
-  // Nombre de obra — izquierda, grande (fila inferior)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(11)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(trunc(obra.name, 44), textX, y + 14)
-
-  // Ubicación — derecha, fila del nombre
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(6.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(trunc(obra.location, 28), PAGE_W - MARGIN - 2, y + 14, { align: "right" })
-
-  y += HDR_H
-
-  // ── Franja cotización — gris suave ──
-  doc.setFillColor(BG_COT.r, BG_COT.g, BG_COT.b)
-  doc.rect(MARGIN, y, CONTENT_W, COT_H, "F")
-
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(6)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Valor cotizado del proyecto", MARGIN + 5, y + 4)
-
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(7)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(fmtCurrency(obra.budget), PAGE_W - MARGIN - 2, y + 4, { align: "right" })
-
-  y += COT_H
-
-  // ── Sección de pagos ──
-  // Etiqueta de sección
-  doc.setFont("helvetica", "italic")
-  doc.setFontSize(6.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Movimientos registrados", MARGIN + 2, y + 4.5)
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(6.5)
-  doc.text(
-    `(${obra.pagos.length === 0 ? "ninguno" : `${obra.pagos.length} movimiento${obra.pagos.length !== 1 ? "s" : ""}`})`,
-    MARGIN + 2 + doc.getTextWidth("Movimientos registrados") + 1.5,
-    y + 4.5
-  )
-  y += 7
-
-  if (obra.pagos.length === 0) {
-    doc.setFillColor(255, 255, 255)
-    doc.rect(MARGIN, y, CONTENT_W, 7, "F")
-    doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-    doc.setLineWidth(0.1)
-    doc.line(MARGIN, y + 7, MARGIN + CONTENT_W, y + 7)
-    doc.setFont("helvetica", "italic")
-    doc.setFontSize(7)
-    doc.setTextColor(INK.r, INK.g, INK.b)
-    doc.text("No se han registrado cobros para esta obra.", PAY_CON_X, y + 4.8)
-    y += 7
-  } else {
-    y = drawPayHeader(doc, y)
-    for (let i = 0; i < obra.pagos.length; i++) {
-      if (y + 7.5 > PAGE_H - 22) {
-        doc.addPage()
-        y = MARGIN
-        y = drawPayHeader(doc, y)
-      }
-      y = drawPayRow(doc, y, obra.pagos[i], i)
+  if (detail) {
+    // ── Encabezado compacto (páginas horizontales): logo chico, fecha sola ──
+    if (logo) {
+      const h = 16
+      const w = h * (1748 / 1241)
+      doc.addImage(logo, "PNG", MARGIN, 6, w, h)
+    } else {
+      doc.setFont("helvetica", "bold"); doc.setFontSize(16); txt(doc, BLUE_DK)
+      doc.text("RAFSA", MARGIN, 18)
     }
+    doc.setFont("helvetica", "bold"); doc.setFontSize(15); txt(doc, BLUE_DK)
+    doc.text("ESTADO DE CUENTA · DETALLE POR OBRA", rx, 12, { align: "right" })
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9); txt(doc, BLUE_TXT)
+    doc.text(trunc(subtitle, 80), rx, 18, { align: "right" })
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8); txt(doc, MID)
+    doc.text(dateStrUpper, rx, 23, { align: "right" })
+    fill(doc, BLUE_BAR)
+    doc.rect(MARGIN, 26.5, W - MARGIN * 2, 1.4, "F")
+    return
   }
 
-  // ── Totales de la obra ──
-  const SUM_H = 7
-  const saldo = obra.budget - obra.spent
-
-  // Etiqueta de sección de resumen
-  doc.setFont("helvetica", "italic")
-  doc.setFontSize(6.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Resumen financiero", MARGIN + 2, y + 4.5)
-  y += 7
-
-  // Total cobrado
-  doc.setFillColor(BG_SUM1.r, BG_SUM1.g, BG_SUM1.b)
-  doc.rect(MARGIN, y, CONTENT_W, SUM_H, "F")
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(7)
-  const spentText = fmtCurrency(obra.spent)
-  const spentW = doc.getTextWidth(spentText)
-  // Marcatextos verde pastel detrás del monto
-  doc.setFillColor(180, 235, 175)
-  doc.rect(PAY_MON_END - 1.5 - spentW - 1, y + 1.8, spentW + 2, 4, "F")
-  doc.setFont("helvetica", "normal")
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Total cobrado", PAY_CON_X, y + 5)
-  doc.setFont("helvetica", "bold")
-  doc.text(spentText, PAY_MON_END - 1.5, y + 5, { align: "right" })
-  y += SUM_H
-
-  // Saldo pendiente
-  doc.setFillColor(BG_SUM2.r, BG_SUM2.g, BG_SUM2.b)
-  doc.rect(MARGIN, y, CONTENT_W, SUM_H, "F")
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9.5)
-  const saldoText = fmtCurrency(saldo)
-  const saldoW = doc.getTextWidth(saldoText)
-  // Marcatextos amarillo pastel detrás del monto
-  doc.setFillColor(255, 238, 120)
-  doc.rect(PAY_MON_END - 1.5 - saldoW - 1, y + 1.2, saldoW + 2, 5, "F")
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Saldo pendiente", PAY_CON_X, y + 5)
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9.5)
-  doc.text(saldoText, PAY_MON_END - 1.5, y + 5.5, { align: "right" })
-  y += SUM_H
-
-  // Línea de cierre de la obra
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.2)
-  doc.line(MARGIN, y, MARGIN + CONTENT_W, y)
-
-  return y + 4
-}
-
-/** Encabezado oscuro de la tabla de pagos. */
-function drawPayHeader(doc: jsPDF, y: number): number {
-  const H = 6
-  doc.setFillColor(BG_PAY_HDR.r, BG_PAY_HDR.g, BG_PAY_HDR.b)
-  doc.rect(MARGIN, y, CONTENT_W, H, "F")
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(6.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text("CONCEPTO", PAY_CON_X,         y + 4.2)
-  doc.text("FECHA",    PAY_FEC_X + 1,     y + 4.2)
-  doc.text("MONTO",    PAY_MON_END - 1.5, y + 4.2, { align: "right" })
-  return y + H
-}
-
-/** Fila de pago individual. */
-function drawPayRow(doc: jsPDF, y: number, pago: EDCPago, index: number): number {
-  const H = 7.5
-  const isDeduction = pago.concept === "retention" || pago.concept === "return"
-
-  // Fondo alternado (sólo en filas pares)
-  if (index % 2 === 0) {
-    doc.setFillColor(BG_ROW_ALT.r, BG_ROW_ALT.g, BG_ROW_ALT.b)
-    doc.rect(MARGIN, y, CONTENT_W, H, "F")
-  }
-
-  // Línea divisoria inferior
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.1)
-  doc.line(MARGIN, y + H, MARGIN + CONTENT_W, y + H)
-
-  // Concepto
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(conceptLabel(pago.concept), PAY_CON_X, y + 5.5)
-
-  // Fecha
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(formatDate(pago.date), PAY_FEC_X + 1, y + 5.5)
-
-  // Monto — rojo oscuro si es deducción, negro si es abono
-  if (isDeduction) {
-    doc.setTextColor(RED_DED.r, RED_DED.g, RED_DED.b)
+  // ── Encabezado grande (página 1, vertical) ──
+  if (logo) {
+    const h = 38
+    const w = h * (1748 / 1241)
+    doc.addImage(logo, "PNG", MARGIN, 4, w, h)
   } else {
-    doc.setTextColor(INK.r, INK.g, INK.b)
+    doc.setFont("helvetica", "bold"); doc.setFontSize(36); txt(doc, BLUE_DK)
+    doc.text("RAFSA", MARGIN, 30)
   }
-  doc.text(
-    (isDeduction ? "−" : "") + fmtCurrency(Math.abs(pago.amount)),
-    PAY_MON_END - 1.5,
-    y + 5.5,
-    { align: "right" }
-  )
 
-  return y + H
+  doc.setFont("helvetica", "bold"); doc.setFontSize(16); txt(doc, BLUE_DK)
+  doc.text("ESTADO DE CUENTA", rx, 15, { align: "right" })
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9.5); txt(doc, BLUE_TXT)
+  doc.text(trunc(subtitle, 70), rx, 21.5, { align: "right" })
+
+  let my = 27.5
+  doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); txt(doc, MID)
+  if (showDate) { doc.text(`FECHA DE CORTE: ${dateStrUpper}`, rx, my, { align: "right" }); my += 5 }
+  doc.text(`ELABORÓ: ${generatedBy}`, rx, my, { align: "right" })
+
+  fill(doc, BLUE_BAR)
+  doc.rect(MARGIN, 44, W - MARGIN * 2, 1.4, "F")
 }
 
-/** Barra de subtotal de empresa — azul, texto blanco. */
-function drawEmpresaSubtotal(
-  doc: jsPDF, y: number,
-  budget: number, spent: number,
-  empresaNombre: string, obraCount: number
-): number {
-  const H = 13
-  const saldo = budget - spent
-
-  doc.setFillColor(BG_SUBTOT.r, BG_SUBTOT.g, BG_SUBTOT.b)
-  doc.rect(MARGIN, y, CONTENT_W, H, "F")
-
-  // Etiqueta "SUBTOTAL" pequeña arriba
+function drawFooter(doc: jsPDF, W: number, H: number) {
+  const barH = 9
+  const y = H - barH - 3
+  fill(doc, BLUE_BAR)
+  doc.rect(MARGIN, y, W - MARGIN * 2, barH, "F")
+  const text =
+    "RECUBRIMIENTOS TÉCNICOS RAF S.A. DE C.V.   ·   AV. SEBASTIÁN BACH 4978, COL. PRADOS DE GUADALUPE, ZAPOPAN, JALISCO, C.P. 45030   ·   T. 33 1057 8344   ·   RFC: RTR220502PH6   ·   rafsa.com.mx"
   doc.setFont("helvetica", "normal")
-  doc.setFontSize(5.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text("SUBTOTAL EMPRESA", MARGIN + 5, y + 4.5)
-
-  // Nombre de empresa + conteo de obras
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(7.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text(
-    `${trunc(empresaNombre, 40)}  ·  ${obraCount} obra${obraCount !== 1 ? "s" : ""}`,
-    MARGIN + 5, y + 10
-  )
-
-  // Cifras a la derecha
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7)
-  doc.text(`Cobrado: ${fmtCurrency(spent)}`, PAY_FEC_X - 14, y + 10)
-
-  doc.setFont("helvetica", "bold")
-  doc.text(`Pendiente: ${fmtCurrency(saldo)}`, PAY_MON_END - 1.5, y + 10, { align: "right" })
-
-  return y + H
+  let fs = 6
+  doc.setFontSize(fs)
+  const maxW = W - MARGIN * 2 - 8
+  while (doc.getTextWidth(text) > maxW && fs > 4) { fs -= 0.2; doc.setFontSize(fs) }
+  txt(doc, WHITE)
+  doc.text(text, W / 2, y + barH / 2 + 1.2, { align: "center" })
 }
 
-/** Sección de resumen general al final del documento. */
-function drawGrandTotal(
-  doc: jsPDF, y: number,
-  budget: number, spent: number,
-  summaries: { name: string; obraCount: number; spent: number; saldo: number }[]
-) {
-  const grandSaldo = budget - spent
+// ── PÁGINA 1: RESUMEN (vertical) ──────────────────────────────────────────────
 
-  // Separación extra respecto a la última sección
-  y += 10
+function drawResumenPage(doc: jsPDF, empresas: EDCEmpresa[], date: Date, generatedBy: string, multi: boolean, logo: string | null) {
+  const W = doc.internal.pageSize.getWidth()
+  const H = doc.internal.pageSize.getHeight()
+  const contentW = W - MARGIN * 2
 
-  // Regla doble de apertura
-  doc.setDrawColor(BLUE_R, BLUE_G, BLUE_B)
-  doc.setLineWidth(0.8)
-  doc.line(MARGIN, y, MARGIN + CONTENT_W, y)
-  doc.setLineWidth(0.25)
-  doc.line(MARGIN, y + 1.5, MARGIN + CONTENT_W, y + 1.5)
-  y += 4
+  // Columnas del resumen
+  const cNo = MARGIN
+  const wNo = 10
+  const cObra = cNo + wNo
+  const wStatus = 28, wMonto = 30, wPag = 30, wSaldo = 30, wPct = 16
+  const wObra = contentW - wNo - wStatus - wMonto - wPag - wSaldo - wPct
+  const cStatus = cObra + wObra
+  const cMonto = cStatus + wStatus
+  const cPag = cMonto + wMonto
+  const cSaldo = cPag + wPag
+  const cPct = cSaldo + wSaldo
+  const rEnd = MARGIN + contentW
 
-  // ── Encabezado "RESUMEN GENERAL" ──
-  const TITLE_H = 10
-  doc.setFillColor(8, 28, 60)
-  doc.rect(MARGIN, y, CONTENT_W, TITLE_H, "F")
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9)
-  doc.setTextColor(255, 255, 255)
-  doc.text("RESUMEN GENERAL", MARGIN + 5, y + 7)
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(6.5)
-  doc.setTextColor(180, 210, 255)
-  doc.text("Consolidado de todas las empresas y obras del documento", PAGE_W - MARGIN - 2, y + 7, { align: "right" })
-  y += TITLE_H
+  let y = HEADER_BOTTOM + 2
 
-  // ── Columnas encabezado ──
-  const COL_H = 6
-  doc.setFillColor(22, 58, 100)
-  doc.rect(MARGIN, y, CONTENT_W, COL_H, "F")
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(6)
-  doc.setTextColor(255, 255, 255)
-  doc.text("EMPRESA", MARGIN + 5, y + 4.2)
-  doc.text("OBRAS", MARGIN + 100, y + 4.2, { align: "right" })
-  doc.text("COBRADO", MARGIN + 140, y + 4.2, { align: "right" })
-  doc.text("PENDIENTE", PAY_MON_END - 1.5, y + 4.2, { align: "right" })
-  y += COL_H
+  // ── Leyenda del documento (fecha de generación + folio + descripción) ──
+  {
+    const ymd = `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, "0")}${String(date.getDate()).padStart(2, "0")}`
+    const dateLong = date.toLocaleDateString("es-MX", { day: "numeric", month: "long", year: "numeric" })
 
-  // ── Filas por empresa ──
-  const ROW_H = 8
-  summaries.forEach((s, i) => {
-    if (i % 2 === 0) {
-      doc.setFillColor(BG_ROW_ALT.r, BG_ROW_ALT.g, BG_ROW_ALT.b)
-      doc.rect(MARGIN, y, CONTENT_W, ROW_H, "F")
-    }
-    doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-    doc.setLineWidth(0.1)
-    doc.line(MARGIN, y + ROW_H, MARGIN + CONTENT_W, y + ROW_H)
-
+    doc.setFont("helvetica", "bold"); doc.setFontSize(8); txt(doc, INK)
+    doc.text("Fecha de generación:", MARGIN, y + 3)
+    const lblW = doc.getTextWidth("Fecha de generación: ")
     doc.setFont("helvetica", "normal")
-    doc.setFontSize(7.5)
-    doc.setTextColor(INK.r, INK.g, INK.b)
-    doc.text(trunc(s.name, 45), MARGIN + 5, y + 5.5)
-
-    doc.setFontSize(7)
-    doc.text(`${s.obraCount}`, MARGIN + 100, y + 5.5, { align: "right" })
-    doc.text(fmtCurrency(s.spent), MARGIN + 140, y + 5.5, { align: "right" })
+    doc.text(dateLong, MARGIN + lblW, y + 3)
 
     doc.setFont("helvetica", "bold")
-    doc.text(fmtCurrency(s.saldo), PAY_MON_END - 1.5, y + 5.5, { align: "right" })
-    y += ROW_H
-  })
+    doc.text(`Folio: EDC-${ymd}`, MARGIN + contentW, y + 3, { align: "right" })
+    y += 8
 
-  // ── Fila de total general ──
-  const TOT_H = 12
-  doc.setFillColor(8, 28, 60)
-  doc.rect(MARGIN, y, CONTENT_W, TOT_H, "F")
+    const n = empresas.length
+    const intro =
+      `El presente documento refleja el estado financiero de las obras contratadas con ` +
+      `${n === 1 ? "la empresa indicada" : `las ${n} empresas indicadas`}, detallando el valor del ` +
+      `contrato, el anticipo y fondo de garantía pactados, las estimaciones y su neto a facturar, así como ` +
+      `los cobros registrados y el saldo pendiente por proyecto.`
+    doc.setFont("helvetica", "italic"); doc.setFontSize(7.8); txt(doc, MID)
+    const lines = doc.splitTextToSize(intro, contentW - 4)
+    doc.text(lines, MARGIN + 2, y + 3.5)
+    y += lines.length * 4.3 + 5
 
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(7.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text("TOTAL", MARGIN + 5, y + 8)
+    stroke(doc, RULE); doc.setLineWidth(0.2)
+    doc.line(MARGIN, y, MARGIN + contentW, y)
+    y += 5
+  }
 
-  doc.setFontSize(7)
-  doc.setFont("helvetica", "normal")
-  doc.text(fmtCurrency(spent), MARGIN + 140, y + 8, { align: "right" })
+  const newPage = () => {
+    doc.addPage("letter", "portrait")
+    drawDocHeader(doc, W, date, logo, multi ? "RESUMEN CONSOLIDADO DE EMPRESAS" : (empresas[0]?.name || "").toUpperCase(), false, generatedBy, false)
+    return HEADER_BOTTOM + 4
+  }
 
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(9)
-  doc.text(fmtCurrency(grandSaldo), PAY_MON_END - 1.5, y + 8, { align: "right" })
+  // Totales globales
+  let gPag = 0, gTrab = 0, gSaldo = 0, gExigible = 0
+
+  const drawColHeader = (yy: number): number => {
+    const h = 7
+    fill(doc, GRAY_HDR)
+    doc.rect(MARGIN, yy, contentW, h, "F")
+    stroke(doc, RULE); doc.setLineWidth(0.1)
+    doc.rect(MARGIN, yy, contentW, h)
+    doc.setFont("helvetica", "bold"); doc.setFontSize(6.8); txt(doc, INK)
+    doc.text("No.", cNo + 2, yy + 4.6)
+    doc.text("OBRA", cObra + 2, yy + 4.6)
+    doc.text("ESTATUS", cStatus + 2, yy + 4.6)
+    doc.text("MONTO C/IVA", cMonto + wMonto - 2, yy + 4.6, { align: "right" })
+    doc.text("PAGADO", cPag + wPag - 2, yy + 4.6, { align: "right" })
+    doc.text("SALDO", cSaldo + wSaldo - 2, yy + 4.6, { align: "right" })
+    doc.text("% PAG.", cPct + wPct - 2, yy + 4.6, { align: "right" })
+    return yy + h
+  }
+
+  const drawTotalRow = (yy: number, label: string, monto: number, pag: number, saldo: number, blue: boolean): number => {
+    const h = 7.5
+    fill(doc, blue ? BLUE_DK : GRAY_SUB)
+    doc.rect(MARGIN, yy, contentW, h, "F")
+    stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, yy, contentW, h)
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7); txt(doc, blue ? WHITE : INK)
+    doc.text(label, cStatus + wStatus - 2, yy + 5, { align: "right" })
+    doc.text(fmtMoney(monto), cMonto + wMonto - 2, yy + 5, { align: "right" })
+    doc.text(fmtMoney(pag), cPag + wPag - 2, yy + 5, { align: "right" })
+    doc.text(fmtMoney(saldo), cSaldo + wSaldo - 2, yy + 5, { align: "right" })
+    const pct = monto > 0 ? Math.round((pag / monto) * 1000) / 10 : 0
+    doc.text(`${pct}%`, cPct + wPct - 2, yy + 5, { align: "right" })
+    return yy + h
+  }
+
+  for (let ei = 0; ei < empresas.length; ei++) {
+    const empresa = empresas[ei]
+
+    if (y + 22 > H - 20) y = newPage()
+
+    // Barra de sección
+    const barH = 7
+    fill(doc, BLUE_BAR)
+    doc.rect(MARGIN, y, contentW, barH, "F")
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); txt(doc, WHITE)
+    const barTitle = multi
+      ? `RESUMEN POR OBRA · ${trunc(empresa.name.toUpperCase(), 60)}`
+      : "RESUMEN POR OBRA · IMPORTES CON IVA (MXN)"
+    doc.text(barTitle, cNo + 2, y + 4.8)
+    y += barH
+
+    y = drawColHeader(y)
+
+    let eMonto = 0, ePag = 0, eSaldo = 0
+    let ejMonto = 0, ejPag = 0, ejSaldo = 0
+    let peMonto = 0, pePag = 0, peSaldo = 0
+    let idx = 0
+
+    for (const obra of empresa.obras) {
+      if (y + 7 > H - 20) { y = newPage(); y = drawColHeader(y) }
+      idx++
+      const rowH = 7
+      const monto = obra.budget
+      const pag = obra.spent
+      const saldo = monto - pag
+      const pct = monto > 0 ? Math.round((pag / monto) * 1000) / 10 : 0
+      const st = statusStyle(obra.status)
+
+      if (idx % 2 === 0) { fill(doc, { r: 248, g: 249, b: 250 }); doc.rect(MARGIN, y, contentW, rowH, "F") }
+      stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, rowH)
+
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7); txt(doc, INK)
+      doc.text(String(idx), cNo + wNo / 2, y + 4.8, { align: "center" })
+      doc.text(trunc(obra.name, 42), cObra + 2, y + 4.8)
+      doc.setFont("helvetica", "bold"); doc.setFontSize(6.3); txt(doc, st.color)
+      doc.text(st.label, cStatus + 2, y + 4.7)
+      doc.setFont("helvetica", "normal"); doc.setFontSize(7); txt(doc, INK)
+      doc.text(fmtMoney(monto), cMonto + wMonto - 2, y + 4.8, { align: "right" })
+      doc.text(fmtMoney(pag), cPag + wPag - 2, y + 4.8, { align: "right" })
+      doc.setFont("helvetica", "bold")
+      doc.text(fmtMoney(saldo), cSaldo + wSaldo - 2, y + 4.8, { align: "right" })
+      doc.setFont("helvetica", "normal"); txt(doc, MID)
+      doc.text(`${pct}%`, cPct + wPct - 2, y + 4.8, { align: "right" })
+      y += rowH
+
+      eMonto += monto; ePag += pag; eSaldo += saldo
+      if (isEjecutada(obra.status)) { ejMonto += monto; ejPag += pag; ejSaldo += saldo; gExigible += saldo }
+      else { peMonto += monto; pePag += pag; peSaldo += saldo }
+    }
+
+    // Subtotales por grupo
+    if (ejMonto !== 0 || ejPag !== 0) {
+      if (y + 8 > H - 20) y = newPage()
+      y = drawTotalRow(y, "SUBTOTAL OBRA EJECUTADA", ejMonto, ejPag, ejSaldo, false)
+    }
+    if (peMonto !== 0) {
+      if (y + 8 > H - 20) y = newPage()
+      y = drawTotalRow(y, "OBRA CONTRATADA POR EJERCER (POR INICIAR)", peMonto, pePag, peSaldo, false)
+    }
+    // Total de la empresa
+    if (y + 8 > H - 20) y = newPage()
+    y = drawTotalRow(y, multi ? `SUBTOTAL ${trunc(empresa.name.toUpperCase(), 34)}` : "TOTAL GENERAL", eMonto, ePag, eSaldo, true)
+
+    gPag += ePag; gTrab += eMonto; gSaldo += eSaldo
+    y += 4
+  }
+
+  // Total general consolidado (solo si múltiples empresas)
+  if (multi) {
+    if (y + 9 > H - 20) y = newPage()
+    y = drawTotalRow(y, "TOTAL GENERAL (TODAS LAS EMPRESAS)", gTrab, gPag, gSaldo, true)
+    y += 3
+  }
+
+  // ── Saldo exigible (recuadro resaltado) ──
+  if (y + 12 > H - 20) y = newPage()
+  const boxH = 9
+  const label = "SALDO EXIGIBLE A LA FECHA (SOLO OBRA EJECUTADA):"
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9)
+  const valText = fmtMoney(gExigible)
+  const valW = doc.getTextWidth(valText) + 8
+  const labelW = doc.getTextWidth(label)
+  const totalW = labelW + 6 + valW
+  const startX = MARGIN + (contentW - totalW) / 2
+  txt(doc, BLUE_DK)
+  doc.text(label, startX, y + 6)
+  fill(doc, AMBER_HL)
+  doc.rect(startX + labelW + 6, y, valW, boxH, "F")
+  stroke(doc, { r: 214, g: 180, b: 60 }); doc.setLineWidth(0.2)
+  doc.rect(startX + labelW + 6, y, valW, boxH)
+  txt(doc, INK)
+  doc.text(valText, startX + labelW + 6 + valW - 4, y + 6, { align: "right" })
+  y += boxH + 8
+
+  // ── Notas ──
+  if (y + 30 > H - 20) y = newPage()
+  doc.setFont("helvetica", "bold"); doc.setFontSize(7.5); txt(doc, INK)
+  doc.text("NOTAS:", MARGIN, y)
+  y += 5
+  const notas = [
+    "1. Todos los importes incluyen IVA y están expresados en pesos mexicanos (MXN).",
+    "2. El saldo exigible corresponde únicamente a la obra ejecutada; la obra contratada por iniciar no forma parte del saldo exigible.",
+    "3. El neto a facturar de cada estimación descuenta la retención por fondo de garantía y la amortización de anticipo.",
+  ]
+  doc.setFont("helvetica", "normal"); doc.setFontSize(7); txt(doc, MID)
+  for (const n of notas) {
+    const lines = doc.splitTextToSize(n, contentW)
+    doc.text(lines, MARGIN, y)
+    y += lines.length * 4 + 1
+  }
 }
 
-/** Pie de página con folio y número de hoja. */
-function drawPageFooter(doc: jsPDF, page: number, total: number) {
-  const fy = PAGE_H - 7
+// ── DETALLE (horizontal) ───────────────────────────────────────────────────
 
-  doc.setDrawColor(RULE.r, RULE.g, RULE.b)
-  doc.setLineWidth(0.2)
-  doc.line(MARGIN, fy - 3, PAGE_W - MARGIN, fy - 3)
+type EstCols = {
+  est: { x: number; w: number }
+  desc: { x: number; w: number }
+  monto: { x: number; w: number }
+  amortizacion: { x: number; w: number }
+  retencion: { x: number; w: number }
+  neto: { x: number; w: number }
+  fac: { x: number; w: number }
+  facturado: { x: number; w: number }
+  pagado: { x: number; w: number }
+}
 
-  doc.setFont("helvetica", "italic")
-  doc.setFontSize(6.5)
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text("Generado por RAFSA ERP  ·  Documento confidencial", MARGIN, fy)
+/** Columnas fijas de la tabla de estimaciones (las estimaciones van en filas). */
+function estCols(W: number): EstCols {
+  const contentW = W - MARGIN * 2
+  const wEst = 13, wMonto = 28, wAmort = 24, wRet = 24, wNeto = 28, wFac = 30, wFacturado = 26, wPagado = 24
+  const wDesc = contentW - (wEst + wMonto + wAmort + wRet + wNeto + wFac + wFacturado + wPagado)
+  let x = MARGIN
+  const est = { x, w: wEst }; x += wEst
+  const desc = { x, w: wDesc }; x += wDesc
+  const monto = { x, w: wMonto }; x += wMonto
+  const amortizacion = { x, w: wAmort }; x += wAmort
+  const retencion = { x, w: wRet }; x += wRet
+  const neto = { x, w: wNeto }; x += wNeto
+  const fac = { x, w: wFac }; x += wFac
+  const facturado = { x, w: wFacturado }; x += wFacturado
+  const pagado = { x, w: wPagado }; x += wPagado
+  return { est, desc, monto, amortizacion, retencion, neto, fac, facturado, pagado }
+}
 
-  doc.setFont("helvetica", "normal")
-  doc.setTextColor(INK.r, INK.g, INK.b)
-  doc.text(`Página ${page} de ${total}`, PAGE_W - MARGIN, fy, { align: "right" })
+const facStatusLabelShort = (s: string | null): string => {
+  if (!s) return ""
+  const m: Record<string, string> = { pending: "Pendiente", paid: "Pagada", partial: "Saldo pend." }
+  return m[s] ?? s
+}
+
+// Color del estado de la factura: Pagada=verde, Saldo pend.=naranja, Pendiente=rojo
+const facStatusColor = (s: string | null): RGB => {
+  if (s === "paid") return GREEN
+  if (s === "partial") return ORANGE
+  if (s === "pending") return RED_DED
+  return MID
+}
+
+function drawDetailEmpresaBar(doc: jsPDF, y: number, W: number, name: string): number {
+  const contentW = W - MARGIN * 2
+  const h = 8
+  fill(doc, BLUE_DK)
+  doc.rect(MARGIN, y, contentW, h, "F")
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9); txt(doc, WHITE)
+  doc.text(`EMPRESA: ${trunc(name.toUpperCase(), 80)}`, MARGIN + 3, y + 5.5)
+  return y + h + 2
+}
+
+// Fila lógica de la tabla de estimaciones
+type EstRow = {
+  label: string
+  desc: string
+  isAnticipo: boolean
+  monto: number
+  retencion: number
+  amortizacion: number
+  neto: number
+  facNum: string | null
+  facAmt: number | null
+  facPaid: number
+  facStatus: string | null
+}
+
+function contractStripHeight(obra: EDCObra): number {
+  const hasLine2 = obra.anticipoAmount > 0 || obra.anticipoPct > 0 || obra.garantiaAmount > 0 || obra.garantiaPct > 0
+  return hasLine2 ? 11 : 6.5
+}
+
+function drawObraDetail(doc: jsPDF, y: number, obra: EDCObra, newPage: () => number): number {
+  const W = doc.internal.pageSize.getWidth()
+  const H = doc.internal.pageSize.getHeight()
+  const contentW = W - MARGIN * 2
+  const rEnd = MARGIN + contentW
+  const bottom = H - 16
+  const cols = estCols(W)
+  const rowH = 8.5
+
+  // Filas de estimaciones (Anticipo → #) y, aparte, aditivas
+  const estRows: EstRow[] = []
+  const anticipo = obra.estimaciones.find((e) => e.isAnticipo)
+  if (anticipo) estRows.push({
+    label: "Anticipo", desc: anticipo.description, isAnticipo: true,
+    monto: anticipo.amount, retencion: 0, amortizacion: 0, neto: anticipo.neto,
+    facNum: anticipo.facturaNumber, facAmt: anticipo.facturaAmount, facPaid: anticipo.facturaPaid, facStatus: anticipo.facturaStatus,
+  })
+  obra.estimaciones.filter((e) => !e.isAnticipo).sort((a, b) => a.number - b.number).forEach((e) => {
+    estRows.push({
+      label: `#${e.number}`, desc: e.description, isAnticipo: false,
+      monto: e.amount, retencion: e.retencion, amortizacion: e.amortizacion, neto: e.neto,
+      facNum: e.facturaNumber, facAmt: e.facturaAmount, facPaid: e.facturaPaid, facStatus: e.facturaStatus,
+    })
+  })
+  const aditRows: EstRow[] = obra.aditivas.map((ad) => ({
+    label: "Aditiva", desc: ad.description, isAnticipo: false,
+    monto: ad.amount, retencion: 0, amortizacion: 0, neto: ad.amount,
+    facNum: ad.facturaNumber, facAmt: ad.facturaAmount, facPaid: ad.facturaPaid, facStatus: ad.facturaStatus,
+  }))
+
+  // Asegurar que quepa cabecera + franja + encabezado tabla + 1 fila
+  const stripH = contractStripHeight(obra)
+  if (y + 8 + stripH + 1.5 + 6 + rowH > bottom) y = newPage()
+
+  // ── Barra de obra + chip de estatus ──
+  y = drawObraBar(doc, y, W, obra, false)
+
+  // ── Franja de contrato ──
+  y = drawContractStrip(doc, y, contentW, obra)
+
+  // ── Encabezado de la tabla ──
+  y = drawEstHeader(doc, y, cols)
+
+  // ── Filas ──
+  let totMonto = 0, totAmort = 0, totRet = 0, totNeto = 0, totFacturado = 0, totPagado = 0
+  let vi = 0
+  const drawRow = (row: EstRow) => {
+    if (y + rowH > bottom) {
+      y = newPage()
+      y = drawObraBar(doc, y, W, obra, true)
+      y = drawEstHeader(doc, y, cols)
+    }
+    drawEstRow(doc, y, cols, row, vi, rowH, rEnd)
+    totMonto += row.monto; totAmort += row.amortizacion; totRet += row.retencion
+    totNeto += row.neto; totFacturado += row.facAmt ?? 0; totPagado += row.facPaid
+    vi++; y += rowH
+  }
+
+  if (estRows.length === 0 && aditRows.length === 0) {
+    fill(doc, WHITE); doc.rect(MARGIN, y, contentW, rowH, "F")
+    stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, rowH)
+    doc.setFont("helvetica", "italic"); doc.setFontSize(7); txt(doc, LITE)
+    doc.text("Sin estimaciones registradas para esta obra.", cols.desc.x + 2, y + 5.8)
+    y += rowH
+  } else {
+    estRows.forEach(drawRow)
+    if (aditRows.length > 0) {
+      // Espaciador delgado dentro de la misma tabla, luego aditivas
+      if (y + 4.5 + rowH > bottom) {
+        y = newPage()
+        y = drawObraBar(doc, y, W, obra, true)
+        y = drawEstHeader(doc, y, cols)
+      } else if (estRows.length > 0) {
+        y = drawSpacerRow(doc, y, cols, rEnd)
+      }
+      aditRows.forEach(drawRow)
+    }
+  }
+
+  // ── Fondo de garantía (solo si aplica) — separado por otro espaciador ──
+  const hasGarantia = obra.garantiaAmount > 0 || obra.garantiaPct > 0
+  if (hasGarantia) {
+    const hadContent = estRows.length > 0 || aditRows.length > 0
+    if (y + 4.5 + rowH > bottom) {
+      y = newPage()
+      y = drawObraBar(doc, y, W, obra, true)
+      y = drawEstHeader(doc, y, cols)
+    } else if (hadContent) {
+      y = drawSpacerRow(doc, y, cols, rEnd)
+    }
+    drawGarantiaRow(doc, y, cols, obra, rEnd, rowH)
+    y += rowH
+  }
+
+  // ── Fila de totales de la tabla ──
+  const th = 7.5
+  if (y + th > bottom) { y = newPage(); y = drawEstHeader(doc, y, cols) }
+  fill(doc, BG_COT); doc.rect(MARGIN, y, contentW, th, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, th)
+  doc.setFont("helvetica", "bold"); doc.setFontSize(6.8); txt(doc, INK)
+  doc.text("TOTALES", cols.desc.x + 2, y + 5)
+  doc.text(fmtNum(totMonto), cols.monto.x + cols.monto.w - 2, y + 5, { align: "right" })
+  doc.text(fmtNum(totAmort), cols.amortizacion.x + cols.amortizacion.w - 2, y + 5, { align: "right" })
+  doc.text(fmtNum(totRet), cols.retencion.x + cols.retencion.w - 2, y + 5, { align: "right" })
+  doc.text(fmtNum(totNeto), cols.neto.x + cols.neto.w - 2, y + 5, { align: "right" })
+  doc.text(fmtNum(totFacturado), cols.facturado.x + cols.facturado.w - 2, y + 5, { align: "right" })
+  doc.text(fmtNum(totPagado), cols.pagado.x + cols.pagado.w - 2, y + 5, { align: "right" })
+  y += th
+
+  // ── Resumen de la obra (cobrado real / saldo) ──
+  y = drawObraSummary(doc, y, W, obra)
+
+  return y + 5
+}
+
+/** Barra de título de obra + chip de estatus. `cont` marca continuación. */
+function drawObraBar(doc: jsPDF, y: number, W: number, obra: EDCObra, cont: boolean): number {
+  const contentW = W - MARGIN * 2
+  const rEnd = MARGIN + contentW
+  const hBar = 8
+  fill(doc, BLUE_BAR)
+  doc.rect(MARGIN, y, contentW, hBar, "F")
+  doc.setFont("helvetica", "bold"); doc.setFontSize(8.5); txt(doc, WHITE)
+  let title = obra.name.toUpperCase()
+  if (obra.code) title += `   ·   ${obra.code}`
+  if (cont) title += "   (continuación)"
+  doc.text(trunc(title, 95), MARGIN + 3, y + 5.5)
+
+  const st = statusStyle(obra.status)
+  const chipLabel = `OBRA ${st.label}`
+  doc.setFontSize(7)
+  const chipW = doc.getTextWidth(chipLabel) + 8
+  fill(doc, st.color)
+  doc.rect(rEnd - chipW - 2, y + 1.4, chipW, hBar - 2.8, "F")
+  txt(doc, WHITE); doc.setFont("helvetica", "bold")
+  doc.text(chipLabel, rEnd - chipW - 2 + chipW / 2, y + 5.4, { align: "center" })
+  return y + hBar
+}
+
+function drawContractStrip(doc: jsPDF, y: number, contentW: number, obra: EDCObra): number {
+  const h = contractStripHeight(obra)
+  fill(doc, { r: 245, g: 247, b: 249 })
+  doc.rect(MARGIN, y, contentW, h, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, h)
+
+  const montoContrato = obra.contractTotal > 0 ? obra.contractTotal : obra.budget
+  const seg = (label: string, value: string) => ({ label, value })
+
+  const line1 = [
+    seg("Monto contrato:", fmtMoney(montoContrato)),
+    seg("Cotización:", fmtMoney(obra.cotizacion)),
+    ...(obra.aditivasTotal > 0 ? [seg("Aditivas:", fmtMoney(obra.aditivasTotal))] : []),
+  ]
+  const line2 = [
+    ...(obra.anticipoAmount > 0 || obra.anticipoPct > 0
+      ? [seg(`Anticipo (${obra.anticipoPct}%):`, `${fmtMoney(obra.anticipoAmount)}${obra.anticipoPaid > 0 ? ` (pagado ${fmtMoney(obra.anticipoPaid)})` : ""}`)]
+      : []),
+    ...(obra.garantiaAmount > 0 || obra.garantiaPct > 0
+      ? [seg(`Fondo de garantía (${obra.garantiaPct}%):`, fmtMoney(obra.garantiaAmount))] : []),
+  ]
+
+  const drawLine = (items: { label: string; value: string }[], ly: number) => {
+    let x = MARGIN + 3
+    for (const it of items) {
+      doc.setFont("helvetica", "normal"); doc.setFontSize(6.4); txt(doc, MID)
+      doc.text(it.label, x, ly)
+      x += doc.getTextWidth(it.label) + 1.5
+      doc.setFont("helvetica", "bold"); txt(doc, INK)
+      doc.text(it.value, x, ly)
+      x += doc.getTextWidth(it.value) + 7
+    }
+  }
+  if (line2.length > 0) { drawLine(line1, y + 4.3); drawLine(line2, y + 8.8) }
+  else drawLine(line1, y + 4.4)
+
+  return y + h + 1.5
+}
+
+function drawEstHeader(doc: jsPDF, y: number, cols: EstCols): number {
+  const W = doc.internal.pageSize.getWidth()
+  const contentW = W - MARGIN * 2
+  const h = 6
+  fill(doc, GRAY_HDR)
+  doc.rect(MARGIN, y, contentW, h, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, h)
+  doc.setFont("helvetica", "bold"); doc.setFontSize(5.6); txt(doc, INK)
+  doc.text("EST.", cols.est.x + cols.est.w / 2, y + 4, { align: "center" })
+  doc.text("DESCRIPCIÓN", cols.desc.x + 2, y + 4)
+  doc.text("MONTO C/IVA", cols.monto.x + cols.monto.w - 2, y + 4, { align: "right" })
+  doc.text("AMORTIZACIÓN", cols.amortizacion.x + cols.amortizacion.w - 2, y + 4, { align: "right" })
+  doc.text("RETENCIÓN", cols.retencion.x + cols.retencion.w - 2, y + 4, { align: "right" })
+  doc.text("NETO A FACTURAR", cols.neto.x + cols.neto.w - 2, y + 4, { align: "right" })
+  doc.text("FACTURA", cols.fac.x + 2, y + 4)
+  doc.text("FACTURADO", cols.facturado.x + cols.facturado.w - 2, y + 4, { align: "right" })
+  doc.text("PAGADO", cols.pagado.x + cols.pagado.w - 2, y + 4, { align: "right" })
+  // separadores verticales
+  ;[cols.est.x, cols.desc.x, cols.monto.x, cols.amortizacion.x, cols.retencion.x, cols.neto.x, cols.fac.x, cols.facturado.x, cols.pagado.x, MARGIN + contentW].forEach((vx) => doc.line(vx, y, vx, y + h))
+  return y + h
+}
+
+function drawEstRow(doc: jsPDF, y: number, cols: EstCols, row: EstRow, index: number, rowH: number, rEnd: number) {
+  const contentW = rEnd - MARGIN
+  if (index % 2 === 1) { fill(doc, { r: 248, g: 249, b: 250 }); doc.rect(MARGIN, y, contentW, rowH, "F") }
+
+  // rejilla
+  stroke(doc, RULE); doc.setLineWidth(0.1)
+  ;[cols.est.x, cols.desc.x, cols.monto.x, cols.amortizacion.x, cols.retencion.x, cols.neto.x, cols.fac.x, cols.facturado.x, cols.pagado.x, rEnd].forEach((vx) => doc.line(vx, y, vx, y + rowH))
+  doc.line(MARGIN, y + rowH, rEnd, y + rowH)
+
+  const baseY = y + 5.2
+
+  // EST label
+  doc.setFont("helvetica", "bold"); doc.setFontSize(6.6)
+  txt(doc, row.isAnticipo ? BLUE_TXT : INK)
+  doc.text(row.label, cols.est.x + cols.est.w / 2, baseY, { align: "center" })
+
+  // Descripción
+  doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); txt(doc, INK)
+  doc.text(trunc(row.desc, Math.floor(cols.desc.w / 1.5)), cols.desc.x + 2, baseY)
+
+  // Monto
+  doc.text(fmtNum(row.monto), cols.monto.x + cols.monto.w - 2, baseY, { align: "right" })
+
+  // Amortización (solo cantidad)
+  txt(doc, row.amortizacion > 0 ? RED_DED : LITE)
+  doc.text(row.amortizacion > 0 ? fmtNum(row.amortizacion) : "—", cols.amortizacion.x + cols.amortizacion.w - 2, baseY, { align: "right" })
+
+  // Retención (solo cantidad)
+  txt(doc, row.retencion > 0 ? RED_DED : LITE)
+  doc.text(row.retencion > 0 ? fmtNum(row.retencion) : "—", cols.retencion.x + cols.retencion.w - 2, baseY, { align: "right" })
+
+  // Neto a facturar
+  doc.setFont("helvetica", "bold"); txt(doc, INK)
+  doc.text(fmtNum(row.neto), cols.neto.x + cols.neto.w - 2, baseY, { align: "right" })
+
+  // Factura (número + estado)
+  if (row.facNum) {
+    doc.setFont("helvetica", "normal"); doc.setFontSize(6.6); txt(doc, INK)
+    doc.text(trunc(row.facNum, 15), cols.fac.x + 2, y + 3.8)
+    doc.setFont("helvetica", "bold"); doc.setFontSize(5.2); txt(doc, facStatusColor(row.facStatus))
+    doc.text(facStatusLabelShort(row.facStatus), cols.fac.x + 2, y + 6.8)
+  } else {
+    doc.setFont("helvetica", "italic"); doc.setFontSize(6); txt(doc, LITE)
+    doc.text("Sin factura", cols.fac.x + 2, baseY)
+  }
+
+  // Facturado
+  doc.setFont("helvetica", "normal"); doc.setFontSize(6.8)
+  txt(doc, row.facAmt != null ? INK : LITE)
+  doc.text(row.facAmt != null ? fmtNum(row.facAmt) : "—", cols.facturado.x + cols.facturado.w - 2, baseY, { align: "right" })
+
+  // Pagado
+  txt(doc, row.facPaid > 0 ? GREEN : LITE)
+  doc.text(row.facPaid > 0 ? fmtNum(row.facPaid) : "—", cols.pagado.x + cols.pagado.w - 2, baseY, { align: "right" })
+}
+
+/** Fila espaciadora delgada y vacía dentro de la misma tabla (separa estimaciones de aditivas). */
+function drawSpacerRow(doc: jsPDF, y: number, cols: EstCols, rEnd: number): number {
+  const h = 3.4
+  fill(doc, { r: 242, g: 244, b: 246 })
+  doc.rect(MARGIN, y, rEnd - MARGIN, h, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1)
+  ;[cols.est.x, cols.desc.x, cols.monto.x, cols.amortizacion.x, cols.retencion.x, cols.neto.x, cols.fac.x, cols.facturado.x, cols.pagado.x, rEnd].forEach((vx) => doc.line(vx, y, vx, y + h))
+  doc.line(MARGIN, y + h, rEnd, y + h)
+  return y + h
+}
+
+/** Fila de Fondo de garantía (solo si la obra lo maneja). */
+function drawGarantiaRow(doc: jsPDF, y: number, cols: EstCols, obra: EDCObra, rEnd: number, rowH: number) {
+  const contentW = rEnd - MARGIN
+  fill(doc, { r: 244, g: 246, b: 248 }); doc.rect(MARGIN, y, contentW, rowH, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1)
+  ;[cols.est.x, cols.desc.x, cols.monto.x, cols.amortizacion.x, cols.retencion.x, cols.neto.x, cols.fac.x, cols.facturado.x, cols.pagado.x, rEnd].forEach((vx) => doc.line(vx, y, vx, y + rowH))
+  doc.line(MARGIN, y + rowH, rEnd, y + rowH)
+
+  const baseY = y + 5.2
+  doc.setFont("helvetica", "bold"); doc.setFontSize(6); txt(doc, BLUE_TXT)
+  doc.text("F.G.", cols.est.x + cols.est.w / 2, baseY, { align: "center" })
+
+  doc.setFont("helvetica", "bold"); doc.setFontSize(6.8); txt(doc, INK)
+  doc.text(`Fondo de garantía (${obra.garantiaPct}%)`, cols.desc.x + 2, baseY)
+
+  // Monto del fondo en la columna de RETENCIÓN
+  doc.setFont("helvetica", "bold"); txt(doc, RED_DED)
+  doc.text(fmtNum(obra.garantiaAmount), cols.retencion.x + cols.retencion.w - 2, baseY, { align: "right" })
+}
+
+/** Renglón de resumen de la obra: suma de trabajos, cobrado (state accounts) y saldo. */
+function drawObraSummary(doc: jsPDF, y: number, W: number, obra: EDCObra): number {
+  const contentW = W - MARGIN * 2
+  const rEnd = MARGIN + contentW
+  const h = 8
+  const saldo = obra.budget - obra.spent
+
+  fill(doc, GRAY_SUB); doc.rect(MARGIN, y, contentW, h, "F")
+  stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, h)
+
+  doc.setFont("helvetica", "bold"); doc.setFontSize(6.8); txt(doc, INK)
+  doc.text("RESUMEN DE LA OBRA", MARGIN + 3, y + 5.2)
+
+  // Grupo de cifras a la derecha
+  const items = [
+    { label: "Suma trabajos:", value: fmtMoney(obra.budget), bold: false },
+    { label: "Cobrado:", value: fmtMoney(obra.spent), bold: false },
+    { label: "Saldo por cobrar:", value: fmtMoney(saldo), bold: true },
+  ]
+  // Medir de derecha a izquierda
+  let x = rEnd - 3
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]
+    doc.setFont("helvetica", it.bold ? "bold" : "bold"); doc.setFontSize(7)
+    const vw = doc.getTextWidth(it.value)
+    txt(doc, it.bold ? BLUE_DK : INK)
+    doc.text(it.value, x, y + 5.4, { align: "right" })
+    x -= vw + 2
+    doc.setFont("helvetica", "normal"); doc.setFontSize(6.6); txt(doc, MID)
+    const lw = doc.getTextWidth(it.label)
+    doc.text(it.label, x, y + 5.4, { align: "right" })
+    x -= lw + 8
+  }
+  return y + h
+}
+
+function drawTotales(
+  doc: jsPDF, y: number, W: number,
+  t: { ejPagos: number; ejTrab: number; ejSaldo: number; perPagos: number; perTrab: number; perSaldo: number },
+): number {
+  const contentW = W - MARGIN * 2
+  const rEnd = MARGIN + contentW
+  // 3 columnas a la derecha
+  const colW = 34
+  const saldoR = rEnd - 2
+  const trabR = saldoR - colW
+  const pagosR = trabR - colW
+  const labelRight = pagosR - colW - 2
+
+  fill(doc, BLUE_DK)
+  doc.rect(MARGIN, y, contentW, 7, "F")
+  doc.setFont("helvetica", "bold"); doc.setFontSize(8); txt(doc, WHITE)
+  doc.text("TOTALES", MARGIN + 3, y + 4.8)
+  doc.setFontSize(6)
+  doc.text("SUMA PAGOS", pagosR, y + 4.8, { align: "right" })
+  doc.text("SUMA TRABAJOS", trabR, y + 4.8, { align: "right" })
+  doc.text("SALDO", saldoR, y + 4.8, { align: "right" })
+  y += 7
+
+  const row = (label: string, p: number, tr: number, sa: number, blue: boolean) => {
+    const h = 8
+    fill(doc, blue ? BLUE_DK : GRAY_SUB)
+    doc.rect(MARGIN, y, contentW, h, "F")
+    stroke(doc, RULE); doc.setLineWidth(0.1); doc.rect(MARGIN, y, contentW, h)
+    doc.setFont("helvetica", "bold"); doc.setFontSize(7); txt(doc, blue ? WHITE : INK)
+    doc.text(label, labelRight, y + 5.2, { align: "right" })
+    doc.text(fmtMoney(p), pagosR, y + 5.2, { align: "right" })
+    doc.text(fmtMoney(tr), trabR, y + 5.2, { align: "right" })
+    doc.text(fmtMoney(sa), saldoR, y + 5.2, { align: "right" })
+    y += h
+  }
+
+  row("OBRA EJECUTADA (EN CURSO / TERMINADA)", t.ejPagos, t.ejTrab, t.ejSaldo, false)
+  row("OBRA CONTRATADA POR EJERCER (POR INICIAR)", t.perPagos, t.perTrab, t.perSaldo, false)
+  row("TOTAL GENERAL", t.ejPagos + t.perPagos, t.ejTrab + t.perTrab, t.ejSaldo + t.perSaldo, true)
+
+  return y
 }

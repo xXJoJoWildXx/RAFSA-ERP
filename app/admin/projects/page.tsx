@@ -16,6 +16,7 @@ import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, 
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
+import { fetchEDCObras } from "@/lib/edcData"
 
 type Empresa = {
   id: string
@@ -120,37 +121,19 @@ export default function EmpresasPage() {
     try {
       const selectedIds = Array.from(edcSelected)
 
+      // Obras de las empresas seleccionadas (solo id + empresa para agrupar)
       const { data: obrasData } = await supabase
         .from("obras")
-        .select("id, code, name, location_text, status, empresa_id")
+        .select("id, empresa_id")
         .in("empresa_id", selectedIds)
         .order("created_at", { ascending: false })
 
-      const obras = (obrasData || []) as { id: string; code: string | null; name: string; location_text: string | null; status: string; empresa_id: string }[]
+      const obras = (obrasData || []) as { id: string; empresa_id: string }[]
       const obraIds = obras.map((o) => o.id)
 
-      const [billingRes, accountsRes] = await Promise.all([
-        supabase.from("obra_billing_items").select("obra_id, amount").in("obra_id", obraIds),
-        supabase.from("obra_state_accounts")
-          .select("obra_id, amount, concept, date")
-          .in("obra_id", obraIds)
-          .order("date", { ascending: true }),
-      ])
-
-      const budgetMap: Record<string, number> = {}
-      ;(billingRes.data || []).forEach((item: { obra_id: string; amount: number }) => {
-        budgetMap[item.obra_id] = (budgetMap[item.obra_id] || 0) + Number(item.amount || 0)
-      })
-
-      type AccountRow = { obra_id: string; amount: number; concept: "deposit"|"advance"|"retention"|"return"; date: string | null }
-      const spentMap: Record<string, number> = {}
-      const pagosMap: Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]> = {}
-      ;(accountsRes.data || []).forEach((a: AccountRow) => {
-        const sign = a.concept === "return" ? -1 : 1
-        spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
-        if (!pagosMap[a.obra_id]) pagosMap[a.obra_id] = []
-        pagosMap[a.obra_id].push({ concept: a.concept, date: a.date, amount: Number(a.amount || 0) })
-      })
+      // Datos financieros completos por obra (contrato, anticipo, garantía,
+      // estimaciones con neto a facturar, facturas y cobros)
+      const financials = await fetchEDCObras(obraIds)
 
       const edcData: EDCEmpresa[] = selectedIds
         .map((id) => {
@@ -161,16 +144,8 @@ export default function EmpresasPage() {
             name: empresa.name,
             obras: obras
               .filter((o) => o.empresa_id === id)
-              .map((o) => ({
-                id: o.id,
-                code: o.code,
-                name: o.name,
-                location: o.location_text || "Sin ubicación",
-                status: o.status,
-                budget: budgetMap[o.id] ?? 0,
-                spent: spentMap[o.id] ?? 0,
-                pagos: pagosMap[o.id] ?? [],
-              })),
+              .map((o) => financials[o.id])
+              .filter(Boolean),
           } as EDCEmpresa
         })
         .filter(Boolean) as EDCEmpresa[]

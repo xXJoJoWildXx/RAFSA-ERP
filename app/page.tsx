@@ -16,6 +16,8 @@ export default function Home() {
           router.push("/admin")
         } else if (user.role === "worker") {
           router.push("/worker")
+        } else if (user.role === "almacen") {
+          router.push("/almacen")
         } else {
           router.push("/employee")
         }
