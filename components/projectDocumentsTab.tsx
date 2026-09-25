@@ -25,7 +25,9 @@ import {
   Plus,
   FolderOpen,
   Pencil,
+  Sparkles,
 } from "lucide-react"
+import { ContractTermsReviewModal, type ContractTermsExtraction } from "@/components/contractTermsReviewModal"
 
 type DocStatus = "missing" | "uploaded" | "processing" | "approved" | "rejected"
 type DocType = "contract" | "quote" | "other"
@@ -128,7 +130,14 @@ const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
 const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
 const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
-export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
+export function ProjectDocumentsTab({
+  obraId,
+  onContractTermsApplied,
+}: {
+  obraId: string
+  /** Se llama tras aplicar los términos del contrato, para refrescar el Estado de Cuenta */
+  onContractTermsApplied?: () => void
+}) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const [docs, setDocs] = useState<UiObraDocument[]>([])
@@ -161,6 +170,45 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
   const [previewDoc,  setPreviewDoc]        = useState<UiObraDocument | null>(null)
   const [previewUrl,  setPreviewUrl]        = useState<string | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+
+  // AI contract extraction
+  const [extracting, setExtracting]         = useState(false)
+  const [extractError, setExtractError]     = useState<string | null>(null)
+  const [reviewOpen, setReviewOpen]         = useState(false)
+  const [reviewExtraction, setReviewExtraction] = useState<ContractTermsExtraction | null>(null)
+  const [reviewDoc, setReviewDoc]           = useState<UiObraDocument | null>(null)
+
+  async function handleExtractContract(doc: UiObraDocument) {
+    setExtractError(null)
+    setExtracting(true)
+    try {
+      const { data, error } = await supabase.functions.invoke("extract-contract-terms", {
+        body: { document_id: doc.id },
+      })
+      if (error) {
+        // Intenta leer el mensaje del cuerpo de error de la función
+        let msg = error.message || "No se pudo extraer la información."
+        try {
+          const ctx = (error as any)?.context
+          if (ctx && typeof ctx.json === "function") {
+            const body = await ctx.json()
+            if (body?.error) msg = body.error
+          }
+        } catch { /* ignore */ }
+        throw new Error(msg)
+      }
+      if (!data?.data) throw new Error("La función no devolvió datos.")
+
+      setReviewExtraction(data.data as ContractTermsExtraction)
+      setReviewDoc(doc)
+      setReviewOpen(true)
+      await fetchDocuments() // refresca ai_status del documento
+    } catch (e) {
+      setExtractError(e instanceof Error ? e.message : "Error al extraer los datos.")
+    } finally {
+      setExtracting(false)
+    }
+  }
 
   function openUploadModal(prefillType?: DocType, prefillVersion?: number) {
     setUploadError(null)
@@ -620,6 +668,32 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
                     <p className="text-xs text-slate-600 mt-1">PDF recomendado. Máx. 25MB.</p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Extracción con IA — solo cuando hay contrato cargado */}
+            {currentContract && (
+              <div className="pt-1 space-y-2">
+                <Button
+                  size="sm"
+                  onClick={() => handleExtractContract(currentContract)}
+                  disabled={extracting}
+                  className="w-full bg-[#0174bd] hover:bg-[#0163a3] text-white"
+                >
+                  {extracting ? (
+                    <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Extrayendo datos…</>
+                  ) : (
+                    <><Sparkles className="w-4 h-4 mr-1.5" />Extraer datos financieros</>
+                  )}
+                </Button>
+                <p className="text-[11px] text-slate-500 text-center">
+                  La IA leerá el contrato y precargará los términos financieros para tu revisión.
+                </p>
+                {extractError && (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+                    {extractError}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -1090,6 +1164,23 @@ export function ProjectDocumentsTab({ obraId }: { obraId: string }) {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Modal de revisión de datos extraídos por IA */}
+      <ContractTermsReviewModal
+        open={reviewOpen}
+        onOpenChange={setReviewOpen}
+        obraId={obraId}
+        doc={reviewDoc ? {
+          id: reviewDoc.id,
+          bucket: reviewDoc.bucket,
+          object_path: reviewDoc.object_path,
+          file_name: reviewDoc.file_name,
+        } : null}
+        extraction={reviewExtraction}
+        onApplied={() => {
+          onContractTermsApplied?.()
+        }}
+      />
 
     </div>
   )

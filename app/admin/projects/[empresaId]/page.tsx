@@ -25,7 +25,8 @@ import {
 import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, X, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
-import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
+import { generateEDCPdf, type EDCEmpresa, type EDCObra } from "@/lib/edcPdf"
+import { fetchEDCObras } from "@/lib/edcData"
 
 // ----- Tipos -----
 
@@ -107,12 +108,6 @@ export default function EmpresaObrasPage() {
   const [saving, setSaving]               = useState(false)
   const [formError, setFormError]         = useState<string | null>(null)
 
-  // ── Raw financial data (para EDC) ──
-  const [rawBudgetMap, setRawBudgetMap] = useState<Record<string, number>>({})
-  const [rawSpentMap, setRawSpentMap]   = useState<Record<string, number>>({})
-  const [rawObrasMap, setRawObrasMap]   = useState<Record<string, ObraRow>>({})
-  const [rawPagosMap, setRawPagosMap]   = useState<Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]>>({})
-
   // ── Modo EDC ──
   const [edcMode, setEdcMode]             = useState(false)
   const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
@@ -167,25 +162,10 @@ export default function EmpresaObrasPage() {
       })
 
       const spentMap: Record<string, number> = {}
-      const pagosMap: Record<string, { concept: "deposit"|"advance"|"retention"|"return"; date: string|null; amount: number }[]> = {}
       ;(accountsRes.data as ObraStateAccountRow[] || []).forEach((a) => {
         const sign = (a.concept || "").toLowerCase() === "return" ? -1 : 1
         spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
-        if (!pagosMap[a.obra_id]) pagosMap[a.obra_id] = []
-        pagosMap[a.obra_id].push({
-          concept: a.concept as "deposit"|"advance"|"retention"|"return",
-          date: a.date,
-          amount: Number(a.amount || 0),
-        })
       })
-
-      // Guardar maps crudos para EDC
-      setRawBudgetMap(budgetMap)
-      setRawSpentMap(spentMap)
-      setRawPagosMap(pagosMap)
-      const obrasById: Record<string, ObraRow> = {}
-      obras.forEach((o) => { obrasById[o.id] = o })
-      setRawObrasMap(obrasById)
 
       setProjects(obras.map((obra) => {
         const budget = budgetMap[obra.id] ?? 0; const spent = spentMap[obra.id] ?? 0
@@ -260,22 +240,13 @@ export default function EmpresaObrasPage() {
     setEdcGenerating(true)
     try {
       const selectedIds = Array.from(edcSelected)
+
+      // Datos financieros completos por obra (contrato, anticipo, garantía,
+      // estimaciones con neto a facturar, facturas y cobros)
+      const financials = await fetchEDCObras(selectedIds)
       const edcObras = selectedIds
-        .map((id) => {
-          const obra = rawObrasMap[id]
-          if (!obra) return null
-          return {
-            id: obra.id,
-            code: obra.code,
-            name: obra.name,
-            location: obra.location_text || "Sin ubicación",
-            status: obra.status,
-            budget: rawBudgetMap[id] ?? 0,
-            spent: rawSpentMap[id] ?? 0,
-            pagos: rawPagosMap[id] ?? [],
-          }
-        })
-        .filter(Boolean) as EDCEmpresa["obras"]
+        .map((id) => financials[id])
+        .filter(Boolean) as EDCObra[]
 
       const edcData: EDCEmpresa[] = [{
         id: empresaId,

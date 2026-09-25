@@ -40,7 +40,8 @@ export async function middleware(request: NextRequest) {
   const isAdminRoute    = pathname.startsWith("/admin")
   const isEmployeeRoute = pathname.startsWith("/employee")
   const isWorkerRoute   = pathname.startsWith("/worker")
-  const isProtectedRoute = isAdminRoute || isEmployeeRoute || isWorkerRoute
+  const isAlmacenRoute  = pathname.startsWith("/almacen")
+  const isProtectedRoute = isAdminRoute || isEmployeeRoute || isWorkerRoute || isAlmacenRoute
 
   // Si intenta acceder a una ruta protegida sin sesión → login
   if (isProtectedRoute && !user) {

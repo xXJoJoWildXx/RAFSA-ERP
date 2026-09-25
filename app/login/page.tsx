@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import Image from "next/image"
 import { supabase } from "@/lib/supabaseClient"
 
-type UserRole = "admin" | "user" | "worker"
+type UserRole = "admin" | "user" | "worker" | "almacen"
 
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 
@@ -138,10 +138,11 @@ export default function LoginPage() {
 
       const role = profile.role as UserRole
 
-      if (role === "admin")       router.push("/admin")
-      else if (role === "user")   router.push("/employee")
-      else if (role === "worker") router.push("/worker")
-      else                        router.push("/dashboard")
+      if (role === "admin")        router.push("/admin")
+      else if (role === "user")    router.push("/employee")
+      else if (role === "worker")  router.push("/worker")
+      else if (role === "almacen") router.push("/almacen")
+      else                         router.push("/")
 
     } catch (err) {
       console.error(err)

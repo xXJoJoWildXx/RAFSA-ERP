@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
 import PageLoading from "@/components/ui/page-loading"
 
-type Role = "admin" | "user" | "worker"
+type Role = "admin" | "user" | "worker" | "almacen"
 
 interface RoleGuardProps {
   allowed: Role[]

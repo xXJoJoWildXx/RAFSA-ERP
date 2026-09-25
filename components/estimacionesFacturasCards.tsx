@@ -38,12 +38,14 @@ interface Estimacion {
   date_end: string | null
   status: "pending" | "completed"
   created_at: string
+  is_anticipo?: boolean
 }
 
 interface Factura {
   id: string
   obra_id: string
-  estimacion_id: string
+  estimacion_id: string | null
+  aditivo_id?: string | null
   invoice_number: string
   amount: number
   date: string
@@ -51,6 +53,15 @@ interface Factura {
   amount_paid: number
   note: string | null
   created_at: string
+}
+
+interface Aditivo {
+  id: string
+  obra_id: string
+  description: string | null
+  amount: number
+  date: string
+  with_iva: boolean
 }
 
 interface FacturaAttachment {
@@ -65,6 +76,8 @@ interface Props {
   currency?: string
   /** Called when a payment is registered so the parent can refresh state accounts */
   onPaymentRegistered?: () => void
+  /** Cambia (se incrementa) para forzar recarga cuando el padre modifica aditivas */
+  reloadSignal?: number
 }
 
 /* ─── Helpers ─── */
@@ -82,13 +95,18 @@ function fmtCurrency(value: number, currency: string = "MXN"): string {
 
 /* ─── Component ─── */
 
-export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentRegistered }: Props) {
+export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentRegistered, reloadSignal }: Props) {
   // Data
   const [estimaciones, setEstimaciones] = useState<Estimacion[]>([])
+  const [aditivos, setAditivos] = useState<Aditivo[]>([])
   const [facturas, setFacturas] = useState<Factura[]>([])
   const [attachments, setAttachments] = useState<Record<string, FacturaAttachment>>({}) // facturaId → attachment
   const [estAttachments, setEstAttachments] = useState<Record<string, FacturaAttachment>>({}) // estimacionId → attachment
   const [loading, setLoading] = useState(true)
+
+  // Porcentajes de la obra usados para calcular el neto a facturar de estimaciones
+  const [garantiaPct, setGarantiaPct] = useState(0) // retención por fondo de garantía
+  const [anticipoPct, setAnticipoPct] = useState(0) // amortización de anticipo
 
   // Estimacion dialog
   const [estDialogOpen, setEstDialogOpen] = useState(false)
@@ -96,10 +114,12 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   const [estForm, setEstForm] = useState({ description: "", amount: "", date_start: "", date_end: "" })
   const [estFile, setEstFile] = useState<File | null>(null)
   const [savingEst, setSavingEst] = useState(false)
+  const [estFormTouched, setEstFormTouched] = useState(false)
 
   // Factura dialog
   const [facDialogOpen, setFacDialogOpen] = useState(false)
   const [facTargetEst, setFacTargetEst] = useState<Estimacion | null>(null)
+  const [facTargetAditivo, setFacTargetAditivo] = useState<Aditivo | null>(null)
   const [facForm, setFacForm] = useState({ invoice_number: "", amount: "", date: toLocalDateStr(new Date()), note: "" })
   const [savingFac, setSavingFac] = useState(false)
   const [facFile, setFacFile] = useState<File | null>(null)
@@ -127,23 +147,38 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   // ─── Fetch ───
 
   async function fetchData() {
-    const [{ data: estData }, { data: facData }] = await Promise.all([
+    const [{ data: estData }, { data: facData }, { data: aditData }, { data: obraData }] = await Promise.all([
       supabase
         .from("obra_estimaciones")
-        .select("id, obra_id, number, description, amount, date_start, date_end, status, created_at")
+        .select("id, obra_id, number, description, amount, date_start, date_end, status, created_at, is_anticipo")
         .eq("obra_id", obraId)
         .order("number", { ascending: true }),
       supabase
         .from("obra_facturas")
-        .select("id, obra_id, estimacion_id, invoice_number, amount, date, status, amount_paid, note, created_at")
+        .select("id, obra_id, estimacion_id, aditivo_id, invoice_number, amount, date, status, amount_paid, note, created_at")
         .eq("obra_id", obraId)
         .order("date", { ascending: true }),
+      supabase
+        .from("obra_billing_items")
+        .select("id, obra_id, description, amount, date, with_iva")
+        .eq("obra_id", obraId)
+        .eq("type", "aditivo")
+        .order("date", { ascending: true }),
+      supabase
+        .from("obras")
+        .select("garantia_pct, anticipo_pct")
+        .eq("id", obraId)
+        .single(),
     ])
 
     const loadedEst = (estData || []) as Estimacion[]
     const loadedFac = (facData || []) as Factura[]
+    const loadedAdit = (aditData || []) as Aditivo[]
     setEstimaciones(loadedEst)
     setFacturas(loadedFac)
+    setAditivos(loadedAdit)
+    setGarantiaPct(Number(obraData?.garantia_pct ?? 0))
+    setAnticipoPct(Number(obraData?.anticipo_pct ?? 0))
 
     // Load attachments for facturas
     if (loadedFac.length > 0) {
@@ -176,7 +211,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     setLoading(false)
   }
 
-  useEffect(() => { fetchData() }, [obraId]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetchData() }, [obraId, reloadSignal]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // ─── Computed ───
 
@@ -185,6 +220,24 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   const avanceTrabajo = totalEstimaciones > 0 ? Math.round((completedEstimaciones / totalEstimaciones) * 100) : 0
 
   const getFacturaForEst = (estId: string) => facturas.find((f: Factura) => f.estimacion_id === estId) ?? null
+  const getFacturaForAditivo = (aditivoId: string) => facturas.find((f: Factura) => f.aditivo_id === aditivoId) ?? null
+
+  const round2 = (n: number) => Math.round(n * 100) / 100
+
+  // Neto a facturar de una estimación normal:
+  //   monto − retención por fondo de garantía − amortización de anticipo.
+  // NO aplica al anticipo (es la primera "estimación") ni a las aditivas.
+  // Devuelve null cuando no hay deducciones que mostrar.
+  type Deduction = { base: number; retencion: number; amortizacion: number; neto: number }
+  const getDeduction = (est: Estimacion): Deduction | null => {
+    if (est.is_anticipo) return null
+    const base = Number(est.amount)
+    const retencion = round2((base * garantiaPct) / 100)
+    const amortizacion = round2((base * anticipoPct) / 100)
+    if (retencion <= 0 && amortizacion <= 0) return null
+    const neto = round2(base - retencion - amortizacion)
+    return { base, retencion, amortizacion, neto }
+  }
 
   // ─── CRUD: Estimaciones ───
 
@@ -192,10 +245,12 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     setEditingEst(null)
     setEstForm({ description: "", amount: "", date_start: "", date_end: "" })
     setEstFile(null)
+    setEstFormTouched(false)
     setEstDialogOpen(true)
   }
 
   function openEditEstimacion(est: Estimacion) {
+    if (est.is_anticipo) return // el anticipo viene del contrato; no se edita a mano
     setEditingEst(est)
     setEstForm({
       description: est.description,
@@ -204,15 +259,15 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
       date_end: est.date_end ?? "",
     })
     setEstFile(null)
+    setEstFormTouched(false)
     setEstDialogOpen(true)
   }
 
   async function handleSaveEstimacion() {
-    if (!estForm.description.trim() || !estForm.amount) return
+    setEstFormTouched(true)
+    const amount = parseFloat((estForm.amount || "0").replace(/[^0-9.]/g, ""))
+    if (!estForm.description.trim() || !estForm.amount || isNaN(amount) || amount <= 0) return
     setSavingEst(true)
-
-    const amount = parseFloat(estForm.amount.replace(/[^0-9.]/g, ""))
-    if (isNaN(amount) || amount <= 0) { setSavingEst(false); return }
 
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
@@ -270,6 +325,10 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   }
 
   async function handleDeleteEstimacion(est: Estimacion) {
+    if (est.is_anticipo) {
+      alert("El anticipo proviene del contrato y no se elimina desde aquí.")
+      return
+    }
     const factura = getFacturaForEst(est.id)
     if (factura) {
       alert("No se puede eliminar una estimación que ya tiene factura asignada.")
@@ -330,10 +389,28 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   // ─── CRUD: Facturas ───
 
   function openAddFactura(est: Estimacion) {
+    setFacTargetAditivo(null)
     setFacTargetEst(est)
+    // Para estimaciones normales se prellena el NETO (monto − retención − amortización);
+    // para el anticipo se usa el monto completo.
+    const ded = getDeduction(est)
+    const preAmount = ded ? ded.neto : Number(est.amount)
     setFacForm({
       invoice_number: "",
-      amount: String(est.amount),
+      amount: String(preAmount),
+      date: toLocalDateStr(new Date()),
+      note: "",
+    })
+    setFacFile(null)
+    setFacDialogOpen(true)
+  }
+
+  function openAddFacturaAditivo(aditivo: Aditivo) {
+    setFacTargetEst(null)
+    setFacTargetAditivo(aditivo)
+    setFacForm({
+      invoice_number: "",
+      amount: String(aditivo.amount),
       date: toLocalDateStr(new Date()),
       note: "",
     })
@@ -342,7 +419,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   }
 
   async function handleSaveFactura() {
-    if (!facTargetEst || !facForm.invoice_number.trim() || !facForm.amount) return
+    const target = facTargetEst ?? facTargetAditivo
+    if (!target || !facForm.invoice_number.trim() || !facForm.amount) return
     setSavingFac(true)
 
     const amount = parseFloat(facForm.amount.replace(/[^0-9.]/g, ""))
@@ -351,12 +429,13 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
 
-    // Insert factura
+    // Insert factura — cuelga de la estimación O de la aditiva
     const { data: inserted, error } = await supabase
       .from("obra_facturas")
       .insert({
         obra_id: obraId,
-        estimacion_id: facTargetEst.id,
+        estimacion_id: facTargetEst ? facTargetEst.id : null,
+        aditivo_id: facTargetAditivo ? facTargetAditivo.id : null,
         invoice_number: facForm.invoice_number.trim(),
         amount,
         date: facForm.date,
@@ -368,11 +447,13 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
 
     if (error || !inserted) { console.error("insert factura error:", error); setSavingFac(false); return }
 
-    // Mark estimacion as completed
-    await supabase
-      .from("obra_estimaciones")
-      .update({ status: "completed", updated_at: new Date().toISOString() })
-      .eq("id", facTargetEst.id)
+    // Solo las estimaciones tienen estado; se marca completada al facturar
+    if (facTargetEst) {
+      await supabase
+        .from("obra_estimaciones")
+        .update({ status: "completed", updated_at: new Date().toISOString() })
+        .eq("id", facTargetEst.id)
+    }
 
     // Upload file if provided
     if (facFile) {
@@ -406,7 +487,10 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
       alert("No se puede eliminar una factura que ya tiene pagos registrados.")
       return
     }
-    if (!confirm(`¿Eliminar factura ${fac.invoice_number}? La estimación volverá a estado pendiente.`)) return
+    const msg = fac.estimacion_id
+      ? `¿Eliminar factura ${fac.invoice_number}? La estimación volverá a estado pendiente.`
+      : `¿Eliminar factura ${fac.invoice_number} de la aditiva?`
+    if (!confirm(msg)) return
 
     // Delete attachment if exists
     const att = attachments[fac.id]
@@ -420,11 +504,13 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     // Delete factura
     await supabase.from("obra_facturas").delete().eq("id", fac.id)
 
-    // Revert estimacion to pending
-    await supabase
-      .from("obra_estimaciones")
-      .update({ status: "pending", updated_at: new Date().toISOString() })
-      .eq("id", fac.estimacion_id)
+    // Revert estimacion to pending (solo aplica a facturas de estimación)
+    if (fac.estimacion_id) {
+      await supabase
+        .from("obra_estimaciones")
+        .update({ status: "pending", updated_at: new Date().toISOString() })
+        .eq("id", fac.estimacion_id)
+    }
 
     await fetchData()
   }
@@ -433,8 +519,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
 
   function openPayDialog(fac: Factura) {
     setPayTargetFac(fac)
-    const remaining = Number(fac.amount) - Number(fac.amount_paid)
-    setPayForm({ amount: String(remaining), note: "", method: "transfer", bank_ref: "" })
+    // El monto personalizado NO se auto-rellena; el usuario lo captura.
+    setPayForm({ amount: "", note: "", method: "transfer", bank_ref: "" })
     setPayDialogOpen(true)
   }
 
@@ -460,10 +546,14 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
 
+    // El pago del anticipo se registra como 'advance'; el resto como 'deposit'
+    const targetEst = estimaciones.find((e: Estimacion) => e.id === payTargetFac.estimacion_id)
+    const concept = targetEst?.is_anticipo ? "advance" : "deposit"
+
     // Insert into obra_state_accounts
     const { error: payError } = await supabase.from("obra_state_accounts").insert({
       obra_id: obraId,
-      concept: "deposit",
+      concept,
       date: toLocalDateStr(new Date()),
       amount: payAmount,
       method: payForm.method,
@@ -542,6 +632,139 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     partial: { label: "Saldo Pendiente", className: "bg-blue-500/15 text-blue-400 border-blue-500/30" },
   }
 
+  // Fila reutilizable de factura (para estimaciones y aditivas)
+  const FacturaRow = ({
+    title,
+    subtitle,
+    montoText,
+    fac,
+    onAssign,
+    deduction = null,
+  }: {
+    title: string
+    subtitle: string | null
+    montoText: string
+    fac: Factura | null
+    onAssign: () => void
+    deduction?: Deduction | null
+  }) => {
+    const att = fac ? attachments[fac.id] : null
+    const facRemaining = fac ? Number(fac.amount) - Number(fac.amount_paid) : 0
+    return (
+      <div className="rounded-lg border border-slate-700 bg-slate-700/30 p-4">
+        <div className="flex items-start justify-between gap-3 mb-2">
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">{title}</p>
+            {subtitle && <p className="text-sm text-slate-300 mt-0.5">{subtitle}</p>}
+            <p className="text-xs text-slate-500 mt-0.5">{montoText}</p>
+          </div>
+        </div>
+
+        {/* Desglose neto a facturar (solo estimaciones normales con deducciones) */}
+        {deduction && (
+          <div className="mb-3 rounded-md border border-slate-600/70 bg-slate-800/40 p-2.5 space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-400">Monto estimación</span>
+              <span className="text-slate-300">{fmtCurrency(deduction.base, currency)}</span>
+            </div>
+            {deduction.retencion > 0 && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-400">− Retención fondo garantía ({garantiaPct}%)</span>
+                <span className="text-amber-400">−{fmtCurrency(deduction.retencion, currency)}</span>
+              </div>
+            )}
+            {deduction.amortizacion > 0 && (
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-400">− Amortización anticipo ({anticipoPct}%)</span>
+                <span className="text-amber-400">−{fmtCurrency(deduction.amortizacion, currency)}</span>
+              </div>
+            )}
+            <div className="flex justify-between text-xs font-semibold border-t border-slate-600/70 pt-1">
+              <span className="text-slate-300">Neto a facturar</span>
+              <span className="text-[#4da8e8]">{fmtCurrency(deduction.neto, currency)}</span>
+            </div>
+          </div>
+        )}
+
+        {fac ? (
+          <div className="mt-3 rounded-md border border-slate-600 bg-slate-800/60 p-3">
+            <div className="flex items-start justify-between flex-wrap gap-3">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-slate-400" />
+                  <span className="text-sm font-semibold text-slate-200">Factura: {fac.invoice_number}</span>
+                  <Badge className={`text-xs border ${STATUS_BADGE[fac.status]?.className ?? ""}`}>
+                    {STATUS_BADGE[fac.status]?.label ?? fac.status}
+                  </Badge>
+                </div>
+                <p className="text-xs text-slate-400">
+                  Monto: {fmtCurrency(Number(fac.amount), currency)}
+                  {" · "}Fecha: {fac.date}
+                </p>
+                {fac.status !== "pending" && (
+                  <p className="text-xs text-slate-400">
+                    Pagado: {fmtCurrency(Number(fac.amount_paid), currency)}
+                    {fac.status === "partial" && (
+                      <span className="text-amber-400 ml-1">(Saldo: {fmtCurrency(facRemaining, currency)})</span>
+                    )}
+                  </p>
+                )}
+                {fac.note && <p className="text-xs text-slate-500 italic">{fac.note}</p>}
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                {att && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700"
+                    onClick={() => handleViewAttachment(fac)}
+                    title="Ver documento"
+                  >
+                    <Eye className="w-4 h-4" />
+                  </Button>
+                )}
+                {fac.status !== "paid" && (
+                  <Button
+                    size="sm"
+                    className="cursor-pointer text-xs h-8 bg-green-600 hover:bg-green-700 text-white"
+                    onClick={() => openPayDialog(fac)}
+                  >
+                    <DollarSign className="w-3 h-3 mr-1" />
+                    Registrar Pago
+                  </Button>
+                )}
+                {fac.amount_paid === 0 && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 h-8"
+                    onClick={() => handleDeleteFactura(fac)}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </Button>
+                )}
+              </div>
+            </div>
+          </div>
+        ) : (
+          <div className="mt-3 flex items-center justify-between border-t border-slate-700/50 pt-3">
+            <span className="text-xs text-slate-500 italic">Sin factura asignada</span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="cursor-pointer text-xs h-8 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+              onClick={onAssign}
+            >
+              <Upload className="w-3 h-3 mr-1" />
+              Asignar factura
+            </Button>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   return (
     <>
       {/* ═══════════ CARD: ESTIMACIONES ═══════════ */}
@@ -591,7 +814,15 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                     const isCompleted = est.status === "completed"
                     return (
                       <TableRow key={est.id} className="border-slate-700 hover:bg-slate-700/20">
-                        <TableCell className="font-mono font-bold text-slate-300">{est.number}</TableCell>
+                        <TableCell className="font-mono font-bold text-slate-300">
+                          {est.is_anticipo ? (
+                            <Badge className="bg-[#0174bd]/15 text-[#4da8e8] border border-[#0174bd]/30 text-[10px] font-semibold">
+                              Anticipo
+                            </Badge>
+                          ) : (
+                            est.number
+                          )}
+                        </TableCell>
                         <TableCell className="text-sm text-slate-300 max-w-xs">{est.description}</TableCell>
                         <TableCell className="text-sm text-slate-400">
                           {est.date_start && est.date_end
@@ -640,7 +871,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                                 )}
                               </Button>
                             )}
-                            {!fac && (
+                            {!fac && !est.is_anticipo && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -650,7 +881,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                                 Editar
                               </Button>
                             )}
-                            {!fac && (
+                            {!fac && !est.is_anticipo && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -720,127 +951,53 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
             }}
           />
 
-          {/* List estimaciones with their factura status */}
-          {estimaciones.length > 0 ? (
-            <div className="space-y-3">
-              {estimaciones.map((est: Estimacion) => {
-                const fac = getFacturaForEst(est.id)
-                const att = fac ? attachments[fac.id] : null
-                const facRemaining = fac ? Number(fac.amount) - Number(fac.amount_paid) : 0
-
-                return (
-                  <div
+          {/* ── Subsección: Facturas de Estimaciones ── */}
+          <div className="space-y-3">
+            <p className="text-sm font-semibold text-slate-300">Estimaciones</p>
+            {estimaciones.length > 0 ? (
+              <div className="space-y-3">
+                {estimaciones.map((est: Estimacion) => (
+                  <FacturaRow
                     key={est.id}
-                    className="rounded-lg border border-slate-700 bg-slate-700/30 p-4"
-                  >
-                    {/* Header row */}
-                    <div className="flex items-start justify-between gap-3 mb-2">
-                      <div>
-                        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
-                          Estimación #{est.number}
-                        </p>
-                        <p className="text-sm text-slate-300 mt-0.5">{est.description}</p>
-                        <p className="text-xs text-slate-500 mt-0.5">
-                          Monto estimado: {fmtCurrency(Number(est.amount), currency)}
-                        </p>
-                      </div>
-                    </div>
+                    title={est.is_anticipo ? "Anticipo" : `Estimación #${est.number}`}
+                    subtitle={est.description}
+                    montoText={`Monto estimado: ${fmtCurrency(Number(est.amount), currency)}`}
+                    fac={getFacturaForEst(est.id)}
+                    onAssign={() => openAddFactura(est)}
+                    deduction={getDeduction(est)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500 text-center py-3">
+                Registra estimaciones primero para poder asignar facturas.
+              </p>
+            )}
+          </div>
 
-                    {fac ? (
-                      /* ── Factura exists ── */
-                      <div className="mt-3 rounded-md border border-slate-600 bg-slate-800/60 p-3">
-                        <div className="flex items-start justify-between flex-wrap gap-3">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <FileText className="w-4 h-4 text-slate-400" />
-                              <span className="text-sm font-semibold text-slate-200">
-                                Factura: {fac.invoice_number}
-                              </span>
-                              <Badge className={`text-xs border ${STATUS_BADGE[fac.status]?.className ?? ""}`}>
-                                {STATUS_BADGE[fac.status]?.label ?? fac.status}
-                              </Badge>
-                            </div>
-                            <p className="text-xs text-slate-400">
-                              Monto: {fmtCurrency(Number(fac.amount), currency)}
-                              {" · "}Fecha: {fac.date}
-                            </p>
-                            {fac.status !== "pending" && (
-                              <p className="text-xs text-slate-400">
-                                Pagado: {fmtCurrency(Number(fac.amount_paid), currency)}
-                                {fac.status === "partial" && (
-                                  <span className="text-amber-400 ml-1">
-                                    (Saldo: {fmtCurrency(facRemaining, currency)})
-                                  </span>
-                                )}
-                              </p>
-                            )}
-                            {fac.note && <p className="text-xs text-slate-500 italic">{fac.note}</p>}
-                          </div>
+          {/* ── Subsección: Facturas de Aditivas ── */}
+          <div className="space-y-3 pt-3 border-t border-slate-700/60">
+            <p className="text-sm font-semibold text-slate-300">Aditivas</p>
+            {aditivos.length > 0 ? (
+              <div className="space-y-3">
+                {aditivos.map((ad: Aditivo) => (
+                  <FacturaRow
+                    key={ad.id}
+                    title="Aditiva"
+                    subtitle={ad.description}
+                    montoText={`Monto: ${fmtCurrency(Number(ad.amount), currency)}`}
+                    fac={getFacturaForAditivo(ad.id)}
+                    onAssign={() => openAddFacturaAditivo(ad)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-slate-500 text-center py-3">
+                Agrega aditivas para poder asignarles factura.
+              </p>
+            )}
+          </div>
 
-                          <div className="flex items-center gap-2 shrink-0 flex-wrap">
-                            {/* Preview attachment */}
-                            {att && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700"
-                                onClick={() => handleViewAttachment(fac)}
-                                title="Ver documento"
-                              >
-                                <Eye className="w-4 h-4" />
-                              </Button>
-                            )}
-
-                            {/* Register payment — only if not fully paid */}
-                            {fac.status !== "paid" && (
-                              <Button
-                                size="sm"
-                                className="cursor-pointer text-xs h-8 bg-green-600 hover:bg-green-700 text-white"
-                                onClick={() => openPayDialog(fac)}
-                              >
-                                <DollarSign className="w-3 h-3 mr-1" />
-                                Registrar Pago
-                              </Button>
-                            )}
-
-                            {/* Delete factura — only if no payments */}
-                            {fac.amount_paid === 0 && (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 h-8"
-                                onClick={() => handleDeleteFactura(fac)}
-                              >
-                                <Trash2 className="w-4 h-4" />
-                              </Button>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      /* ── No factura yet ── */
-                      <div className="mt-3 flex items-center justify-between border-t border-slate-700/50 pt-3">
-                        <span className="text-xs text-slate-500 italic">Sin factura asignada</span>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          className="cursor-pointer text-xs h-8 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
-                          onClick={() => openAddFactura(est)}
-                        >
-                          <Upload className="w-3 h-3 mr-1" />
-                          Asignar factura
-                        </Button>
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          ) : (
-            <p className="text-sm text-slate-500 text-center py-4">
-              Registra estimaciones primero para poder asignar facturas.
-            </p>
-          )}
         </CardContent>
       </Card>
 
@@ -852,16 +1009,27 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
               {editingEst ? `Editar Estimación #${editingEst.number}` : "Nueva Estimación"}
             </DialogTitle>
           </DialogHeader>
-          <div className="space-y-4 mt-2">
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !savingEst)
+                handleSaveEstimacion()
+            }}
+          >
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Descripción *</label>
               <Textarea
                 value={estForm.description}
                 onChange={(e) => setEstForm((f) => ({ ...f, description: e.target.value }))}
                 placeholder="Bloque de trabajo, concepto..."
-                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                className={`bg-slate-700/60 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd] ${
+                  estFormTouched && !estForm.description.trim() ? "border-red-500" : "border-slate-600"
+                }`}
                 rows={2}
               />
+              {estFormTouched && !estForm.description.trim() && (
+                <p className="text-[11px] text-red-400">La descripción es obligatoria</p>
+              )}
             </div>
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Monto *</label>
@@ -869,8 +1037,15 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                 value={estForm.amount}
                 onChange={(e) => setEstForm((f) => ({ ...f, amount: e.target.value }))}
                 placeholder="0.00"
-                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                className={`bg-slate-700/60 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd] ${
+                  estFormTouched && (!estForm.amount || isNaN(parseFloat(estForm.amount.replace(/[^0-9.]/g, ""))) || parseFloat(estForm.amount.replace(/[^0-9.]/g, "")) <= 0)
+                    ? "border-red-500"
+                    : "border-slate-600"
+                }`}
               />
+              {estFormTouched && (!estForm.amount || isNaN(parseFloat(estForm.amount.replace(/[^0-9.]/g, ""))) || parseFloat(estForm.amount.replace(/[^0-9.]/g, "")) <= 0) && (
+                <p className="text-[11px] text-red-400">Ingresa un monto válido mayor a 0</p>
+              )}
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1.5">
@@ -950,10 +1125,46 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
         <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
             <DialogTitle className="text-slate-100">
-              Asignar Factura — Estimación #{facTargetEst?.number}
+              {facTargetAditivo
+                ? "Asignar Factura — Aditiva"
+                : facTargetEst?.is_anticipo
+                ? "Asignar Factura — Anticipo"
+                : `Asignar Factura — Estimación #${facTargetEst?.number}`}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2">
+            {/* Desglose neto a facturar (solo estimaciones normales) */}
+            {facTargetEst && (() => {
+              const ded = getDeduction(facTargetEst)
+              if (!ded) return null
+              return (
+                <div className="rounded-md border border-slate-600 bg-slate-700/40 p-3 space-y-1">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-400">Monto estimación</span>
+                    <span className="text-slate-200 font-medium">{fmtCurrency(ded.base, currency)}</span>
+                  </div>
+                  {ded.retencion > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">− Retención fondo garantía ({garantiaPct}%)</span>
+                      <span className="text-amber-400">−{fmtCurrency(ded.retencion, currency)}</span>
+                    </div>
+                  )}
+                  {ded.amortizacion > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">− Amortización anticipo ({anticipoPct}%)</span>
+                      <span className="text-amber-400">−{fmtCurrency(ded.amortizacion, currency)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm font-semibold border-t border-slate-600 pt-1">
+                    <span className="text-slate-300">Neto a facturar</span>
+                    <span className="text-[#4da8e8]">{fmtCurrency(ded.neto, currency)}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 pt-0.5">
+                    El monto se prellenó con el neto; puedes ajustarlo si es necesario.
+                  </p>
+                </div>
+              )
+            })()}
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Número de factura *</label>
               <Input
@@ -1038,6 +1249,10 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
           </DialogHeader>
           {payTargetFac && (() => {
             const remaining = Number(payTargetFac.amount) - Number(payTargetFac.amount_paid)
+            const parsedPay = parseFloat((payForm.amount || "").replace(/[^0-9.]/g, ""))
+            const payHasValue = payForm.amount.trim() !== "" && !isNaN(parsedPay) && parsedPay > 0
+            const payExceeds = payHasValue && parsedPay > remaining
+            const payValid = payHasValue && !payExceeds
             return (
               <div className="space-y-4 mt-2">
                 {/* Summary */}
@@ -1082,8 +1297,15 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                     value={payForm.amount}
                     onChange={(e) => setPayForm((f) => ({ ...f, amount: e.target.value }))}
                     placeholder="0.00"
-                    className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                    className={`bg-slate-700/60 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd] ${
+                      payExceeds ? "border-red-500" : "border-slate-600"
+                    }`}
                   />
+                  {payExceeds && (
+                    <p className="text-[11px] text-red-400">
+                      El monto ingresado supera el saldo pendiente por cobrar ({fmtCurrency(remaining, currency)}).
+                    </p>
+                  )}
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -1133,8 +1355,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                   </Button>
                   <Button
                     onClick={() => handleRegisterPayment(false)}
-                    disabled={savingPay}
-                    className="cursor-pointer"
+                    disabled={savingPay || !payValid}
+                    className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     {savingPay && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
                     Registrar pago parcial

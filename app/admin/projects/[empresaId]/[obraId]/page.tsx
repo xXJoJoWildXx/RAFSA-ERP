@@ -70,6 +70,16 @@ type ObraRow = {
   iva_included: boolean
   garantia_amount: number | null
   garantia_status: "none" | "pending" | "invoiced" | "paid"
+  garantia_pct: number | null
+  contract_total_amount: number | null
+  anticipo_pct: number | null
+  anticipo_amount: number | null
+  anticipo_status: "none" | "pending" | "invoiced" | "paid"
+  anticipo_amount_paid: number | null
+  anticipo_invoice_number: string | null
+  anticipo_date: string | null
+  saldo_pct: number | null
+  saldo_amount: number | null
 }
 
 type ContractRow = {
@@ -120,6 +130,7 @@ type BajadaNotification = {
   assignment_id: string
   employee_id: string
   bajada_date: string
+  reingreso_date: string | null
   status: "pending" | "confirmed" | "dismissed"
   employee_name?: string
 }
@@ -346,6 +357,8 @@ export default function ProjectDetailPage() {
 
   // Cotizacion y Aditivas
   const [billingItems, setBillingItems] = useState<BillingItem[]>([])
+  // Señal para refrescar EstimacionesFacturasCards cuando cambian las aditivas
+  const [estFacReload, setEstFacReload] = useState(0)
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
   const [billingForm, setBillingForm] = useState({
@@ -371,6 +384,10 @@ export default function ProjectDetailPage() {
   const [savingGarantiaPay, setSavingGarantiaPay] = useState(false)
   const [garantiaPreviewUrl, setGarantiaPreviewUrl] = useState<string | null>(null)
   const [garantiaPreviewName, setGarantiaPreviewName] = useState("")
+
+  // Anticipo
+  // (El anticipo ahora es una estimación-anticipo dentro de EstimacionesFacturasCards;
+  //  ya no hay card ni estado standalone aquí.)
 
   // Bajada notifications
   const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
@@ -784,7 +801,17 @@ export default function ProjectDetailPage() {
         notes,
         iva_included,
         garantia_amount,
-        garantia_status
+        garantia_status,
+        garantia_pct,
+        contract_total_amount,
+        anticipo_pct,
+        anticipo_amount,
+        anticipo_status,
+        anticipo_amount_paid,
+        anticipo_invoice_number,
+        anticipo_date,
+        saldo_pct,
+        saldo_amount
       `,
       )
       .single()
@@ -1154,7 +1181,7 @@ export default function ProjectDetailPage() {
       .from("obras")
       .update({ garantia_amount: amount, garantia_status: "pending" })
       .eq("id", obra.id)
-      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status")
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
       .single()
 
     if (!error && data) setObra(data as ObraRow)
@@ -1204,7 +1231,7 @@ export default function ProjectDetailPage() {
         setGarantiaFactura(inserted as AttachmentRow)
         // Update status to invoiced
         const { data: d } = await supabase.from("obras").update({ garantia_status: "invoiced" }).eq("id", obra.id)
-          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status").single()
+          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount").single()
         if (d) setObra(d as ObraRow)
       } else {
         setGarantiaPago(inserted as AttachmentRow)
@@ -1235,7 +1262,7 @@ export default function ProjectDetailPage() {
 
     // Update obra status to paid
     const { data: d } = await supabase.from("obras").update({ garantia_status: "paid" }).eq("id", obra.id)
-      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status").single()
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount").single()
     if (d) setObra(d as ObraRow)
 
     setGarantiaPayDialogOpen(false)
@@ -1269,6 +1296,7 @@ export default function ProjectDetailPage() {
     }
   }
 
+
   // Re-fetcha solo los datos de equipo (para refrescar el card Overview)
   async function fetchTeamStats(obraId: string) {
     const { data, error } = await supabase
@@ -1280,73 +1308,64 @@ export default function ProjectDetailPage() {
     applyTeamStats((data || []) as ObraAssignmentRow[], today)
   }
 
-  // ── Bajada notifications ──
+  // ── Bajada notifications (rango salida → reingreso, cualquier día) ──
 
-  /**
-   * Returns this week's Friday date.
-   * - Sun(0)–Fri(5): returns the coming (or current) Friday
-   * - Sat(6): returns yesterday (Friday that just passed)
-   * This way notifications stay visible on Friday and Saturday.
-   */
-  function getRelevantFriday(from: Date): Date {
-    const d = new Date(from)
-    const day = d.getDay()
-    if (day === 6) {
-      // Saturday → go back 1 day to Friday
-      d.setDate(d.getDate() - 1)
-    } else {
-      // Sun(0)–Fri(5) → advance to Friday
-      d.setDate(d.getDate() + (5 - day))
-    }
-    return d
+  /** Suma N días a una fecha YYYY-MM-DD y devuelve YYYY-MM-DD */
+  function addDaysStr(dateStr: string, days: number): string {
+    const d = new Date(dateStr + "T12:00:00")
+    d.setDate(d.getDate() + days)
+    return toLocalDateStr(d)
   }
 
   async function generateAndFetchBajadaNotifications(obraId: string, silent = false) {
     if (!silent) setBajadaLoading(true)
-    const today = new Date()
+    const todayStr = toLocalDateStr(new Date())
+    const horizonStr = addDaysStr(todayStr, 7) // ventana: salidas dentro de 7 días
 
-    // Find the relevant Friday for this week (stays valid on Fri & Sat too)
-    const relevantFri = getRelevantFriday(today)
-    const nextFriStr = toLocalDateStr(relevantFri)
-
-    // Fetch active assignments whose employee is foráneo with bajada_date = this Friday
+    // Asignaciones activas de foráneos con fecha de salida
     const { data: foraneoAssignments } = await supabase
       .from("obra_assignments")
-      .select("id, employee_id, employees(full_name, is_foraneo, next_bajada_date)")
+      .select("id, employee_id, employees(full_name, is_foraneo, next_bajada_date, next_reingreso_date)")
       .eq("obra_id", obraId)
       .is("assigned_to", null)
 
-    // Filter client-side: only employees that are foráneo with matching bajada date
-    const matchingAssignments = (foraneoAssignments || []).filter((a: any) => {
+    // Filtra: foráneo, con salida definida, viaje próximo (≤7 días) y no terminado
+    const matching = (foraneoAssignments || []).filter((a: any) => {
       const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
-      return emp?.is_foraneo === true && emp?.next_bajada_date === nextFriStr
+      if (!emp?.is_foraneo || !emp?.next_bajada_date) return false
+      const salida = emp.next_bajada_date as string
+      const reingreso = (emp.next_reingreso_date as string | null) ?? null
+      const upcoming = salida <= horizonStr
+      const notOver = reingreso ? reingreso >= todayStr : salida >= todayStr
+      return upcoming && notOver
     })
 
-    if (matchingAssignments.length > 0) {
-      for (const a of matchingAssignments as any[]) {
-        // Check if notification already exists for this assignment + date
-        const { data: existing } = await supabase
-          .from("bajada_notifications")
-          .select("id")
-          .eq("assignment_id", a.id)
-          .eq("bajada_date", nextFriStr)
-          .limit(1)
-
-        if (!existing || existing.length === 0) {
-          await supabase.from("bajada_notifications").insert({
-            obra_id: obraId,
-            assignment_id: a.id,
-            employee_id: a.employee_id,
-            bajada_date: nextFriStr,
-          })
-        }
+    for (const a of matching as any[]) {
+      const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
+      const salida = emp.next_bajada_date as string
+      const reingreso = (emp.next_reingreso_date as string | null) ?? null
+      // Evita duplicar por asignación + fecha de salida
+      const { data: existing } = await supabase
+        .from("bajada_notifications")
+        .select("id")
+        .eq("assignment_id", a.id)
+        .eq("bajada_date", salida)
+        .limit(1)
+      if (!existing || existing.length === 0) {
+        await supabase.from("bajada_notifications").insert({
+          obra_id: obraId,
+          assignment_id: a.id,
+          employee_id: a.employee_id,
+          bajada_date: salida,
+          reingreso_date: reingreso,
+        })
       }
     }
 
-    // Now fetch all pending notifications for this obra
+    // Pendientes de esta obra
     const { data: notifications } = await supabase
       .from("bajada_notifications")
-      .select("id, obra_id, assignment_id, employee_id, bajada_date, status")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, reingreso_date, status")
       .eq("obra_id", obraId)
       .eq("status", "pending")
       .order("bajada_date", { ascending: true })
@@ -1384,13 +1403,23 @@ export default function ProjectDetailPage() {
         .update({ status: "confirmed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
         .eq("id", notification.id)
 
-      // 2. Auto-mark Friday and Saturday as present in obra_attendance
-      const fridayDate = notification.bajada_date
-      const satDate = new Date(fridayDate + "T12:00:00")
-      satDate.setDate(satDate.getDate() + 1)
-      const saturdayDate = toLocalDateStr(satDate)
+      // 2. Marcar asistencia 'bajada' para todo el rango [salida, reingreso] (ambos inclusive)
+      const salida = notification.bajada_date
+      const reingreso = notification.reingreso_date
+      const dates: string[] = []
+      if (reingreso && reingreso >= salida) {
+        let cur = salida
+        let guard = 0
+        while (cur <= reingreso && guard < 120) {
+          dates.push(cur)
+          cur = addDaysStr(cur, 1)
+          guard++
+        }
+      } else {
+        dates.push(salida)
+      }
 
-      for (const dateStr of [fridayDate, saturdayDate]) {
+      for (const dateStr of dates) {
         // Check if record exists
         const { data: existing } = await supabase
           .from("obra_attendance")
@@ -1467,7 +1496,17 @@ export default function ProjectDetailPage() {
             notes,
             iva_included,
             garantia_amount,
-            garantia_status
+            garantia_status,
+            garantia_pct,
+            contract_total_amount,
+            anticipo_pct,
+            anticipo_amount,
+            anticipo_status,
+            anticipo_amount_paid,
+            anticipo_invoice_number,
+            anticipo_date,
+            saldo_pct,
+            saldo_amount
           `,
           )
           .eq("id", obraId)
@@ -1764,6 +1803,7 @@ export default function ProjectDetailPage() {
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
+    setEstFacReload((n) => n + 1) // refresca la subsección de Facturas (aditivas)
   }
 
   async function handleIvaChange(value: boolean) {
@@ -1773,6 +1813,18 @@ export default function ProjectDetailPage() {
   }
 
   async function handleDeleteBillingItem(item: BillingItem) {
+    // Una aditiva con factura asignada no se puede eliminar (rompería la factura)
+    if (item.type === "aditivo") {
+      const { data: facRows } = await supabase
+        .from("obra_facturas")
+        .select("id")
+        .eq("aditivo_id", item.id)
+        .limit(1)
+      if (facRows && facRows.length > 0) {
+        alert("No se puede eliminar una aditiva que ya tiene factura asignada. Elimina primero su factura.")
+        return
+      }
+    }
     const label = item.type === "cotizacion" ? "la cotizacion" : `el aditivo`
     const ok = window.confirm(`Eliminar ${label}?`)
     if (!ok) return
@@ -1798,6 +1850,7 @@ export default function ProjectDetailPage() {
     setBillingItems(loadedBillingItems)
     const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
     setBudgetTotal(totalBillingAmount)
+    setEstFacReload((n) => n + 1) // refresca la subsección de Facturas (aditivas)
   }
 
   function openAddBillingItem(type: "cotizacion" | "aditivo") {
@@ -1982,12 +2035,11 @@ export default function ProjectDetailPage() {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {bajadaNotifications.map((n: BajadaNotification) => {
-                    const bajadaDay = new Date(n.bajada_date + "T00:00:00")
-                    const satDay = new Date(bajadaDay)
-                    satDay.setDate(satDay.getDate() + 1)
                     const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
-                    const friLabel = bajadaDay.toLocaleDateString("es-MX", fmtOpts)
-                    const satLabel = satDay.toLocaleDateString("es-MX", fmtOpts)
+                    const salidaLabel = new Date(n.bajada_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                    const reingresoLabel = n.reingreso_date
+                      ? new Date(n.reingreso_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                      : null
                     const isProcessing = processingBajadaId === n.id
 
                     return (
@@ -2004,7 +2056,7 @@ export default function ProjectDetailPage() {
                               {n.employee_name}
                             </p>
                             <p className="text-xs text-slate-500">
-                              Bajada: {friLabel} y {satLabel}
+                              {reingresoLabel ? `Bajada: ${salidaLabel} → Reingreso: ${reingresoLabel}` : `Bajada: ${salidaLabel}`}
                             </p>
                           </div>
                         </div>
@@ -2039,7 +2091,7 @@ export default function ProjectDetailPage() {
                     )
                   })}
                   <p className="text-[11px] text-slate-600 text-center pt-1">
-                    Al confirmar, se marcara asistencia automatica para viernes y sabado.
+                    Al confirmar, se marcará asistencia automática para todo el rango (salida → reingreso).
                   </p>
                 </CardContent>
               </Card>
@@ -2113,7 +2165,7 @@ export default function ProjectDetailPage() {
           {/* MILESTONES => Documentos (Opcion B con modal) */}
           <TabsContent value="milestones" forceMount className="space-y-6">
             {/* Header */}
-            <ProjectDocumentsTab obraId={obra.id}/>
+            <ProjectDocumentsTab obraId={obra.id} onContractTermsApplied={() => loadData()}/>
           </TabsContent>
 
           {/* ESTADO DE CUENTA */}
@@ -2208,6 +2260,7 @@ export default function ProjectDetailPage() {
               obraId={obra.id}
               currency={budgetCurrency}
               onPaymentRegistered={refreshStateAccounts}
+              reloadSignal={estFacReload}
             />
 
             {/* CARD 5 — Pagos y Movimientos */}

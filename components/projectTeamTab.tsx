@@ -8,6 +8,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { Calendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import type { DateRange } from "react-day-picker"
 import { Plus, Trash2, UserPlus, Crown, FileDown, Loader2, CalendarDays, Check } from "lucide-react"
 import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
 import { logActivity } from "@/lib/activityLog"
@@ -29,8 +32,8 @@ type AssignmentRow = {
   assigned_to: string | null
   created_at: string
   employees:
-    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null }
-    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null }[]
+    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null; next_reingreso_date: string | null; viatics_amount: number | null }
+    | { full_name: string; position_title: string | null; status: string; is_foraneo: boolean; residence_location: string | null; next_bajada_date: string | null; next_reingreso_date: string | null; viatics_amount: number | null }[]
     | null
 }
 
@@ -46,6 +49,8 @@ type TeamMember = {
   is_foraneo: boolean
   residence_location: string | null
   next_bajada_date: string | null
+  next_reingreso_date: string | null
+  viatics_amount: number
   created_at: string
 }
 
@@ -84,6 +89,14 @@ function todayISO() {
   return `${y}-${m}-${day}`
 }
 
+/** Date → YYYY-MM-DD (local) */
+function toDateStr(d: Date) {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
 function isActiveAssignment(a: TeamMember) {
   if (!a.assigned_to) return true
   return a.assigned_to >= todayISO()
@@ -109,8 +122,18 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
   const [members, setMembers] = useState<TeamMember[]>([])
   const [generatingPdf, setGeneratingPdf] = useState(false)
 
-  // Confirmed bajada tracking: assignment_id → bajada_date (Saturday)
-  const [confirmedBajadas, setConfirmedBajadas] = useState<Map<string, string>>(new Map())
+  // Confirmed bajada tracking: assignment_id → { bajada, reingreso }
+  const [confirmedBajadas, setConfirmedBajadas] = useState<Map<string, { bajada: string; reingreso: string | null }>>(new Map())
+
+  // Borradores del lugar de residencia (edición inline cuando está vacío)
+  const [residenceDraft, setResidenceDraft] = useState<Record<string, string>>({})
+
+  // Borradores de viáticos (edición inline)
+  const [viaticsDraft, setViaticsDraft] = useState<Record<string, string>>({})
+  const [savingViatics, setSavingViatics] = useState<string | null>(null)
+
+  // Popover de calendario de bajada abierto (por employee_id)
+  const [bajadaCalOpen, setBajadaCalOpen] = useState<string | null>(null)
 
   // filtros
   const [search, setSearch] = useState("")
@@ -160,7 +183,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         assigned_from,
         assigned_to,
         created_at,
-        employees(full_name, position_title, status, is_foraneo, residence_location, next_bajada_date)
+        employees(full_name, position_title, status, is_foraneo, residence_location, next_bajada_date, next_reingreso_date, viatics_amount)
       `,
       )
       .eq("obra_id", obraId)
@@ -192,6 +215,8 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         is_foraneo: e?.is_foraneo ?? false,
         residence_location: e?.residence_location ?? null,
         next_bajada_date: e?.next_bajada_date ?? null,
+        next_reingreso_date: e?.next_reingreso_date ?? null,
+        viatics_amount: Number(e?.viatics_amount ?? 0),
         created_at: r.created_at,
       }
     })
@@ -204,26 +229,26 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     if (!obraId) return
     const { data } = await supabase
       .from("bajada_notifications")
-      .select("assignment_id, bajada_date")
+      .select("assignment_id, bajada_date, reingreso_date")
       .eq("obra_id", obraId)
       .eq("status", "confirmed")
 
-    const map = new Map<string, string>()
-    ;(data || []).forEach((row: { assignment_id: string; bajada_date: string }) => {
-      map.set(row.assignment_id, row.bajada_date)
+    const map = new Map<string, { bajada: string; reingreso: string | null }>()
+    ;(data || []).forEach((row: { assignment_id: string; bajada_date: string; reingreso_date: string | null }) => {
+      map.set(row.assignment_id, { bajada: row.bajada_date, reingreso: row.reingreso_date ?? null })
     })
     setConfirmedBajadas(map)
   }
 
-  /** Returns true if the assignment is locked (confirmed bajada, weekend hasn't passed) */
+  /** Bloqueado si tiene una bajada confirmada cuyo reingreso aún no ha pasado */
   function isBajadaLocked(member: TeamMember): boolean {
-    const bajadaDate = confirmedBajadas.get(member.assignment_id)
-    if (!bajadaDate) return false
-    // Locked until after Saturday (bajada_date is Friday, so Saturday = +1)
-    const saturday = new Date(bajadaDate + "T23:59:59")
-    saturday.setDate(saturday.getDate() + 1)
-    const now = new Date()
-    return now <= saturday
+    const c = confirmedBajadas.get(member.assignment_id)
+    if (!c) return false
+    // Bloqueado hasta el fin del día de reingreso (si no hay reingreso, hasta el día siguiente a la salida)
+    const endStr = c.reingreso ?? c.bajada
+    const end = new Date(endStr + "T23:59:59")
+    if (!c.reingreso) end.setDate(end.getDate() + 1)
+    return new Date() <= end
   }
 
   async function fetchEmployees() {
@@ -611,13 +636,14 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     setMembers((prev: TeamMember[]) =>
       prev.map((m: TeamMember) =>
         m.employee_id === member.employee_id
-          ? { ...m, is_foraneo: newVal, ...(newVal ? {} : { next_bajada_date: null, residence_location: null }) }
+          ? { ...m, is_foraneo: newVal, ...(newVal ? {} : { next_bajada_date: null, next_reingreso_date: null, residence_location: null }) }
           : m
       )
     )
     const updatePayload: Record<string, unknown> = { is_foraneo: newVal }
     if (!newVal) {
       updatePayload.next_bajada_date = null
+      updatePayload.next_reingreso_date = null
       updatePayload.residence_location = null
     }
     const { error: updErr } = await supabase
@@ -641,44 +667,168 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
       setMembers((prev: TeamMember[]) =>
         prev.map((m: TeamMember) =>
           m.employee_id === member.employee_id
-            ? { ...m, is_foraneo: !newVal, next_bajada_date: member.next_bajada_date, residence_location: member.residence_location }
+            ? { ...m, is_foraneo: !newVal, next_bajada_date: member.next_bajada_date, next_reingreso_date: member.next_reingreso_date, residence_location: member.residence_location }
             : m
         )
       )
     }
   }
 
-  // ── Fecha de bajada ──
-  function isFriday(dateStr: string) {
-    const d = new Date(dateStr + "T00:00:00")
-    return d.getDay() === 5
-  }
-
-  async function handleSetBajadaDate(member: TeamMember, dateStr: string) {
-    if (dateStr && !isFriday(dateStr)) {
-      alert("La fecha de bajada debe ser un viernes.")
-      return
-    }
-    const val = dateStr || null
+  // ── Lugar de residencia (editable inline cuando está vacío) ──
+  async function handleSetResidence(member: TeamMember) {
+    const val = (residenceDraft[member.employee_id] ?? "").trim()
+    if (!val) return
     setMembers((prev: TeamMember[]) =>
       prev.map((m: TeamMember) =>
-        m.employee_id === member.employee_id ? { ...m, next_bajada_date: val } : m
+        m.employee_id === member.employee_id ? { ...m, residence_location: val } : m
+      )
+    )
+    const { error } = await supabase
+      .from("employees")
+      .update({ residence_location: val })
+      .eq("id", member.employee_id)
+    if (error) {
+      console.error("set residence error:", error)
+      setMembers((prev: TeamMember[]) =>
+        prev.map((m: TeamMember) =>
+          m.employee_id === member.employee_id ? { ...m, residence_location: member.residence_location } : m
+        )
+      )
+    }
+  }
+
+  // ── Viáticos (edición inline; registra historial vía /api/employee-salary-history) ──
+  async function handleSaveViatics(member: TeamMember) {
+    const raw = viaticsDraft[member.employee_id]
+    if (raw === undefined) return // no se tocó
+    const val = parseFloat(String(raw).replace(/[^0-9.]/g, ""))
+    if (isNaN(val) || val < 0) {
+      // valor inválido → descarta borrador
+      setViaticsDraft((d) => { const n = { ...d }; delete n[member.employee_id]; return n })
+      return
+    }
+    if (val === Number(member.viatics_amount ?? 0)) {
+      // sin cambios → limpia borrador
+      setViaticsDraft((d) => { const n = { ...d }; delete n[member.employee_id]; return n })
+      return
+    }
+
+    setSavingViatics(member.employee_id)
+    try {
+      // Valores financieros actuales (no se deben pisar con 0)
+      const { data: emp, error: empErr } = await supabase
+        .from("employees")
+        .select("real_salary, bonus_amount, overtime_hour_cost")
+        .eq("id", member.employee_id)
+        .single()
+      if (empErr || !emp) {
+        console.error("fetch employee financials error:", empErr)
+        setError("No se pudieron leer los datos financieros del empleado.")
+        return
+      }
+
+      const { data: authData } = await supabase.auth.getUser()
+      const authUserId = authData?.user?.id ?? null
+
+      const res = await fetch("/api/employee-salary-history", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employeeId: member.employee_id,
+          real_salary: Number(emp.real_salary ?? 0),
+          bonus_amount: Number(emp.bonus_amount ?? 0),
+          overtime_hour_cost: Number(emp.overtime_hour_cost ?? 0),
+          viatics_amount: val,
+          authUserId,
+          change_reason: "Editados desde obra",
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok || json?.error) {
+        console.error("save viatics error:", json)
+        setError(json?.error || "No se pudieron guardar los viáticos.")
+        return
+      }
+
+      // Éxito → actualiza UI y limpia borrador
+      setMembers((prev: TeamMember[]) =>
+        prev.map((m: TeamMember) =>
+          m.employee_id === member.employee_id ? { ...m, viatics_amount: val } : m
+        )
+      )
+      setViaticsDraft((d) => { const n = { ...d }; delete n[member.employee_id]; return n })
+      logActivity({
+        event_type: "employee.viatics_updated",
+        entity_type: "employee",
+        entity_id: member.employee_id,
+        entity_label: member.full_name,
+        metadata: { obra_id: obraId, viatics_amount: val, source: "obra" },
+      })
+    } finally {
+      setSavingViatics(null)
+    }
+  }
+
+  // ── Fecha de bajada (viaje redondo: salida + reingreso, cualquier día) ──
+
+  /** Borra notificaciones pendientes del empleado en esta obra (fechas cambiaron) */
+  async function clearPendingBajadaNotifications(employeeId: string) {
+    await supabase
+      .from("bajada_notifications")
+      .delete()
+      .eq("employee_id", employeeId)
+      .eq("obra_id", obraId)
+      .eq("status", "pending")
+  }
+
+  async function saveBajadaRange(member: TeamMember, salida: string | null, reingreso: string | null) {
+    // Optimista
+    setMembers((prev: TeamMember[]) =>
+      prev.map((m: TeamMember) =>
+        m.employee_id === member.employee_id
+          ? { ...m, next_bajada_date: salida, next_reingreso_date: reingreso }
+          : m
       )
     )
     const { error: updErr } = await supabase
       .from("employees")
-      .update({ next_bajada_date: val })
+      .update({ next_bajada_date: salida, next_reingreso_date: reingreso })
       .eq("id", member.employee_id)
     if (updErr) {
-      console.error("set bajada date error:", updErr)
+      console.error("save bajada range error:", updErr)
       setMembers((prev: TeamMember[]) =>
         prev.map((m: TeamMember) =>
           m.employee_id === member.employee_id
-            ? { ...m, next_bajada_date: member.next_bajada_date }
+            ? { ...m, next_bajada_date: member.next_bajada_date, next_reingreso_date: member.next_reingreso_date }
             : m
         )
       )
+      return
     }
+    await clearPendingBajadaNotifications(member.employee_id)
+  }
+
+  /** Manejo manual de los 2 clics: 1° = salida, 2° = reingreso (cierra al 2°) */
+  async function handleBajadaDayClick(member: TeamMember, day: Date) {
+    const clicked = toDateStr(day)
+    const hasStart = !!member.next_bajada_date
+    const hasEnd = !!member.next_reingreso_date
+
+    if (!hasStart || (hasStart && hasEnd)) {
+      // Primer clic (rango nuevo): fija la salida, espera el reingreso
+      await saveBajadaRange(member, clicked, null)
+      return
+    }
+    // Segundo clic: completa el rango (ordena por si eligen antes de la salida)
+    const start = member.next_bajada_date as string
+    const salida = clicked >= start ? start : clicked
+    const reingreso = clicked >= start ? clicked : start
+    await saveBajadaRange(member, salida, reingreso)
+    setBajadaCalOpen(null)
+  }
+
+  async function handleBajadaClear(member: TeamMember) {
+    await saveBajadaRange(member, null, null)
   }
 
   return (
@@ -894,6 +1044,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                     <TableHead className="text-slate-400 text-center">Residencia</TableHead>
                     <TableHead className="text-slate-400">Lugar</TableHead>
                     <TableHead className="text-slate-400">Fecha de bajada</TableHead>
+                    <TableHead className="text-slate-400">Viáticos</TableHead>
                     <TableHead className="text-slate-400">Asignación</TableHead>
                     <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
@@ -957,54 +1108,143 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                         })()}
                       </TableCell>
 
-                      {/* Lugar (residence_location) */}
+                      {/* Lugar (residence_location) — editable inline cuando está vacío */}
                       <TableCell className="text-sm">
-                        {m.is_foraneo && m.residence_location ? (
+                        {!m.is_foraneo ? (
+                          <span className="text-slate-600">—</span>
+                        ) : m.residence_location ? (
                           <span className="text-slate-300">{m.residence_location}</span>
+                        ) : allowManage ? (
+                          <input
+                            type="text"
+                            value={residenceDraft[m.employee_id] ?? ""}
+                            onChange={(e) => setResidenceDraft((d) => ({ ...d, [m.employee_id]: e.target.value }))}
+                            onBlur={() => handleSetResidence(m)}
+                            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur() } }}
+                            placeholder="Agregar lugar…"
+                            className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-300 focus:border-[#0174bd]/60 outline-none w-[150px] placeholder:text-slate-600"
+                          />
                         ) : (
                           <span className="text-slate-600">—</span>
                         )}
                       </TableCell>
 
-                      {/* Fecha de bajada */}
+                      {/* Fecha de bajada (salida → reingreso, cualquier día) */}
                       <TableCell>
                         {(() => {
                           const locked = isBajadaLocked(m)
                           if (!m.is_foraneo && !locked) {
                             return <span className="text-xs text-slate-600">-</span>
                           }
+                          const fmt = (s: string | null) =>
+                            s ? new Date(s + "T00:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "short" }) : "—"
                           if (locked) {
-                            // Show date as locked (not editable)
-                            const d = new Date((m.next_bajada_date ?? "") + "T00:00:00")
-                            const label = d.toLocaleDateString("es-MX", { weekday: "short", day: "numeric", month: "short" })
                             return (
-                              <div className="flex items-center gap-1.5" title="Fecha bloqueada — bajada confirmada">
+                              <div className="flex items-center gap-1.5" title="Bloqueado — bajada confirmada">
                                 <Check className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                <span className="text-xs text-emerald-300 font-medium">{label}</span>
+                                <span className="text-xs text-emerald-300 font-medium">
+                                  {fmt(m.next_bajada_date)} → {fmt(m.next_reingreso_date)}
+                                </span>
                               </div>
                             )
                           }
                           if (allowManage) {
+                            const range: DateRange | undefined = m.next_bajada_date
+                              ? {
+                                  from: new Date(m.next_bajada_date + "T00:00:00"),
+                                  to: m.next_reingreso_date ? new Date(m.next_reingreso_date + "T00:00:00") : undefined,
+                                }
+                              : undefined
+                            const label = m.next_bajada_date
+                              ? `${fmt(m.next_bajada_date)} → ${m.next_reingreso_date ? fmt(m.next_reingreso_date) : "…"}`
+                              : "Definir fechas"
                             return (
-                              <div className="flex items-center gap-1.5">
-                                <CalendarDays className="w-3.5 h-3.5 text-slate-500 shrink-0" />
-                                <input
-                                  type="date"
-                                  value={m.next_bajada_date ?? ""}
-                                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                                    handleSetBajadaDate(m, e.target.value)
-                                  }
-                                  className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-300 focus:border-[#0174bd]/60 outline-none w-[130px]"
-                                />
-                              </div>
+                              <Popover
+                                open={bajadaCalOpen === m.employee_id}
+                                onOpenChange={(o) => setBajadaCalOpen(o ? m.employee_id : null)}
+                              >
+                                <PopoverTrigger asChild>
+                                  <button className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-md px-2.5 py-1.5 text-xs text-slate-300 hover:border-[#0174bd]/60 cursor-pointer">
+                                    <CalendarDays className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                    <span className={m.next_bajada_date ? "" : "text-slate-500"}>{label}</span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-auto p-0 bg-slate-800 border-slate-700 text-slate-200">
+                                  <Calendar
+                                    mode="range"
+                                    numberOfMonths={1}
+                                    defaultMonth={range?.from}
+                                    selected={range}
+                                    onSelect={() => {}}
+                                    onDayClick={(day: Date) => handleBajadaDayClick(m, day)}
+                                    className={[
+                                      "[&_[data-day]]:text-slate-200",
+                                      "[&_[data-day]:hover]:!bg-slate-700 [&_[data-day]:hover]:!text-white",
+                                      "[&_[data-selected-single=true]]:!bg-[#0174bd] [&_[data-selected-single=true]]:!text-white",
+                                      "[&_[data-range-start=true]]:!bg-[#0174bd] [&_[data-range-start=true]]:!text-white",
+                                      "[&_[data-range-end=true]]:!bg-[#0174bd] [&_[data-range-end=true]]:!text-white",
+                                      "[&_[data-range-middle=true]]:!bg-[#0174bd]/30 [&_[data-range-middle=true]]:!text-slate-100",
+                                    ].join(" ")}
+                                    classNames={{
+                                      weekday: "text-slate-500 flex-1 font-normal text-[0.8rem] select-none",
+                                      caption_label: "text-slate-200 text-sm font-medium select-none",
+                                      month_caption: "flex items-center justify-center h-8 w-full px-8 text-slate-200",
+                                      button_previous: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                      button_next: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                      today:
+                                        "rounded-full bg-[#0174bd]/25 ring-2 ring-inset ring-[#0174bd] text-[#4da8e8] font-semibold animate-pulse " +
+                                        "data-[selected=true]:animate-none data-[selected=true]:bg-transparent data-[selected=true]:ring-0 data-[selected=true]:text-inherit",
+                                      outside: "text-slate-600",
+                                      disabled: "text-slate-700 opacity-50",
+                                    }}
+                                  />
+                                  <div className="flex items-center justify-between gap-2 border-t border-slate-700 px-3 py-2">
+                                    <span className="text-[11px] text-slate-500">1° clic salida · 2° clic reingreso</span>
+                                    <button
+                                      onClick={() => handleBajadaClear(m)}
+                                      className="text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+                                    >
+                                      Limpiar
+                                    </button>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
                             )
                           }
                           return (
                             <span className="text-xs text-slate-400 font-mono">
-                              {m.next_bajada_date ?? "-"}
+                              {(m.next_bajada_date ?? "-")} → {(m.next_reingreso_date ?? "-")}
                             </span>
                           )
                         })()}
+                      </TableCell>
+
+                      {/* Viáticos (editable solo para foráneos; registra historial) */}
+                      <TableCell>
+                        {!m.is_foraneo ? (
+                          <span className="text-slate-600">—</span>
+                        ) : allowManage ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-slate-500 text-xs">$</span>
+                            <input
+                              type="text"
+                              inputMode="decimal"
+                              value={viaticsDraft[m.employee_id] ?? String(m.viatics_amount ?? 0)}
+                              onChange={(e) => setViaticsDraft((d) => ({ ...d, [m.employee_id]: e.target.value }))}
+                              onBlur={() => handleSaveViatics(m)}
+                              onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); (e.target as HTMLInputElement).blur() } }}
+                              disabled={savingViatics === m.employee_id}
+                              className="bg-slate-900 border border-slate-700 rounded-md px-2 py-1 text-xs text-slate-300 focus:border-[#0174bd]/60 outline-none w-[100px] disabled:opacity-50"
+                            />
+                            {savingViatics === m.employee_id && (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-slate-500 shrink-0" />
+                            )}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-slate-300 font-mono">
+                            ${Number(m.viatics_amount ?? 0).toLocaleString("es-MX", { minimumFractionDigits: 2 })}
+                          </span>
+                        )}
                       </TableCell>
 
                       <TableCell className="text-sm text-slate-400">
