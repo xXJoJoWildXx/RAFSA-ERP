@@ -37,6 +37,8 @@ import {
   Bell,
   CalendarDays,
   CheckCircle,
+  Check,
+  ChevronDown,
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
@@ -45,6 +47,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
 import { ProjectTeamTab } from "@/components/projectTeamTab"
@@ -306,6 +309,8 @@ export default function ProjectDetailPage() {
   // Editar obra
   const [editOpen, setEditOpen] = useState(false)
   const [savingEdit, setSavingEdit] = useState(false)
+  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false)
+  const [savingStatus, setSavingStatus] = useState(false)
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
@@ -371,6 +376,18 @@ export default function ProjectDetailPage() {
   const [savingBilling, setSavingBilling] = useState(false)
   const [billingError, setBillingError] = useState<string | null>(null)
 
+  // Datos financieros (captura manual antes del contrato)
+  const [finDialogOpen, setFinDialogOpen] = useState(false)
+  const [finForm, setFinForm] = useState({
+    monto_total: "",
+    anticipo_pct: "",
+    anticipo_amount: "",
+    garantia_pct: "",
+    garantia_amount: "",
+  })
+  const [savingFin, setSavingFin] = useState(false)
+  const [finError, setFinError] = useState<string | null>(null)
+
   // Fondo de garantía
   const [garantiaDialogOpen, setGarantiaDialogOpen] = useState(false)
   const [garantiaAmount, setGarantiaAmount] = useState("")
@@ -379,6 +396,8 @@ export default function ProjectDetailPage() {
   const [garantiaPago, setGarantiaPago] = useState<AttachmentRow | null>(null)
   const [uploadingGarantiaFile, setUploadingGarantiaFile] = useState<"factura" | "pago" | null>(null)
   const garantiaFileRef = useRef<HTMLInputElement | null>(null)
+  // Objetivo del selector de archivos de garantía (no bloquea la UI si se cancela el explorador)
+  const garantiaUploadTargetRef = useRef<"factura" | "pago" | null>(null)
   const [garantiaPayDialogOpen, setGarantiaPayDialogOpen] = useState(false)
   const [garantiaPayForm, setGarantiaPayForm] = useState({ amount: "", note: "", method: "transfer", bank_ref: "" })
   const [savingGarantiaPay, setSavingGarantiaPay] = useState(false)
@@ -1235,6 +1254,21 @@ export default function ProjectDetailPage() {
         if (d) setObra(d as ObraRow)
       } else {
         setGarantiaPago(inserted as AttachmentRow)
+        // Al subir el comprobante, la obra queda oficialmente completada
+        const { data: dClosed } = await supabase
+          .from("obras")
+          .update({ status: "closed" })
+          .eq("id", obra.id)
+          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
+          .single()
+        if (dClosed) setObra(dClosed as ObraRow)
+        logActivity({
+          event_type: "obra.completed",
+          entity_type: "obra",
+          entity_id: obra.id,
+          entity_label: obra.name,
+          metadata: { obra_id: obra.id, via: "garantia_comprobante" },
+        })
       }
     }
     setUploadingGarantiaFile(null)
@@ -1717,6 +1751,46 @@ export default function ProjectDetailPage() {
 
   const statusUi = mapDbStatusToBadge(obra.status)
 
+  // Opciones de estatus para el selector rápido del card de Resumen
+  const STATUS_OPTIONS: { value: DbObraStatus; label: string; dot: string }[] = [
+    { value: "planned",     label: "Planeada",   dot: "bg-yellow-400" },
+    { value: "in_progress", label: "En progreso", dot: "bg-blue-400" },
+    { value: "paused",      label: "En pausa",    dot: "bg-slate-400" },
+    { value: "closed",      label: "Completada",  dot: "bg-green-400" },
+  ]
+
+  // Acento del ícono según el estatus
+  const STATUS_ACCENT: Record<DbObraStatus, { icon: string; iconBg: string }> = {
+    planned:     { icon: "text-yellow-400", iconBg: "bg-yellow-500/15" },
+    in_progress: { icon: "text-blue-400",   iconBg: "bg-blue-500/15" },
+    paused:      { icon: "text-slate-300",  iconBg: "bg-slate-500/20" },
+    closed:      { icon: "text-green-400",  iconBg: "bg-green-500/15" },
+  }
+  const statusAccent = STATUS_ACCENT[obra.status] ?? STATUS_ACCENT.planned
+
+  async function handleChangeStatus(newStatus: DbObraStatus) {
+    if (!obra || newStatus === obra.status || savingStatus) { setStatusPopoverOpen(false); return }
+    setSavingStatus(true)
+    const { data, error } = await supabase
+      .from("obras")
+      .update({ status: newStatus })
+      .eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
+      .single()
+    if (!error && data) {
+      setObra(data as ObraRow)
+      logActivity({
+        event_type: "obra.status_updated",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { obra_id: obra.id, status: newStatus },
+      })
+    }
+    setSavingStatus(false)
+    setStatusPopoverOpen(false)
+  }
+
   const displayedProgress = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
 
   const budgetFormatted = formatCurrency(budgetTotal, budgetCurrency)
@@ -1867,6 +1941,124 @@ export default function ProjectDetailPage() {
     setBillingDialogOpen(true)
   }
 
+  // ===== Datos financieros (captura manual) =====
+
+  function openFinancialData() {
+    setFinForm({ monto_total: "", anticipo_pct: "", anticipo_amount: "", garantia_pct: "", garantia_amount: "" })
+    setFinError(null)
+    setFinDialogOpen(true)
+  }
+
+  const OBRA_SELECT =
+    "id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount"
+
+  async function handleSaveFinancialData() {
+    if (!obra) return
+    const parse = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : null }
+    const montoTotal = parse(finForm.monto_total)
+    if (montoTotal === null || montoTotal <= 0) {
+      setFinError("El monto total del contrato es obligatorio y debe ser mayor a 0.")
+      return
+    }
+    const antPct = parse(finForm.anticipo_pct) ?? 0
+    const antAmt = parse(finForm.anticipo_amount) ?? 0
+    const garPct = parse(finForm.garantia_pct) ?? 0
+    const garAmt = parse(finForm.garantia_amount) ?? 0
+
+    setSavingFin(true)
+    setFinError(null)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      // 1) Términos financieros en obras
+      const obraUpdate: Record<string, unknown> = {
+        contract_total_amount: montoTotal,
+        anticipo_pct: antPct,
+        anticipo_amount: antAmt,
+        garantia_pct: garPct,
+      }
+      if (antAmt > 0 && (obra.anticipo_status ?? "none") === "none") obraUpdate.anticipo_status = "pending"
+      // Garantía monto/estatus: solo si aún no está configurada
+      if ((obra.garantia_status ?? "none") === "none") {
+        obraUpdate.garantia_amount = garAmt
+        if (garAmt > 0) obraUpdate.garantia_status = "pending"
+      }
+      // Al registrar la cotización, la obra pasa de "Planeada" a "En progreso"
+      if ((obra.status ?? "") === "planned") obraUpdate.status = "in_progress"
+      const { error: obraErr } = await supabase.from("obras").update(obraUpdate).eq("id", obra.id)
+      if (obraErr) { setFinError("No se pudieron guardar los datos financieros."); setSavingFin(false); return }
+
+      // 2) Cotización en obra_billing_items (crear si no existe; actualizar si difiere)
+      const existingCot = billingItems.find((b) => b.type === "cotizacion") ?? null
+      if (!existingCot) {
+        const { error: cotErr } = await supabase.from("obra_billing_items").insert({
+          obra_id: obra.id, type: "cotizacion",
+          description: "Monto del contrato (captura manual)",
+          amount: montoTotal, date: toLocalDateStr(new Date()), created_by: userId, with_iva: true,
+        })
+        if (cotErr) { setFinError("No se pudo crear la cotización."); setSavingFin(false); return }
+      } else if (Math.abs(Number(existingCot.amount) - montoTotal) > 0.01) {
+        await supabase.from("obra_billing_items").update({ amount: montoTotal }).eq("id", existingCot.id)
+      }
+
+      // 3) Anticipo → estimación-anticipo (is_anticipo) si hay monto > 0
+      if (antAmt > 0) {
+        const { data: antEst } = await supabase
+          .from("obra_estimaciones")
+          .select("id, status")
+          .eq("obra_id", obra.id)
+          .eq("is_anticipo", true)
+          .limit(1)
+          .maybeSingle()
+        const desc = `Anticipo${antPct > 0 ? ` (${antPct}%)` : ""}`
+        if (!antEst) {
+          await supabase.from("obra_estimaciones").insert({
+            obra_id: obra.id, number: 0, description: desc, amount: antAmt,
+            status: "pending", is_anticipo: true, created_by: userId,
+          })
+        } else if (String(antEst.status) !== "completed") {
+          await supabase.from("obra_estimaciones")
+            .update({ description: desc, amount: antAmt, updated_at: new Date().toISOString() })
+            .eq("id", antEst.id)
+        }
+      }
+
+      logActivity({
+        event_type: "billing.financials_registered",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: `Datos financieros en ${obra.name}`,
+        metadata: { obra_id: obra.id, contract_total_amount: montoTotal, anticipo_amount: antAmt, garantia_amount: garAmt },
+      })
+
+      // Recargar obra + billing items + estimaciones
+      const { data: obraData } = await supabase.from("obras").select(OBRA_SELECT).eq("id", obra.id).single()
+      if (obraData) setObra(obraData as ObraRow)
+      const { data: billingItemsData } = await supabase
+        .from("obra_billing_items")
+        .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+        .eq("obra_id", obra.id)
+        .order("date", { ascending: true })
+      const loaded = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
+      setBillingItems(loaded)
+      setBudgetTotal(loaded.reduce((s, it) => s + Number(it.amount || 0), 0))
+      setEstFacReload((n) => n + 1)
+
+      setFinDialogOpen(false)
+    } finally {
+      setSavingFin(false)
+    }
+  }
+
+  // Auto-cálculo de monto = total × % (para el formulario financiero)
+  function finCalcAmount(pctStr: string, totalStr: string): string | null {
+    const pct = parseFloat(String(pctStr).replace(/[^0-9.]/g, ""))
+    const total = parseFloat(String(totalStr).replace(/[^0-9.]/g, ""))
+    if (!Number.isFinite(pct) || !Number.isFinite(total) || pct <= 0 || total <= 0) return null
+    return String(Math.round(total * pct) / 100)
+  }
+
   return (
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
@@ -1973,13 +2165,44 @@ export default function ProjectDetailPage() {
                 <div className="flex items-start justify-between">
                   <div>
                     <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Estatus</p>
-                    <Badge className={`${statusUi.className} mt-2`}>{statusUi.label}</Badge>
-                    <p className="text-xs text-slate-500 mt-2 leading-relaxed">
-                      Inicio: {startDate}<br />Fin: {endDate}
-                    </p>
+                    <Popover open={statusPopoverOpen} onOpenChange={setStatusPopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          title="Cambiar estatus"
+                          className={`${statusUi.className} mt-3 inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-lg font-bold cursor-pointer transition-all hover:brightness-125 hover:ring-2 hover:ring-white/15 focus:outline-none`}
+                        >
+                          {savingStatus ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
+                          {statusUi.label}
+                          <ChevronDown className="w-5 h-5 opacity-70" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-56 p-1.5 bg-slate-800 border-slate-700 shadow-xl">
+                        <p className="px-2 py-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Cambiar estatus</p>
+                        {STATUS_OPTIONS.map((opt) => {
+                          const active = obra.status === opt.value
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => handleChangeStatus(opt.value)}
+                              disabled={savingStatus}
+                              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                                active ? "bg-slate-700/70 text-slate-100" : "text-slate-300 hover:bg-slate-700/50"
+                              }`}
+                            >
+                              <span className={`w-2.5 h-2.5 rounded-full ${opt.dot} shrink-0`} />
+                              <span className="flex-1 text-left">{opt.label}</span>
+                              {active && <Check className="w-4 h-4 text-[#4da8e8] shrink-0" />}
+                            </button>
+                          )
+                        })}
+                      </PopoverContent>
+                    </Popover>
+                    <p className="text-[11px] text-slate-500 mt-2">Haz clic para cambiar el estatus</p>
                   </div>
-                  <div className="p-2.5 bg-blue-500/15 rounded-xl">
-                    <Clock className="w-5 h-5 text-blue-400" />
+                  <div className={`p-2.5 ${statusAccent.iconBg} rounded-xl transition-colors duration-300`}>
+                    <Clock className={`w-5 h-5 ${statusAccent.icon} transition-colors duration-300`} />
                   </div>
                 </div>
               </div>
@@ -2213,9 +2436,9 @@ export default function ProjectDetailPage() {
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Cotización</CardTitle>
                 {!cotizacion && (
-                  <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("cotizacion")}>
+                  <Button size="sm" className="cursor-pointer" onClick={openFinancialData}>
                     <Plus className="w-4 h-4 mr-1" />
-                    Registrar cotización
+                    Registrar Datos Financieros
                   </Button>
                 )}
               </CardHeader>
@@ -2446,8 +2669,10 @@ export default function ProjectDetailPage() {
                   onChange={(e) => {
                     const file = e.target.files?.[0]
                     e.target.value = ""
-                    if (file && uploadingGarantiaFile) {
-                      handleUploadGarantiaFile(uploadingGarantiaFile, file)
+                    const target = garantiaUploadTargetRef.current
+                    garantiaUploadTargetRef.current = null
+                    if (file && target) {
+                      handleUploadGarantiaFile(target, file)
                     }
                   }}
                 />
@@ -2512,7 +2737,7 @@ export default function ProjectDetailPage() {
                             variant="outline"
                             disabled={!!uploadingGarantiaFile}
                             className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
-                            onClick={() => { setUploadingGarantiaFile("factura"); garantiaFileRef.current?.click() }}
+                            onClick={() => { garantiaUploadTargetRef.current = "factura"; garantiaFileRef.current?.click() }}
                           >
                             {uploadingGarantiaFile === "factura" ? (
                               <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
@@ -2581,7 +2806,7 @@ export default function ProjectDetailPage() {
                             variant="outline"
                             disabled={!!uploadingGarantiaFile}
                             className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
-                            onClick={() => { setUploadingGarantiaFile("pago"); garantiaFileRef.current?.click() }}
+                            onClick={() => { garantiaUploadTargetRef.current = "pago"; garantiaFileRef.current?.click() }}
                           >
                             {uploadingGarantiaFile === "pago" ? (
                               <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
@@ -3239,6 +3464,110 @@ export default function ProjectDetailPage() {
               <Button variant="outline" onClick={() => setBillingDialogOpen(false)} disabled={savingBilling} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">Cancelar</Button>
               <Button onClick={handleSaveBillingItem} disabled={savingBilling} className="cursor-pointer">
                 {savingBilling ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Registrar Datos Financieros (captura manual) */}
+      <Dialog open={finDialogOpen} onOpenChange={(v) => (savingFin ? null : setFinDialogOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Registrar Datos Financieros</DialogTitle>
+          </DialogHeader>
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => { if (e.key === "Enter" && !savingFin) handleSaveFinancialData() }}
+          >
+            <p className="text-xs text-slate-500">
+              Captura manualmente los datos financieros de la obra cuando aún no hay contrato.
+              Al subir el contrato después, la IA comparará lo capturado con lo que detecte.
+            </p>
+
+            {/* Monto total del contrato */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Monto total del contrato *</label>
+              <Input
+                value={finForm.monto_total}
+                onChange={(e) => setFinForm((f) => {
+                  const total = e.target.value
+                  return {
+                    ...f,
+                    monto_total: total,
+                    anticipo_amount: finCalcAmount(f.anticipo_pct, total) ?? f.anticipo_amount,
+                    garantia_amount: finCalcAmount(f.garantia_pct, total) ?? f.garantia_amount,
+                  }
+                })}
+                placeholder="0.00"
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+              />
+              <p className="text-[11px] text-slate-500">Alimenta la Cotización de la obra.</p>
+            </div>
+
+            {/* Anticipo */}
+            <div className="rounded-lg border border-slate-700 bg-slate-700/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Anticipo</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Porcentaje %</label>
+                  <Input
+                    value={finForm.anticipo_pct}
+                    onChange={(e) => setFinForm((f) => {
+                      const pct = e.target.value
+                      return { ...f, anticipo_pct: pct, anticipo_amount: finCalcAmount(pct, f.monto_total) ?? f.anticipo_amount }
+                    })}
+                    placeholder="30"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Monto</label>
+                  <Input
+                    value={finForm.anticipo_amount}
+                    onChange={(e) => setFinForm((f) => ({ ...f, anticipo_amount: e.target.value }))}
+                    placeholder="0.00"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Fondo de Garantía */}
+            <div className="rounded-lg border border-slate-700 bg-slate-700/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Fondo de Garantía</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Porcentaje %</label>
+                  <Input
+                    value={finForm.garantia_pct}
+                    onChange={(e) => setFinForm((f) => {
+                      const pct = e.target.value
+                      return { ...f, garantia_pct: pct, garantia_amount: finCalcAmount(pct, f.monto_total) ?? f.garantia_amount }
+                    })}
+                    placeholder="5"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Monto</label>
+                  <Input
+                    value={finForm.garantia_amount}
+                    onChange={(e) => setFinForm((f) => ({ ...f, garantia_amount: e.target.value }))}
+                    placeholder="0.00"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {finError && (
+              <div className="rounded-md border border-red-700/50 bg-red-900/30 px-3 py-2 text-sm text-red-300">{finError}</div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setFinDialogOpen(false)} disabled={savingFin} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">Cancelar</Button>
+              <Button onClick={handleSaveFinancialData} disabled={savingFin} className="cursor-pointer">
+                {savingFin ? "Guardando..." : "Guardar"}
               </Button>
             </div>
           </div>

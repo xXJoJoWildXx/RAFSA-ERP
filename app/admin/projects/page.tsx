@@ -12,10 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown, FileText, CheckSquare } from "lucide-react"
+import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown, FileText, FileSpreadsheet, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
+import { generateEDCExcel } from "@/lib/edcExcel"
 import { fetchEDCObras } from "@/lib/edcData"
 
 type Empresa = {
@@ -38,6 +39,7 @@ export default function EmpresasPage() {
   const [edcMode, setEdcMode]             = useState(false)
   const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
   const [edcGenerating, setEdcGenerating] = useState(false)
+  const [edcGeneratingExcel, setEdcGeneratingExcel] = useState(false)
 
   const [createOpen, setCreateOpen] = useState(false)
   const [nombre, setNombre]         = useState("")
@@ -115,49 +117,69 @@ export default function EmpresasPage() {
     setEdcSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
   }
 
+  // Construye los datos del EDC (empresas → obras con financieros) + etiqueta del usuario
+  async function buildEdcData(): Promise<{ edcData: EDCEmpresa[]; userLabel: string }> {
+    const selectedIds = Array.from(edcSelected)
+
+    // Obras de las empresas seleccionadas (solo id + empresa para agrupar)
+    const { data: obrasData } = await supabase
+      .from("obras")
+      .select("id, empresa_id")
+      .in("empresa_id", selectedIds)
+      .order("created_at", { ascending: false })
+
+    const obras = (obrasData || []) as { id: string; empresa_id: string }[]
+    const obraIds = obras.map((o) => o.id)
+
+    // Datos financieros completos por obra (contrato, anticipo, garantía,
+    // estimaciones con neto a facturar, facturas y cobros)
+    const financials = await fetchEDCObras(obraIds)
+
+    const edcData: EDCEmpresa[] = selectedIds
+      .map((id) => {
+        const empresa = empresas.find((e) => e.id === id)
+        if (!empresa) return null
+        return {
+          id: empresa.id,
+          name: empresa.name,
+          obras: obras
+            .filter((o) => o.empresa_id === id)
+            .map((o) => financials[o.id])
+            .filter(Boolean),
+        } as EDCEmpresa
+      })
+      .filter(Boolean) as EDCEmpresa[]
+
+    const { data: authData } = await supabase.auth.getUser()
+    const userLabel = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+    return { edcData, userLabel }
+  }
+
   async function handleGenerateEDC() {
-    if (edcSelected.size === 0 || edcGenerating) return
+    if (edcSelected.size === 0 || edcGenerating || edcGeneratingExcel) return
     setEdcGenerating(true)
     try {
-      const selectedIds = Array.from(edcSelected)
-
-      // Obras de las empresas seleccionadas (solo id + empresa para agrupar)
-      const { data: obrasData } = await supabase
-        .from("obras")
-        .select("id, empresa_id")
-        .in("empresa_id", selectedIds)
-        .order("created_at", { ascending: false })
-
-      const obras = (obrasData || []) as { id: string; empresa_id: string }[]
-      const obraIds = obras.map((o) => o.id)
-
-      // Datos financieros completos por obra (contrato, anticipo, garantía,
-      // estimaciones con neto a facturar, facturas y cobros)
-      const financials = await fetchEDCObras(obraIds)
-
-      const edcData: EDCEmpresa[] = selectedIds
-        .map((id) => {
-          const empresa = empresas.find((e) => e.id === id)
-          if (!empresa) return null
-          return {
-            id: empresa.id,
-            name: empresa.name,
-            obras: obras
-              .filter((o) => o.empresa_id === id)
-              .map((o) => financials[o.id])
-              .filter(Boolean),
-          } as EDCEmpresa
-        })
-        .filter(Boolean) as EDCEmpresa[]
-
-      const { data: authData } = await supabase.auth.getUser()
-      const userLabel = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+      const { edcData, userLabel } = await buildEdcData()
       await generateEDCPdf(edcData, new Date(), userLabel)
       exitEdcMode()
     } catch (err) {
-      console.error("Error generando EDC:", err)
+      console.error("Error generando EDC (PDF):", err)
     } finally {
       setEdcGenerating(false)
+    }
+  }
+
+  async function handleGenerateExcel() {
+    if (edcSelected.size === 0 || edcGenerating || edcGeneratingExcel) return
+    setEdcGeneratingExcel(true)
+    try {
+      const { edcData, userLabel } = await buildEdcData()
+      await generateEDCExcel(edcData, new Date(), userLabel)
+      exitEdcMode()
+    } catch (err) {
+      console.error("Error generando EDC (Excel):", err)
+    } finally {
+      setEdcGeneratingExcel(false)
     }
   }
 
@@ -265,18 +287,29 @@ export default function EmpresasPage() {
                 </div>
               ) : edcMode ? (
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={exitEdcMode} disabled={edcGenerating} className={btnOutline}>
+                  <Button variant="outline" onClick={exitEdcMode} disabled={edcGenerating || edcGeneratingExcel} className={btnOutline}>
                     <X className="w-4 h-4 mr-2" />Cancelar
                   </Button>
                   <Button
                     onClick={handleGenerateEDC}
-                    disabled={edcSelected.size === 0 || edcGenerating}
-                    className="font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                    disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                    className="font-semibold bg-[#8a1c3b] hover:bg-[#701530] text-white disabled:opacity-40"
                   >
                     {edcGenerating ? (
                       <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
                     ) : (
                       <><FileText className="w-4 h-4 mr-2" />Generar PDF{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleGenerateExcel}
+                    disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                    className="font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                  >
+                    {edcGeneratingExcel ? (
+                      <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
+                    ) : (
+                      <><FileSpreadsheet className="w-4 h-4 mr-2" />Generar Excel{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>
                     )}
                   </Button>
                 </div>
@@ -451,9 +484,9 @@ export default function EmpresasPage() {
               <div className="w-px h-5 bg-slate-600" />
               <Button
                 onClick={handleGenerateEDC}
-                disabled={edcSelected.size === 0 || edcGenerating}
+                disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
                 size="sm"
-                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+                className="bg-[#8a1c3b] hover:bg-[#701530] text-white font-semibold disabled:opacity-40 h-8 px-4"
               >
                 {edcGenerating ? (
                   <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
@@ -461,7 +494,19 @@ export default function EmpresasPage() {
                   <><FileText className="w-3.5 h-3.5 mr-1.5" />Generar PDF</>
                 )}
               </Button>
-              <button onClick={exitEdcMode} disabled={edcGenerating}
+              <Button
+                onClick={handleGenerateExcel}
+                disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                {edcGeneratingExcel ? (
+                  <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
+                ) : (
+                  <><FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />Generar Excel</>
+                )}
+              </Button>
+              <button onClick={exitEdcMode} disabled={edcGenerating || edcGeneratingExcel}
                 className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
                 <X className="w-4 h-4" />
               </button>
