@@ -384,9 +384,14 @@ export default function ProjectDetailPage() {
     anticipo_amount: "",
     garantia_pct: "",
     garantia_amount: "",
+    with_iva: true,
   })
   const [savingFin, setSavingFin] = useState(false)
   const [finError, setFinError] = useState<string | null>(null)
+  // Borrado de datos financieros (doble confirmación)
+  const [finDeleteOpen, setFinDeleteOpen] = useState(false)
+  const [finDeleteAck, setFinDeleteAck] = useState(false)
+  const [deletingFin, setDeletingFin] = useState(false)
 
   // Fondo de garantía
   const [garantiaDialogOpen, setGarantiaDialogOpen] = useState(false)
@@ -867,10 +872,23 @@ export default function ProjectDetailPage() {
   async function handleDeleteObra() {
     if (!obra) return
     setDeleteLoading(true)
-    const { error } = await supabase.from("obras").delete().eq("id", obra.id)
-
-    if (error) {
-      console.error("Error deleting obra:", error)
+    try {
+      // Borrado exhaustivo server-side (datos, archivos, nóminas, asistencias, etc.)
+      const res = await fetch("/api/obras", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obraIds: [obra.id] }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        console.error("Error deleting obra:", j)
+        alert(j?.error || "No se pudo eliminar la obra.")
+        setDeleteLoading(false)
+        return
+      }
+    } catch (e) {
+      console.error("Error deleting obra:", e)
+      alert("No se pudo eliminar la obra.")
       setDeleteLoading(false)
       return
     }
@@ -1944,7 +1962,7 @@ export default function ProjectDetailPage() {
   // ===== Datos financieros (captura manual) =====
 
   function openFinancialData() {
-    setFinForm({ monto_total: "", anticipo_pct: "", anticipo_amount: "", garantia_pct: "", garantia_amount: "" })
+    setFinForm({ monto_total: "", anticipo_pct: "", anticipo_amount: "", garantia_pct: "", garantia_amount: "", with_iva: true })
     setFinError(null)
     setFinDialogOpen(true)
   }
@@ -1979,11 +1997,10 @@ export default function ProjectDetailPage() {
         garantia_pct: garPct,
       }
       if (antAmt > 0 && (obra.anticipo_status ?? "none") === "none") obraUpdate.anticipo_status = "pending"
-      // Garantía monto/estatus: solo si aún no está configurada
-      if ((obra.garantia_status ?? "none") === "none") {
-        obraUpdate.garantia_amount = garAmt
-        if (garAmt > 0) obraUpdate.garantia_status = "pending"
-      }
+      // Garantía: siempre se guarda el monto capturado (el % ya se guarda arriba);
+      // el estatus pasa a "pending" solo si hay monto y aún no estaba configurada.
+      obraUpdate.garantia_amount = garAmt
+      if (garAmt > 0 && (obra.garantia_status ?? "none") === "none") obraUpdate.garantia_status = "pending"
       // Al registrar la cotización, la obra pasa de "Planeada" a "En progreso"
       if ((obra.status ?? "") === "planned") obraUpdate.status = "in_progress"
       const { error: obraErr } = await supabase.from("obras").update(obraUpdate).eq("id", obra.id)
@@ -1995,7 +2012,7 @@ export default function ProjectDetailPage() {
         const { error: cotErr } = await supabase.from("obra_billing_items").insert({
           obra_id: obra.id, type: "cotizacion",
           description: "Monto del contrato (captura manual)",
-          amount: montoTotal, date: toLocalDateStr(new Date()), created_by: userId, with_iva: true,
+          amount: montoTotal, date: toLocalDateStr(new Date()), created_by: userId, with_iva: finForm.with_iva,
         })
         if (cotErr) { setFinError("No se pudo crear la cotización."); setSavingFin(false); return }
       } else if (Math.abs(Number(existingCot.amount) - montoTotal) > 0.01) {
@@ -2057,6 +2074,87 @@ export default function ProjectDetailPage() {
     const total = parseFloat(String(totalStr).replace(/[^0-9.]/g, ""))
     if (!Number.isFinite(pct) || !Number.isFinite(total) || pct <= 0 || total <= 0) return null
     return String(Math.round(total * pct) / 100)
+  }
+
+  function openDeleteFinancialData() {
+    setFinDeleteAck(false)
+    setFinError(null)
+    setFinDeleteOpen(true)
+  }
+
+  // Elimina los 3 grupos de datos financieros: cotización (monto contrato), anticipo y fondo de garantía
+  async function handleDeleteFinancialData() {
+    if (!obra || !finDeleteAck || deletingFin) return
+    setDeletingFin(true)
+    try {
+      // 1) Eliminar la cotización (obra_billing_items)
+      const cot = billingItems.find((b) => b.type === "cotizacion")
+      if (cot) {
+        await supabase.from("obra_billing_items").delete().eq("id", cot.id)
+      }
+
+      // 2) Eliminar la estimación-anticipo, solo si no tiene factura asignada
+      const { data: antEst } = await supabase
+        .from("obra_estimaciones")
+        .select("id")
+        .eq("obra_id", obra.id)
+        .eq("is_anticipo", true)
+        .limit(1)
+        .maybeSingle()
+      if (antEst) {
+        const { data: facRows } = await supabase
+          .from("obra_facturas")
+          .select("id")
+          .eq("estimacion_id", antEst.id)
+          .limit(1)
+        if (!facRows || facRows.length === 0) {
+          await supabase.from("obra_estimaciones").delete().eq("id", antEst.id)
+        }
+      }
+
+      // 3) Limpiar los campos financieros en obras
+      const { data: obraData } = await supabase
+        .from("obras")
+        .update({
+          contract_total_amount: null,
+          anticipo_pct: null,
+          anticipo_amount: null,
+          anticipo_status: "none",
+          anticipo_amount_paid: 0,
+          anticipo_invoice_number: null,
+          anticipo_date: null,
+          garantia_pct: null,
+          garantia_amount: null,
+          garantia_status: "none",
+        })
+        .eq("id", obra.id)
+        .select(OBRA_SELECT)
+        .single()
+      if (obraData) setObra(obraData as ObraRow)
+
+      logActivity({
+        event_type: "billing.financials_deleted",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: `Datos financieros eliminados en ${obra.name}`,
+        metadata: { obra_id: obra.id },
+      })
+
+      // Recargar billing items + estimaciones
+      const { data: billingItemsData } = await supabase
+        .from("obra_billing_items")
+        .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+        .eq("obra_id", obra.id)
+        .order("date", { ascending: true })
+      const loaded = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
+      setBillingItems(loaded)
+      setBudgetTotal(loaded.reduce((s, it) => s + Number(it.amount || 0), 0))
+      setEstFacReload((n) => n + 1)
+
+      setFinDeleteOpen(false)
+    } finally {
+      setDeletingFin(false)
+    }
   }
 
   return (
@@ -2468,7 +2566,7 @@ export default function ProjectDetailPage() {
                         <Button size="sm" variant="outline" onClick={() => openEditBillingItem(cotizacion)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">
                           Editar
                         </Button>
-                        <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(cotizacion)}>
+                        <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={openDeleteFinancialData}>
                           <Trash2 className="w-4 h-4" />
                         </Button>
                       </div>
@@ -3561,6 +3659,37 @@ export default function ProjectDetailPage() {
               </div>
             </div>
 
+            {/* IVA */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">IVA</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFinForm((f) => ({ ...f, with_iva: true }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    finForm.with_iva
+                      ? "bg-green-500/15 border-green-500/50 text-green-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFinForm((f) => ({ ...f, with_iva: false }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    !finForm.with_iva
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <XCircle className="w-4 h-4" />
+                  Sin IVA
+                </button>
+              </div>
+            </div>
+
             {finError && (
               <div className="rounded-md border border-red-700/50 bg-red-900/30 px-3 py-2 text-sm text-red-300">{finError}</div>
             )}
@@ -3568,6 +3697,77 @@ export default function ProjectDetailPage() {
               <Button variant="outline" onClick={() => setFinDialogOpen(false)} disabled={savingFin} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">Cancelar</Button>
               <Button onClick={handleSaveFinancialData} disabled={savingFin} className="cursor-pointer">
                 {savingFin ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Eliminar Datos Financieros (doble confirmación) */}
+      <Dialog open={finDeleteOpen} onOpenChange={(v) => (deletingFin ? null : setFinDeleteOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-5 h-5" />
+              Eliminar datos financieros
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-1">
+            <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-300">
+              Esta acción es <strong>irreversible</strong>. Se eliminarán los siguientes datos financieros de la obra:
+            </div>
+
+            <div className="rounded-lg border border-slate-700 divide-y divide-slate-700 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2.5 bg-slate-700/30">
+                <span className="text-sm text-slate-300">Monto total del contrato (Cotización)</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(cotizacion?.amount ?? obra.contract_total_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <span className="text-sm text-slate-300">Anticipo{obra.anticipo_pct ? ` (${obra.anticipo_pct}%)` : ""}</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(obra.anticipo_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5 bg-slate-700/30">
+                <span className="text-sm text-slate-300">Fondo de garantía{obra.garantia_pct ? ` (${obra.garantia_pct}%)` : ""}</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(obra.garantia_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              También se eliminará la estimación de anticipo (si no tiene factura asignada). Las estimaciones, facturas y aditivas no se eliminan.
+            </p>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none rounded-lg border border-slate-700 bg-slate-700/20 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={finDeleteAck}
+                onChange={(e) => setFinDeleteAck(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-red-500 cursor-pointer"
+              />
+              <span className="text-sm text-slate-300">Confirmo que deseo eliminar permanentemente estos datos financieros.</span>
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => setFinDeleteOpen(false)}
+                disabled={deletingFin}
+                className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleDeleteFinancialData}
+                disabled={!finDeleteAck || deletingFin}
+                className="disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deletingFin ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Eliminando...</> : <><Trash2 className="w-4 h-4 mr-2" />Eliminar datos</>}
               </Button>
             </div>
           </div>

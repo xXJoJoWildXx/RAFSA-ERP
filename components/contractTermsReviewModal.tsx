@@ -224,21 +224,52 @@ export function ContractTermsReviewModal({
   const financialComparison = useMemo(() => {
     if (!extraction || !existingObra) return null
     type Kind = "money" | "pct"
-    const near = (a: number, b: number, kind: Kind) => {
-      const tol = kind === "pct" ? 0.5 : Math.max(1, a * 0.005)
-      return Math.abs(a - b) <= tol
+
+    // Solo comparar si YA hay datos financieros capturados (a mano o previamente).
+    // Si la obra no tiene ningún dato financiero registrado, no se muestra el recuadro.
+    const hasCaptured =
+      (existingObra.contract_total_amount ?? 0) > 0 ||
+      (existingObra.anticipo_pct ?? 0) > 0 ||
+      (existingObra.anticipo_amount ?? 0) > 0 ||
+      (existingObra.garantia_pct ?? 0) > 0 ||
+      (existingObra.garantia_amount ?? 0) > 0
+    if (!hasCaptured) return null
+
+    // Normaliza a 2 decimales (centavos / centésimas de %) para comparar de forma EXACTA
+    const norm = (v: number | null | undefined): number | null =>
+      v === null || v === undefined || !Number.isFinite(Number(v)) ? null : Math.round(Number(v) * 100)
+    const pos = (v: number | null | undefined) => (v ?? 0) > 0
+
+    const rows: { label: string; captured: number | null; detected: number | null; congruent: boolean; kind: Kind }[] = []
+    const push = (label: string, captured: number | null | undefined, detected: number | null | undefined, kind: Kind) => {
+      const cap = captured === null || captured === undefined ? null : Number(captured)
+      const det = detected === null || detected === undefined ? null : Number(detected)
+      const cN = norm(cap), dN = norm(det)
+      // Congruente SOLO si ambos existen y son idénticos al centavo (una diferencia de 0.01 ya es "no igual")
+      const congruent = cN !== null && dN !== null && cN === dN
+      rows.push({ label, captured: cap, detected: det, congruent, kind })
     }
-    const rows: { label: string; captured: number; detected: number | null; congruent: boolean; kind: Kind }[] = []
-    const add = (label: string, captured: number | null | undefined, detected: number | null | undefined, kind: Kind) => {
-      if (captured === null || captured === undefined || captured <= 0) return
-      const det = detected ?? null
-      rows.push({ label, captured, detected: det, congruent: det !== null && near(captured, det, kind), kind })
+
+    // Monto total del contrato
+    const mtCap = existingObra.contract_total_amount, mtDet = extraction.monto_total
+    if (pos(mtCap) || pos(mtDet)) push("Monto total del contrato", mtCap, mtDet, "money")
+
+    // Anticipo — si aplica (en cualquiera de los lados), muestra % y monto
+    const anCapPct = existingObra.anticipo_pct, anCapAmt = existingObra.anticipo_amount
+    const anDetPct = extraction.anticipo?.porcentaje ?? null, anDetAmt = extraction.anticipo?.monto ?? null
+    if (pos(anCapPct) || pos(anCapAmt) || pos(anDetPct) || pos(anDetAmt)) {
+      push("Anticipo (%)", anCapPct, anDetPct, "pct")
+      push("Anticipo (monto)", anCapAmt, anDetAmt, "money")
     }
-    add("Monto total del contrato", existingObra.contract_total_amount, extraction.monto_total, "money")
-    add("Anticipo (%)", existingObra.anticipo_pct, extraction.anticipo?.porcentaje ?? null, "pct")
-    add("Anticipo (monto)", existingObra.anticipo_amount, extraction.anticipo?.monto ?? null, "money")
-    add("Fondo de garantía (%)", existingObra.garantia_pct, extraction.garantia?.porcentaje ?? null, "pct")
-    add("Fondo de garantía (monto)", existingObra.garantia_amount, extraction.garantia?.monto ?? null, "money")
+
+    // Fondo de garantía — si aplica (en cualquiera de los lados), muestra % y monto
+    const gaCapPct = existingObra.garantia_pct, gaCapAmt = existingObra.garantia_amount
+    const gaDetPct = extraction.garantia?.porcentaje ?? null, gaDetAmt = extraction.garantia?.monto ?? null
+    if (pos(gaCapPct) || pos(gaCapAmt) || pos(gaDetPct) || pos(gaDetAmt)) {
+      push("Fondo de garantía (%)", gaCapPct, gaDetPct, "pct")
+      push("Fondo de garantía (monto)", gaCapAmt, gaDetAmt, "money")
+    }
+
     if (rows.length === 0) return null
     return { rows, allCongruent: rows.every((r) => r.congruent) }
   }, [extraction, existingObra])
