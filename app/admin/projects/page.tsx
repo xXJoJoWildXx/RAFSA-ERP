@@ -202,10 +202,24 @@ export default function EmpresasPage() {
     if (deleteConfirmText !== "ELIMINAR") return
     setDeleting(true)
     const ids = Array.from(selected)
-    const { error: obrasErr } = await supabase.from("obras").delete().in("empresa_id", ids)
-    if (obrasErr) { alert("No se pudieron eliminar las obras asociadas."); setDeleting(false); return }
-    const { error: empErr } = await supabase.from("empresas").delete().in("id", ids)
-    if (empErr)  { alert("No se pudieron eliminar las empresas."); setDeleting(false); return }
+    try {
+      // Borrado exhaustivo server-side (obras + storage + tablas hijas + empresas)
+      const res = await fetch("/api/empresas", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ empresaIds: ids }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        alert(j?.error || "No se pudieron eliminar las empresas.")
+        setDeleting(false)
+        return
+      }
+    } catch {
+      alert("No se pudieron eliminar las empresas.")
+      setDeleting(false)
+      return
+    }
     const deletedNames = ids.map((id) => empresas.find((e) => e.id === id)?.name).filter(Boolean).join(", ")
     logActivity({
       event_type: "empresa.deleted",

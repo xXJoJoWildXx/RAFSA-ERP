@@ -22,7 +22,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, FileSpreadsheet, X, CheckSquare } from "lucide-react"
+import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, FileSpreadsheet, X, CheckSquare, Pencil, Trash2, AlertTriangle } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa, type EDCObra } from "@/lib/edcPdf"
@@ -114,6 +114,13 @@ export default function EmpresaObrasPage() {
   const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
   const [edcGenerating, setEdcGenerating] = useState(false)
   const [edcGeneratingExcel, setEdcGeneratingExcel] = useState(false)
+
+  // ── Modo edición (selección para eliminar obras) ──
+  const [editMode, setEditMode]                   = useState(false)
+  const [selected, setSelected]                   = useState<Set<string>>(new Set())
+  const [deleting, setDeleting]                   = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen]   = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
 
   useEffect(() => {
     supabase.from("empresas").select("name").eq("id", empresaId).single()
@@ -231,10 +238,55 @@ export default function EmpresaObrasPage() {
   }
 
   // ── Funciones EDC ──
-  function enterEdcMode() { setEdcSelected(new Set()); setEdcMode(true) }
+  function enterEdcMode() { setEditMode(false); setSelected(new Set()); setEdcSelected(new Set()); setEdcMode(true) }
   function exitEdcMode()  { setEdcMode(false); setEdcSelected(new Set()) }
   function toggleEdcSelect(id: string) {
     setEdcSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  // ── Funciones edición / eliminación de obras ──
+  function enterEditMode() { setEdcMode(false); setEdcSelected(new Set()); setSelected(new Set()); setEditMode(true) }
+  function exitEditMode()  { setEditMode(false); setSelected(new Set()) }
+  function toggleSelect(id: string) {
+    setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  function openDeleteDialog() {
+    if (selected.size === 0) return
+    setDeleteConfirmText(""); setDeleteDialogOpen(true)
+  }
+
+  async function handleDelete() {
+    if (deleteConfirmText !== "ELIMINAR") return
+    setDeleting(true)
+    const ids = Array.from(selected)
+    try {
+      // Borrado exhaustivo server-side (obra + storage + tablas hijas)
+      const res = await fetch("/api/obras", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obraIds: ids }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        alert(j?.error || "No se pudieron eliminar las obras.")
+        setDeleting(false)
+        return
+      }
+    } catch {
+      alert("No se pudieron eliminar las obras.")
+      setDeleting(false)
+      return
+    }
+    const deletedNames = ids.map((id) => projects.find((p) => p.id === id)?.name).filter(Boolean).join(", ")
+    logActivity({
+      event_type: "obra.deleted",
+      entity_type: "obra",
+      entity_label: deletedNames || `${ids.length} obra(s)`,
+      metadata: { deleted_ids: ids, empresa_id: empresaId, empresa_name: empresaNombre },
+    })
+    setProjects((prev) => prev.filter((p) => !selected.has(p.id)))
+    setDeleting(false); setDeleteDialogOpen(false); exitEditMode()
   }
 
   async function buildEdcData(): Promise<{ edcData: EDCEmpresa[]; userLabel: string }> {
@@ -312,12 +364,14 @@ export default function EmpresaObrasPage() {
                 <p className="text-[#4da8e8]/60 text-xs font-medium uppercase tracking-widest mb-1">Empresa</p>
                 <h1 className="text-2xl font-bold text-slate-100">{empresaNombre || "Cargando..."}</h1>
                 <p className="text-slate-400 text-sm mt-0.5">
-                  {edcMode
+                  {editMode
+                    ? "Selecciona las obras que deseas eliminar"
+                    : edcMode
                     ? "Selecciona las obras a incluir en el Estado de Cuenta"
                     : `${projects.length} ${projects.length === 1 ? "obra registrada" : "obras registradas"}`}
                 </p>
               </div>
-              {!edcMode ? (
+              {!edcMode && !editMode ? (
                 <div className="flex gap-2">
                   <Button
                     variant="outline"
@@ -327,8 +381,26 @@ export default function EmpresaObrasPage() {
                   >
                     <FileText className="w-4 h-4 mr-2" />Generar EDC
                   </Button>
+                  <Button
+                    variant="outline"
+                    onClick={enterEditMode}
+                    disabled={projects.length === 0}
+                    className={`font-semibold ${btnOutline} disabled:opacity-40`}
+                  >
+                    <Pencil className="w-4 h-4 mr-2" />Editar
+                  </Button>
                   <Button onClick={() => setOpenDialog(true)} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
                     <Plus className="w-4 h-4 mr-2" />Nueva obra
+                  </Button>
+                </div>
+              ) : editMode ? (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEditMode} disabled={deleting} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
                   </Button>
                 </div>
               ) : (
@@ -408,7 +480,15 @@ export default function EmpresaObrasPage() {
               {!loading && !error && filteredProjects.length > 0 && (
                 <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
                   {filteredProjects.map((project) => {
-                    const isEdcSel = edcSelected.has(project.id)
+                    const isEdcSel  = edcSelected.has(project.id)
+                    const isEditSel = selected.has(project.id)
+                    if (editMode) {
+                      return (
+                        <div key={project.id} className="cursor-pointer" onClick={() => toggleSelect(project.id)}>
+                          <ProjectCard project={project} statusClass={getStatusColor(project.status)} isEditSelected={isEditSel} />
+                        </div>
+                      )
+                    }
                     if (edcMode) {
                       return (
                         <div key={project.id} className="cursor-pointer" onClick={() => toggleEdcSelect(project.id)}>
@@ -465,6 +545,83 @@ export default function EmpresaObrasPage() {
             </div>
           )}
 
+          {/* ── Floating Delete Action Bar ── */}
+          {editMode && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-red-600/40 shadow-2xl shadow-black/50"
+              style={{ background: "linear-gradient(135deg, #2d1515 0%, #1e0e0e 100%)" }}>
+              <CheckSquare className="w-5 h-5 text-red-400 shrink-0" />
+              <span className="text-sm font-medium text-slate-200">
+                {selected.size === 0
+                  ? "Selecciona las obras a eliminar"
+                  : `${selected.size} obra${selected.size !== 1 ? "s" : ""} seleccionada${selected.size !== 1 ? "s" : ""}`}
+              </span>
+              <div className="w-px h-5 bg-slate-600" />
+              <Button
+                onClick={openDeleteDialog}
+                disabled={selected.size === 0 || deleting}
+                size="sm"
+                className="bg-red-600 hover:bg-red-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                <Trash2 className="w-3.5 h-3.5 mr-1.5" />Eliminar
+              </Button>
+              <button onClick={exitEditMode} disabled={deleting}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* ── Dialog eliminar obras ── */}
+          <Dialog open={deleteDialogOpen} onOpenChange={(v) => deleting ? null : setDeleteDialogOpen(v)}>
+            <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="w-5 h-5" />Confirmar eliminación
+                </DialogTitle>
+                <DialogDescription className="text-slate-400">
+                  Esta acción no se puede deshacer.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 mt-1">
+                <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-300">
+                  Esta acción es <strong>irreversible</strong>. Se eliminará por completo cada obra seleccionada:
+                  datos financieros, estimaciones, facturas, cobros, nóminas, asistencias, documentos y archivos.
+                </div>
+
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {Array.from(selected).map((id) => {
+                    const obra = projects.find((p) => p.id === id)
+                    return (
+                      <div key={id} className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-700/40 px-3 py-2">
+                        <Building2 className="w-4 h-4 text-red-400 shrink-0" />
+                        <span className="text-sm font-semibold text-slate-100 truncate">{obra?.name || "Obra"}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-400">
+                    Escribe <strong className="text-red-400">ELIMINAR</strong> para confirmar
+                  </label>
+                  <Input value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder="ELIMINAR" className={`font-mono ${inputCls}`}
+                    onKeyDown={(e) => e.key === "Enter" && deleteConfirmText === "ELIMINAR" && handleDelete()} />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleting} className={btnOutline}>
+                    Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={handleDelete} disabled={deleteConfirmText !== "ELIMINAR" || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {deleting ? "Eliminando..." : "Confirmar eliminación"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
           {/* ── Dialog nueva obra ── */}
           <Dialog open={openDialog} onOpenChange={setOpenDialog}>
             <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
@@ -485,15 +642,19 @@ export default function EmpresaObrasPage() {
 
 // ---------- CARD ----------
 
-function ProjectCard({ project, statusClass, isEdcSelected = false }: { project: Project; statusClass: string; isEdcSelected?: boolean }) {
+function ProjectCard({ project, statusClass, isEdcSelected = false, isEditSelected = false }: { project: Project; statusClass: string; isEdcSelected?: boolean; isEditSelected?: boolean }) {
   return (
     <div
       className={`group relative rounded-2xl border-2 p-5 flex flex-col gap-4 transition-all duration-200 cursor-pointer overflow-hidden
-        ${isEdcSelected
+        ${isEditSelected
+          ? "border-red-500/70 shadow-lg shadow-red-950/40 -translate-y-0.5"
+          : isEdcSelected
           ? "border-emerald-500/70 shadow-lg shadow-emerald-950/40 -translate-y-0.5"
           : "border-slate-700/60 hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1"}`}
       style={{
-        background: isEdcSelected
+        background: isEditSelected
+          ? "linear-gradient(145deg, #2d1515 0%, #1e0e0e 60%, #200f0f 100%)"
+          : isEdcSelected
           ? "linear-gradient(145deg, #0d2e1a 0%, #091f12 60%, #0b2015 100%)"
           : "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
         boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
@@ -501,10 +662,21 @@ function ProjectCard({ project, statusClass, isEdcSelected = false }: { project:
     >
 
       {/* Acento top */}
-      {isEdcSelected
+      {isEditSelected
+        ? <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-red-500 to-red-400" />
+        : isEdcSelected
         ? <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-300" />
         : <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
       }
+
+      {/* Checkbox eliminación (rojo) */}
+      {isEditSelected && (
+        <div className="absolute top-4 right-4 z-10 w-5 h-5 rounded border-2 bg-red-500 border-red-500 flex items-center justify-center">
+          <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      )}
 
       {/* Checkbox EDC */}
       {isEdcSelected && (
