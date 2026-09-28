@@ -115,6 +115,12 @@ export function ContractTermsReviewModal({
     name: string | null
     start_date_planned: string | null
     end_date_planned: string | null
+    contract_total_amount: number | null
+    anticipo_pct: number | null
+    anticipo_amount: number | null
+    garantia_pct: number | null
+    garantia_amount: number | null
+    status: string | null
   } | null>(null)
 
   const isEmpty = (v: string | null | undefined) => !v || String(v).trim() === ""
@@ -163,10 +169,10 @@ export function ContractTermsReviewModal({
         .maybeSingle()
       if (active) setExistingCotizacion(cot ? { id: cot.id, amount: Number(cot.amount) } : null)
 
-      // Existing garantía status + header fields
+      // Existing garantía status + header fields + valores financieros capturados
       const { data: obra } = await supabase
         .from("obras")
-        .select("garantia_status, client_name, location_text, code, name, start_date_planned, end_date_planned")
+        .select("garantia_status, status, client_name, location_text, code, name, start_date_planned, end_date_planned, contract_total_amount, anticipo_pct, anticipo_amount, garantia_pct, garantia_amount")
         .eq("id", obraId)
         .single()
       if (active) {
@@ -178,6 +184,12 @@ export function ContractTermsReviewModal({
           name: obra.name ?? null,
           start_date_planned: obra.start_date_planned ?? null,
           end_date_planned: obra.end_date_planned ?? null,
+          contract_total_amount: obra.contract_total_amount ?? null,
+          anticipo_pct: obra.anticipo_pct ?? null,
+          anticipo_amount: obra.anticipo_amount ?? null,
+          garantia_pct: obra.garantia_pct ?? null,
+          garantia_amount: obra.garantia_amount ?? null,
+          status: obra.status ?? null,
         } : null)
       }
 
@@ -207,6 +219,32 @@ export function ContractTermsReviewModal({
     if (!existingCotizacion || montoTotalNum === null) return false
     return Math.abs(existingCotizacion.amount - montoTotalNum) > 0.01
   }, [existingCotizacion, montoTotalNum])
+
+  // Comparación: datos financieros ya capturados (manualmente) vs. lo detectado por la IA
+  const financialComparison = useMemo(() => {
+    if (!extraction || !existingObra) return null
+    type Kind = "money" | "pct"
+    const near = (a: number, b: number, kind: Kind) => {
+      const tol = kind === "pct" ? 0.5 : Math.max(1, a * 0.005)
+      return Math.abs(a - b) <= tol
+    }
+    const rows: { label: string; captured: number; detected: number | null; congruent: boolean; kind: Kind }[] = []
+    const add = (label: string, captured: number | null | undefined, detected: number | null | undefined, kind: Kind) => {
+      if (captured === null || captured === undefined || captured <= 0) return
+      const det = detected ?? null
+      rows.push({ label, captured, detected: det, congruent: det !== null && near(captured, det, kind), kind })
+    }
+    add("Monto total del contrato", existingObra.contract_total_amount, extraction.monto_total, "money")
+    add("Anticipo (%)", existingObra.anticipo_pct, extraction.anticipo?.porcentaje ?? null, "pct")
+    add("Anticipo (monto)", existingObra.anticipo_amount, extraction.anticipo?.monto ?? null, "money")
+    add("Fondo de garantía (%)", existingObra.garantia_pct, extraction.garantia?.porcentaje ?? null, "pct")
+    add("Fondo de garantía (monto)", existingObra.garantia_amount, extraction.garantia?.monto ?? null, "money")
+    if (rows.length === 0) return null
+    return { rows, allCongruent: rows.every((r) => r.congruent) }
+  }, [extraction, existingObra])
+
+  const fmtVal = (v: number | null, kind: "money" | "pct") =>
+    v === null ? "—" : kind === "pct" ? `${v}%` : fmtCurrency(v, currency)
 
   async function handleApply() {
     setError(null)
@@ -244,6 +282,9 @@ export function ContractTermsReviewModal({
         obraUpdate.garantia_amount = num0(garantiaAmount)
         if (num0(garantiaAmount) > 0) obraUpdate.garantia_status = "pending"
       }
+
+      // Al registrar la cotización por primera vez, la obra pasa de "Planeada" a "En progreso"
+      if (!existingCotizacion && existingObra?.status === "planned") obraUpdate.status = "in_progress"
 
       // Datos de cabecera — SOLO si la obra los tiene vacíos ("no pisar lo capturado")
       if (isEmpty(existingObra?.client_name) && !isEmpty(form.cliente)) obraUpdate.client_name = form.cliente.trim()
@@ -380,6 +421,51 @@ export function ContractTermsReviewModal({
                 {confianza < 0.75 && (
                   <span className="text-xs text-amber-400">Revisa con cuidado.</span>
                 )}
+              </div>
+            )}
+
+            {/* Comparación con datos capturados previamente */}
+            {financialComparison && (
+              <div className={`rounded-lg border p-3 space-y-2 ${
+                financialComparison.allCongruent
+                  ? "border-emerald-500/30 bg-emerald-500/10"
+                  : "border-amber-500/40 bg-amber-500/10"
+              }`}>
+                <div className="flex items-start gap-2">
+                  {financialComparison.allCongruent
+                    ? <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    : <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />}
+                  <div className="text-xs">
+                    <p className={`font-semibold ${financialComparison.allCongruent ? "text-emerald-300" : "text-amber-300"}`}>
+                      {financialComparison.allCongruent
+                        ? "Los datos capturados coinciden con el contrato"
+                        : "Se detectaron diferencias entre lo capturado y el contrato"}
+                    </p>
+                    <p className={financialComparison.allCongruent ? "text-emerald-400/80" : "text-amber-400/80"}>
+                      Comparación de los datos financieros registrados a mano contra los que la IA detectó.
+                    </p>
+                  </div>
+                </div>
+                <div className="rounded-md border border-slate-700 overflow-hidden">
+                  <div className="grid grid-cols-[1.4fr_1fr_1fr_auto] gap-0 text-[11px]">
+                    <div className="bg-slate-700/50 px-2 py-1 font-semibold text-slate-300">Concepto</div>
+                    <div className="bg-slate-700/50 px-2 py-1 font-semibold text-slate-300 text-right">Capturado</div>
+                    <div className="bg-slate-700/50 px-2 py-1 font-semibold text-slate-300 text-right">Detectado</div>
+                    <div className="bg-slate-700/50 px-2 py-1 font-semibold text-slate-300 text-center">✓</div>
+                    {financialComparison.rows.map((r) => (
+                      <div key={r.label} className="contents">
+                        <div className="px-2 py-1 text-slate-300 border-t border-slate-700/60">{r.label}</div>
+                        <div className="px-2 py-1 text-slate-200 text-right border-t border-slate-700/60">{fmtVal(r.captured, r.kind)}</div>
+                        <div className="px-2 py-1 text-slate-200 text-right border-t border-slate-700/60">{fmtVal(r.detected, r.kind)}</div>
+                        <div className="px-2 py-1 text-center border-t border-slate-700/60">
+                          {r.congruent
+                            ? <span className="text-emerald-400 font-bold">✓</span>
+                            : <span className="text-amber-400 font-bold">≠</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
             )}
 

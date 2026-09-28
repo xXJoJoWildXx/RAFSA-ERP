@@ -140,6 +140,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   const [uploadingEstFile, setUploadingEstFile] = useState<string | null>(null)
   const estFileInputRef = useRef<HTMLInputElement>(null)
   const estDialogFileRef = useRef<HTMLInputElement>(null)
+  // Estimación destino del selector de archivos (no bloquea la UI si se cancela el explorador)
+  const estUploadTargetRef = useRef<string | null>(null)
 
   // File input ref (facturas)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -861,7 +863,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                                 size="sm" variant="ghost"
                                 className="cursor-pointer h-8 w-8 p-0 text-slate-500 hover:text-[#4da8e8] hover:bg-[#0174bd]/10"
                                 disabled={!!uploadingEstFile}
-                                onClick={() => { setUploadingEstFile(est.id); estFileInputRef.current?.click() }}
+                                onClick={() => { estUploadTargetRef.current = est.id; estFileInputRef.current?.click() }}
                                 title="Subir documento"
                               >
                                 {uploadingEstFile === est.id ? (
@@ -931,7 +933,12 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
             onChange={(e) => {
               const file = e.target.files?.[0]
               e.target.value = ""
-              if (file) setFacFile(file)
+              if (file) {
+                setFacFile(file)
+                // Auto-rellenar "Número de factura" con el nombre del documento (sin extensión)
+                const nameNoExt = file.name.replace(/\.[^./\\]+$/, "")
+                setFacForm((f) => ({ ...f, invoice_number: nameNoExt }))
+              }
             }}
           />
 
@@ -944,8 +951,10 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
             onChange={(e) => {
               const file = e.target.files?.[0]
               e.target.value = ""
-              if (file && uploadingEstFile) {
-                const est = estimaciones.find((es: Estimacion) => es.id === uploadingEstFile)
+              const targetId = estUploadTargetRef.current
+              estUploadTargetRef.current = null
+              if (file && targetId) {
+                const est = estimaciones.find((es: Estimacion) => es.id === targetId)
                 if (est) handleUploadEstDoc(est, file)
               }
             }}
@@ -1230,7 +1239,11 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
               >
                 Cancelar
               </Button>
-              <Button onClick={handleSaveFactura} disabled={savingFac} className="cursor-pointer">
+              <Button
+                onClick={handleSaveFactura}
+                disabled={savingFac || !facFile || !facForm.invoice_number.trim()}
+                className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
+              >
                 {savingFac && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
                 Asignar
               </Button>
