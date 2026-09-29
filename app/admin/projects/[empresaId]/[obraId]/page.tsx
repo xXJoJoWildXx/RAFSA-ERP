@@ -2589,6 +2589,20 @@ export default function ProjectDetailPage() {
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Pagos y movimientos</CardTitle>
                 <div className="flex gap-2">
+                  {/* ===== TEMPORAL: registro manual de pagos para obras antiguas (flujo previo al EDC) =====
+                       Permite capturar pagos/movimientos sin referencia a una factura especifica, en lo que
+                       se cierran las obras del flujo anterior. Para eliminar esta funcion en el futuro,
+                       borra unicamente este bloque <Button>. El dialogo, el estado y handleCreatePayment
+                       tambien pueden retirarse cuando ya no se ocupe. */}
+                  <Button
+                    size="sm"
+                    className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white transition-all duration-150"
+                    onClick={() => setNewPaymentOpen(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Registrar pago
+                  </Button>
+                  {/* ===== FIN TEMPORAL ===== */}
                   {stateAccounts.length > 0 && (
                     <Button
                       size="sm"
