@@ -14,6 +14,7 @@ type EmployeeDocType =
   | "tax_certificate"
   | "birth_certificate"
   | "imss"
+  | "imss_alta"
   | "curp"
   | "ine"
   | "address_proof"
@@ -36,6 +37,7 @@ const VALID_DOC_TYPES: EmployeeDocType[] = [
   "tax_certificate",
   "birth_certificate",
   "imss",
+  "imss_alta",
   "curp",
   "ine",
   "address_proof",
