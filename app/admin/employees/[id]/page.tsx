@@ -69,6 +69,7 @@ type EmployeeRow = {
   photo_url: string | null
   imss_number: string | null
   rfc: string | null
+  payroll_code: string | null
   birth_date: string | null
   real_salary: number | string
   bonus_amount: number | string
@@ -135,6 +136,7 @@ type EmployeeDetail = {
   avatar: string
   imss_number: string | null
   rfc: string | null
+  payroll_code: string | null
   birth_date: string | null
   real_salary: number
   bonus_amount: number
@@ -162,6 +164,7 @@ type EditEmployeeForm = {
   birth_date: string
   imss_number: string
   rfc: string
+  payroll_code: string
   emergency_contact: string
   real_salary: string
   bonus_amount: string
@@ -198,6 +201,7 @@ type EmployeeDocType =
   | "tax_certificate"
   | "birth_certificate"
   | "imss"
+  | "imss_alta"
   | "curp"
   | "ine"
   | "address_proof"
@@ -209,6 +213,7 @@ const REQUIRED_DOCS: RequiredEmployeeDocType[] = [
   "tax_certificate",
   "birth_certificate",
   "imss",
+  "imss_alta",
   "curp",
   "ine",
   "address_proof",
@@ -218,6 +223,7 @@ const DOC_LABELS: Record<EmployeeDocType, string> = {
   tax_certificate: "Constancia de Situación Fiscal",
   birth_certificate: "Acta de Nacimiento",
   imss: "IMSS",
+  imss_alta: "Alta IMSS",
   curp: "CURP",
   ine: "INE",
   address_proof: "Comprobante de domicilio",
@@ -434,6 +440,7 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     avatar: makeAvatarInitials(row.full_name),
     imss_number: row.imss_number,
     rfc: row.rfc,
+    payroll_code: row.payroll_code ?? null,
     birth_date: row.birth_date,
     real_salary: realSalary,
     bonus_amount: bonusAmount,
@@ -796,13 +803,13 @@ const fileInputCls =
   " hover:file:text-[#38bdf8] hover:file:drop-shadow-[0_0_5px_rgba(56,189,248,0.7)]"
 
 const selectTriggerCls =
-  "bg-slate-900 border-slate-700 text-slate-200 focus:ring-0 focus:border-[#0174bd]/60 focus-visible:ring-0 focus-visible:ring-offset-0"
+  "cursor-pointer bg-slate-900 border-slate-700 text-slate-200 focus:ring-0 focus:border-[#0174bd]/60 focus-visible:ring-0 focus-visible:ring-offset-0"
 
 const selectContentCls =
   "bg-slate-800 border-slate-700 text-slate-200 [&_[role=option]]:text-slate-200 [&_[role=option]:hover]:bg-slate-700 [&_[role=option][data-highlighted]]:bg-slate-700"
 
 const btnOutlineCls =
-  "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
+  "cursor-pointer border-slate-700 text-slate-900 hover:bg-slate-700/60 hover:text-slate-200"
 
 const labelCls = "text-slate-300"
 
@@ -880,6 +887,7 @@ export default function EmployeeDetailPage() {
     tax_certificate: null,
     birth_certificate: null,
     imss: null,
+    imss_alta: null,
     curp: null,
     ine: null,
     address_proof: null,
@@ -923,15 +931,15 @@ export default function EmployeeDetailPage() {
     if (!pillReady.current) {
       // First paint: place instantly, then enable transition
       pill.style.transition = "none"
-      pill.style.left  = `${left}px`
+      pill.style.transform = `translateX(${left}px)`
       pill.style.width = `${width}px`
       pillReady.current = true
       requestAnimationFrame(() => {
         pill.style.transition =
-          "left 0.3s cubic-bezier(0.4,0,0.2,1), width 0.3s cubic-bezier(0.4,0,0.2,1)"
+          "transform 0.3s cubic-bezier(0.4,0,0.2,1), width 0.3s cubic-bezier(0.4,0,0.2,1)"
       })
     } else {
-      pill.style.left  = `${left}px`
+      pill.style.transform = `translateX(${left}px)`
       pill.style.width = `${width}px`
     }
   }, [activeTab])
@@ -977,6 +985,7 @@ export default function EmployeeDetailPage() {
             photo_url,
             imss_number,
             rfc,
+            payroll_code,
             birth_date,
             real_salary,
             bonus_amount,
@@ -1267,6 +1276,7 @@ export default function EmployeeDetailPage() {
       birth_date: employee.birth_date ?? "",
       imss_number: employee.imss_number ?? "",
       rfc: employee.rfc ?? "",
+      payroll_code: employee.payroll_code ?? "",
       emergency_contact: employee.emergency_contact ?? "",
       real_salary: employee.real_salary?.toString() ?? "0",
       bonus_amount: employee.bonus_amount?.toString() ?? "0",
@@ -1342,6 +1352,7 @@ export default function EmployeeDetailPage() {
       birth_date: editForm.birth_date || null,
       imss_number: editForm.imss_number.trim() || null,
       rfc: editForm.rfc.trim() || null,
+      payroll_code: editForm.payroll_code.trim() || null,
       emergency_contact: editForm.emergency_contact.trim() || null,
     }
 
@@ -1361,6 +1372,7 @@ export default function EmployeeDetailPage() {
           photo_url,
           imss_number,
           rfc,
+          payroll_code,
           birth_date,
           real_salary,
           bonus_amount,
@@ -1820,7 +1832,7 @@ export default function EmployeeDetailPage() {
             {error ?? "Empleado no encontrado."}
           </p>
           <Button
-            className="mt-4 bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+            className="mt-4 cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
             onClick={() => router.push("/admin/employees")}
           >
             <ArrowLeft className="w-4 h-4 mr-2" />
@@ -1842,7 +1854,7 @@ export default function EmployeeDetailPage() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/admin/employees">
-              <Button variant="ghost" size="icon" aria-label="Volver" className="text-slate-400 hover:text-slate-200 hover:bg-slate-700/60">
+              <Button variant="ghost" size="icon" aria-label="Volver" className="cursor-pointer text-slate-400 hover:text-slate-200 hover:bg-slate-700/60">
                 <ArrowLeft className="w-5 h-5" />
               </Button>
             </Link>
@@ -1858,7 +1870,7 @@ export default function EmployeeDetailPage() {
           <div className="flex items-center gap-2">
             <Dialog open={editOpen} onOpenChange={handleOpenChange}>
               <DialogTrigger asChild>
-                <Button className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
                   <Edit className="w-4 h-4 mr-2" />
                   Editar perfil
                 </Button>
@@ -1959,7 +1971,7 @@ export default function EmployeeDetailPage() {
                   >
                     Cancelar
                   </Button>
-                  <Button type="button" className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={handleSave} disabled={saving}>
+                  <Button type="button" className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={handleSave} disabled={saving}>
                     {saving ? "Guardando..." : "Guardar cambios"}
                   </Button>
                 </DialogFooter>
@@ -1974,7 +1986,7 @@ export default function EmployeeDetailPage() {
               }}
             >
               <DialogTrigger asChild>
-                <Button variant="destructive">
+                <Button variant="destructive" className="cursor-pointer">
                   <Trash2 className="w-4 h-4 mr-2" />
                   Eliminar
                 </Button>
@@ -2025,6 +2037,7 @@ export default function EmployeeDetailPage() {
                   <Button
                     type="button"
                     variant="destructive"
+                    className="cursor-pointer"
                     onClick={handleDeleteEmployee}
                     disabled={deleting || deleteConfirmText.trim().toUpperCase() !== "ELIMINAR"}
                   >
@@ -2086,7 +2099,7 @@ export default function EmployeeDetailPage() {
                         <span className="truncate">{r.name}</span>
                         <button
                           type="button"
-                          className="ml-2 rounded-full p-1 hover:bg-slate-600 flex-shrink-0"
+                          className="cursor-pointer ml-2 rounded-full p-1 hover:bg-slate-600 flex-shrink-0"
                           onClick={() => removeRole(r.id)}
                           aria-label={`Quitar rol ${r.name}`}
                         >
@@ -2109,7 +2122,7 @@ export default function EmployeeDetailPage() {
               >
                 Cancelar
               </Button>
-              <Button type="button" className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={saveRoles} disabled={rolesSaving}>
+              <Button type="button" className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white" onClick={saveRoles} disabled={rolesSaving}>
                 {rolesSaving ? "Guardando..." : "Guardar roles"}
               </Button>
             </DialogFooter>
@@ -2286,7 +2299,7 @@ export default function EmployeeDetailPage() {
               </Button>
               <Button
                 type="button"
-                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                 onClick={handleSaveBanking}
                 disabled={bankingSaving || bankingLoading}
               >
@@ -2363,6 +2376,7 @@ export default function EmployeeDetailPage() {
                         type="button"
                         onClick={openRolesDialog}
                         className="
+                          cursor-pointer
                           inline-flex items-center gap-2
                           text-xs text-slate-400
                           underline-offset-4
@@ -2495,6 +2509,8 @@ export default function EmployeeDetailPage() {
                     boxShadow: "0 4px 14px rgba(1,116,189,0.35), inset 0 1px 0 rgba(255,255,255,0.12)",
                     left: 0,
                     width: 0,
+                    transform: "translateX(0px)",
+                    willChange: "transform, width",
                   }}
                 />
 
@@ -2510,6 +2526,7 @@ export default function EmployeeDetailPage() {
                       data-tab-btn={value}
                       onClick={() => setActiveTab(value)}
                       className={`
+                        cursor-pointer
                         group relative z-10 flex-1 flex items-center justify-center gap-2
                         px-3 py-2.5 text-xs sm:text-sm font-medium rounded-xl
                         whitespace-nowrap min-w-fit
@@ -2560,7 +2577,7 @@ export default function EmployeeDetailPage() {
                         <Button
                           type="button"
                           size="sm"
-                          className="bg-slate-700 hover:bg-slate-600 text-slate-200"
+                          className="cursor-pointer bg-slate-700 hover:bg-slate-600 text-slate-200"
                           onClick={async () => {
                             setSalaryHistoryOpen(true)
                             await loadSalaryHistory()
@@ -2675,7 +2692,7 @@ export default function EmployeeDetailPage() {
                               </Button>
                               <Button
                                 type="button"
-                                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                                className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                                 onClick={handleSavePayroll}
                                 disabled={saving}
                               >
@@ -2752,6 +2769,19 @@ export default function EmployeeDetailPage() {
                           {editForm && (
                             <div className="space-y-4 py-2">
                               <div className="space-y-2">
+                                <Label htmlFor="payroll_code" className={labelCls}>Código de nómina</Label>
+                                <Input
+                                  id="payroll_code"
+                                  className={inputCls}
+                                  placeholder="Ej. 012"
+                                  value={editForm.payroll_code}
+                                  onChange={(e) =>
+                                    handleEditChange("payroll_code", e.target.value)
+                                  }
+                                />
+                              </div>
+
+                              <div className="space-y-2">
                                 <Label htmlFor="imss_number" className={labelCls}>Número IMSS</Label>
                                 <Input
                                   id="imss_number"
@@ -2806,7 +2836,7 @@ export default function EmployeeDetailPage() {
                             </Button>
                             <Button
                               type="button"
-                              className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                              className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                               onClick={async () => {
                                 await handleSave()
                                 setLaborOpen(false)
@@ -2822,6 +2852,13 @@ export default function EmployeeDetailPage() {
 
                     <div className="px-6 pb-6">
                       <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div className="space-y-1">
+                          <p className="text-slate-400">Código de nómina</p>
+                          <p className="font-medium text-slate-100 font-mono">
+                            {employee.payroll_code ?? "No registrado"}
+                          </p>
+                        </div>
+
                         <div className="space-y-1">
                           <p className="text-slate-400">Número IMSS</p>
                           <p className="font-medium text-slate-100">
@@ -3003,6 +3040,7 @@ export default function EmployeeDetailPage() {
                                         <Button
                                           type="button"
                                           variant="destructive"
+                                          className="cursor-pointer"
                                           disabled={!existing || docsSaving}
                                           onClick={async () => {
                                             const ok = confirm(
@@ -3083,6 +3121,7 @@ export default function EmployeeDetailPage() {
                                   <Button
                                     type="button"
                                     variant="destructive"
+                                    className="cursor-pointer"
                                     disabled={!profilePhotoUrl || docsSaving}
                                     onClick={async () => {
                                       const ok = confirm(
@@ -3125,7 +3164,7 @@ export default function EmployeeDetailPage() {
                               </Button>
                               <Button
                                 type="button"
-                                className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+                                className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                                 onClick={handleSaveDocuments}
                                 disabled={docsSaving}
                               >
@@ -3366,7 +3405,7 @@ export default function EmployeeDetailPage() {
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    className="cursor-pointer border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
+                                    className="cursor-pointer border-slate-700 text-slate-900 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
                                     disabled={!signedUrl}
                                     onClick={() => {
                                       if (!signedUrl) return
@@ -3558,7 +3597,7 @@ export default function EmployeeDetailPage() {
                                     type="button"
                                     variant="outline"
                                     size="sm"
-                                    className="cursor-pointer border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
+                                    className="cursor-pointer border-slate-700 text-slate-900 hover:bg-slate-700/60 hover:text-slate-200 transition-all duration-150"
                                     disabled={!signedUrl}
                                     onClick={() => {
                                       if (!signedUrl) return

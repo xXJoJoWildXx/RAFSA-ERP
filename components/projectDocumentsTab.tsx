@@ -853,10 +853,10 @@ export function ProjectDocumentsTab({
                           </div>
                         </TableCell>
 
-                        <TableCell>
-                          <div className="space-y-0.5">
-                            <p className="font-medium text-slate-200">{d.title}</p>
-                            <p className="text-xs text-slate-500">{d.file_name}</p>
+                        <TableCell className="max-w-[280px]">
+                          <div className="space-y-0.5 min-w-0">
+                            <p className="font-medium text-slate-200 truncate" title={d.title}>{d.title}</p>
+                            <p className="text-xs text-slate-500 truncate" title={d.file_name}>{d.file_name}</p>
                           </div>
                         </TableCell>
 
@@ -929,9 +929,9 @@ export function ProjectDocumentsTab({
 
       {/* ── Preview Dialog ── */}
       <Dialog open={previewOpen} onOpenChange={setPreviewOpen}>
-        <DialogContent className="max-w-4xl w-full p-0 overflow-hidden bg-slate-800 border-slate-700">
+        <DialogContent className="flex flex-col w-[min(92vw,900px)] max-w-none sm:max-w-none max-h-[88vh] min-w-0 p-0 overflow-hidden bg-slate-800 border-slate-700">
           {/* Header */}
-          <DialogHeader className="flex flex-row items-center gap-3 px-5 pt-5 pb-3 border-b border-slate-700">
+          <DialogHeader className="shrink-0 flex flex-row items-center gap-3 min-w-0 px-5 pt-5 pb-3 border-b border-slate-700">
             <div className="p-2 rounded-md bg-slate-700 shrink-0">
               {previewDoc ? docTypeIcon(previewDoc.doc_type) : <FileText className="w-5 h-5 text-slate-400" />}
             </div>
@@ -949,7 +949,7 @@ export function ProjectDocumentsTab({
           </DialogHeader>
 
           {/* Preview area */}
-          <div className="relative bg-slate-900" style={{ height: "60vh" }}>
+          <div className="relative bg-slate-900 overflow-hidden flex-1 min-h-0" style={{ minHeight: "50vh" }}>
             {previewLoading && (
               <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-slate-900">
                 <Loader2 className="w-8 h-8 text-slate-500 animate-spin" />
@@ -966,7 +966,7 @@ export function ProjectDocumentsTab({
                 return (
                   <iframe
                     src={previewUrl}
-                    className="w-full h-full border-0"
+                    className="absolute inset-0 w-full h-full border-0"
                     title={previewDoc.title}
                   />
                 )
@@ -1001,7 +1001,7 @@ export function ProjectDocumentsTab({
           </div>
 
           {/* Footer */}
-          <DialogFooter className="flex flex-row items-center justify-between gap-2 px-5 py-3 border-t border-slate-700 bg-slate-800">
+          <DialogFooter className="shrink-0 flex flex-row items-center justify-between gap-2 px-5 py-3 border-t border-slate-700 bg-slate-800">
             <Button
               variant="outline"
               size="sm"
