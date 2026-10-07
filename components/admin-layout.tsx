@@ -342,6 +342,51 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           0%, 100% { opacity: 0.3; }
           50%      { opacity: 1; }
         }
+
+        /* ── Sidebar nav: scrollbar elegante + fundido en bordes ── */
+        .sidebar-nav {
+          /* Firefox */
+          scrollbar-width: thin;
+          scrollbar-color: transparent transparent;
+          overscroll-behavior: contain;
+          /* Fundido suave arriba y abajo para insinuar que hay más */
+          -webkit-mask-image: linear-gradient(
+            to bottom,
+            transparent 0,
+            #000 14px,
+            #000 calc(100% - 14px),
+            transparent 100%
+          );
+          mask-image: linear-gradient(
+            to bottom,
+            transparent 0,
+            #000 14px,
+            #000 calc(100% - 14px),
+            transparent 100%
+          );
+          transition: scrollbar-color 0.25s ease;
+        }
+        .sidebar-nav:hover {
+          scrollbar-color: rgba(1, 116, 189, 0.45) transparent;
+        }
+        /* WebKit / Chromium */
+        .sidebar-nav::-webkit-scrollbar {
+          width: 6px;
+        }
+        .sidebar-nav::-webkit-scrollbar-track {
+          background: transparent;
+        }
+        .sidebar-nav::-webkit-scrollbar-thumb {
+          background: transparent;
+          border-radius: 9999px;
+          transition: background 0.25s ease;
+        }
+        .sidebar-nav:hover::-webkit-scrollbar-thumb {
+          background: linear-gradient(180deg, rgba(1,116,189,0.55), rgba(77,168,232,0.45));
+        }
+        .sidebar-nav::-webkit-scrollbar-thumb:hover {
+          background: linear-gradient(180deg, rgba(1,116,189,0.85), rgba(77,168,232,0.7));
+        }
       `}</style>
 
       {/* ═══════════════════════════════════════
@@ -408,8 +453,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           </div>
 
           {/* ── Navigation ── */}
-          <nav className="flex-1 px-3 py-6 overflow-y-auto">
-            <p className="px-4 mb-4 text-[9px] font-bold tracking-[0.3em] uppercase text-slate-600">
+          <nav className="sidebar-nav flex-1 px-3 py-4 overflow-y-auto">
+            <p className="px-4 mb-3 text-[9px] font-bold tracking-[0.3em] uppercase text-slate-600">
               Navegación
             </p>
 
@@ -423,7 +468,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                     key={item.name}
                     href={item.href}
                     className={cn(
-                      "nav-item-glow nav-stagger group relative flex items-center gap-3 px-4 py-3 rounded-xl text-[13px] font-medium transition-all duration-200",
+                      "nav-item-glow nav-stagger group relative flex items-center gap-3 px-4 py-2.5 rounded-xl text-[13px] font-medium transition-all duration-200",
                       isActive
                         ? "bg-[#0174bd]/10 text-white"
                         : "text-slate-400 hover:text-slate-200"
