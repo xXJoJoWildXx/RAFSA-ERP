@@ -15,21 +15,21 @@ import {
 } from "@/components/ui/table"
 import {
   Package, Search, Plus, Eye, Pencil, Trash2, Download, Layers, DollarSign,
-  AlertTriangle, ChevronLeft, ChevronRight, X, Barcode, Weight, Ruler, Tag,
+  ChevronLeft, ChevronRight, X, Barcode, Weight, Ruler, Tag,
   ArrowUpDown, ArrowUp, ArrowDown, BoxIcon, ClipboardList, CalendarClock, History, Loader2,
 } from "lucide-react"
 import {
   InventoryProduct, PriceNotification, PriceHistoryRow,
-  formatCurrency, formatDate, getStockBadge, getPriceExpiryBadge, daysUntil,
+  formatCurrency, formatDate, getPriceExpiryBadge, daysUntil,
 } from "@/lib/inventory"
 
-type SortField = "codigo" | "descripcion" | "linea" | "current_price" | "stock" | "price_valid_until"
+type SortField = "codigo" | "descripcion" | "linea" | "current_price" | "price_valid_until"
 type SortDir = "asc" | "desc"
 
 const emptyForm = {
   codigo: "", descripcion: "", unidad_venta: "pz", multiplo_venta: "1",
   capacidad: "", peso: "", um_peso: "kg", linea: "", codigo_barras: "",
-  current_price: "", price_valid_until: "", stock: "0", stock_min: "0", ubicacion: "",
+  current_price: "", price_valid_until: "", ubicacion: "",
 }
 
 export default function InventarioAdminPage() {
@@ -40,7 +40,7 @@ export default function InventarioAdminPage() {
 
   const [search, setSearch] = useState("")
   const [lineaFilter, setLineaFilter] = useState<string>("all")
-  const [stockFilter, setStockFilter] = useState<string>("all") // all | low | out | price_soon
+  const [stockFilter, setStockFilter] = useState<string>("all") // all | price_soon
   const [sortField, setSortField] = useState<SortField>("descripcion")
   const [sortDir, setSortDir] = useState<SortDir>("asc")
   const [page, setPage] = useState(1)
@@ -104,8 +104,6 @@ export default function InventarioAdminPage() {
       )
     }
     if (lineaFilter !== "all") arr = arr.filter((i) => i.linea === lineaFilter)
-    if (stockFilter === "low") arr = arr.filter((i) => i.stock > 0 && i.stock <= i.stock_min)
-    if (stockFilter === "out") arr = arr.filter((i) => i.stock <= 0)
     if (stockFilter === "price_soon") arr = arr.filter((i) => {
       const d = daysUntil(i.price_valid_until); return d !== null && d <= 7
     })
@@ -128,10 +126,7 @@ export default function InventarioAdminPage() {
 
   // KPIs
   const totalItems = items.length
-  const totalStock = items.reduce((s, i) => s + Number(i.stock), 0)
-  const totalValue = items.reduce((s, i) => s + Number(i.current_price) * Number(i.stock), 0)
-  const lowStockCount = items.filter((i) => i.stock > 0 && i.stock <= i.stock_min).length
-  const outOfStockCount = items.filter((i) => i.stock <= 0).length
+  const lineasCount = LINEAS.length
   const priceSoonCount = items.filter((i) => { const d = daysUntil(i.price_valid_until); return d !== null && d <= 7 }).length
 
   function toggleSort(field: SortField) {
@@ -155,7 +150,7 @@ export default function InventarioAdminPage() {
       multiplo_venta: String(item.multiplo_venta), capacidad: item.capacidad ?? "", peso: item.peso != null ? String(item.peso) : "",
       um_peso: item.um_peso, linea: item.linea ?? "", codigo_barras: item.codigo_barras ?? "",
       current_price: String(item.current_price), price_valid_until: item.price_valid_until ?? "",
-      stock: String(item.stock), stock_min: String(item.stock_min), ubicacion: item.ubicacion ?? "",
+      ubicacion: item.ubicacion ?? "",
     })
     setFormOpen(true)
   }
@@ -175,7 +170,6 @@ export default function InventarioAdminPage() {
         um_peso: formData.um_peso,
         linea: formData.linea || null,
         codigo_barras: formData.codigo_barras || null,
-        stock_min: Number(formData.stock_min) || 0,
         ubicacion: formData.ubicacion || null,
       }
       const price = Number(formData.current_price) || 0
@@ -194,7 +188,7 @@ export default function InventarioAdminPage() {
       } else {
         const { data: created, error } = await supabase
           .from("inventory_products")
-          .insert({ ...base, current_price: price, stock: Number(formData.stock) || 0 })
+          .insert({ ...base, current_price: price })
           .select("id")
           .single()
         if (error) throw error
@@ -203,12 +197,6 @@ export default function InventarioAdminPage() {
             p_product_id: created.id, p_price: price,
             p_valid_until: validUntil, p_note: "Alta de producto", p_source: "manual",
           })
-          if (Number(formData.stock) > 0) {
-            await supabase.rpc("inventory_register_movement", {
-              p_product_id: created.id, p_type: "in", p_quantity: Number(formData.stock),
-              p_reason: "initial_load", p_note: "Stock inicial",
-            })
-          }
         }
         await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.product", entity_id: created?.id, entity_label: base.descripcion, metadata: { action: "created" } })
       }
@@ -269,7 +257,7 @@ export default function InventarioAdminPage() {
   }
 
   function exportCsv() {
-    const headers = ["codigo", "descripcion", "linea", "capacidad", "unidad_venta", "codigo_barras", "current_price", "price_valid_until", "stock", "stock_min", "ubicacion"]
+    const headers = ["codigo", "descripcion", "linea", "capacidad", "unidad_venta", "codigo_barras", "current_price", "price_valid_until", "ubicacion"]
     const rows = filtered.map((i) => headers.map((h) => {
       const v = (i as any)[h]
       const s = v == null ? "" : String(v)
@@ -296,15 +284,9 @@ export default function InventarioAdminPage() {
                 </div>
                 Inventario
               </h1>
-              <p className="text-sm text-slate-500 mt-1">Catálogo, precios y existencias de la empresa</p>
+              <p className="text-sm text-slate-500 mt-1">Catálogo y precios de la empresa</p>
             </div>
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center rounded-lg border border-slate-700 overflow-hidden">
-                <span className="px-3 py-1.5 text-xs font-semibold bg-[#0174bd]/15 text-[#4da8e8]">Catálogo</span>
-                <Link href="/admin/inventario/ordenes" className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700 flex items-center gap-1.5">
-                  <ClipboardList className="w-3.5 h-3.5" /> Órdenes
-                </Link>
-              </div>
+            <div className="flex items-center gap-2 flex-wrap sm:justify-end">
               <Button variant="outline" size="sm" onClick={exportCsv}
                 className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">
                 <Download className="w-4 h-4 mr-1.5" /> Exportar
@@ -312,6 +294,12 @@ export default function InventarioAdminPage() {
               <Button size="sm" className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white" onClick={openAddDialog}>
                 <Plus className="w-4 h-4 mr-1.5" /> Nuevo artículo
               </Button>
+              <div className="flex items-center rounded-lg border border-slate-700 overflow-hidden">
+                <span className="px-3 py-1.5 text-xs font-semibold bg-[#0174bd]/15 text-[#4da8e8] flex items-center gap-1.5"><Package className="w-3.5 h-3.5" /> Catálogo</span>
+                <Link href="/admin/inventario/ordenes" className="px-3 py-1.5 text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-700 flex items-center gap-1.5">
+                  <ClipboardList className="w-3.5 h-3.5" /> Órdenes
+                </Link>
+              </div>
             </div>
           </div>
 
@@ -345,13 +333,10 @@ export default function InventarioAdminPage() {
           )}
 
           {/* KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[
               { label: "Total artículos", value: totalItems, icon: Layers, color: "#4da8e8", bg: "rgba(1,116,189,0.12)" },
-              { label: "Unidades en stock", value: totalStock.toLocaleString("es-MX"), icon: BoxIcon, color: "#10b981", bg: "rgba(16,185,129,0.12)" },
-              { label: "Valor inventario", value: formatCurrency(totalValue), icon: DollarSign, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
-              { label: "Stock bajo", value: lowStockCount, icon: AlertTriangle, color: "#f59e0b", bg: "rgba(245,158,11,0.12)", clickFilter: "low" },
-              { label: "Agotados", value: outOfStockCount, icon: Package, color: "#ef4444", bg: "rgba(239,68,68,0.12)", clickFilter: "out" },
+              { label: "Líneas", value: lineasCount, icon: Tag, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
               { label: "Precio por caducar", value: priceSoonCount, icon: CalendarClock, color: "#f59e0b", bg: "rgba(245,158,11,0.12)", clickFilter: "price_soon" },
             ].map((kpi) => {
               const Icon = kpi.icon
@@ -418,24 +403,20 @@ export default function InventarioAdminPage() {
                     <TableHead className="text-slate-400 font-semibold text-xs cursor-pointer select-none" onClick={() => toggleSort("price_valid_until")}>
                       <span className="flex items-center">Caducidad precio <SortIcon field="price_valid_until" /></span>
                     </TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-right cursor-pointer select-none" onClick={() => toggleSort("stock")}>
-                      <span className="flex items-center justify-end">Stock <SortIcon field="stock" /></span>
-                    </TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Estado</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs">Ubicación</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
-                    <TableRow><TableCell colSpan={7} className="text-center py-12 text-slate-500">
+                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-slate-500">
                       <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin text-slate-600" /> Cargando inventario…
                     </TableCell></TableRow>
                   ) : paginated.length === 0 ? (
-                    <TableRow><TableCell colSpan={7} className="text-center py-12 text-slate-500">
+                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-slate-500">
                       <Package className="w-10 h-10 mx-auto mb-2 text-slate-600" /><p>No se encontraron artículos</p>
                     </TableCell></TableRow>
                   ) : paginated.map((item) => {
-                    const badge = getStockBadge(Number(item.stock), Number(item.stock_min))
                     const pb = getPriceExpiryBadge(item.price_valid_until)
                     return (
                       <TableRow key={item.id} className="border-slate-700/40 hover:bg-slate-700/20 transition-colors">
@@ -446,11 +427,7 @@ export default function InventarioAdminPage() {
                         </TableCell>
                         <TableCell className="text-right text-sm font-medium text-slate-200">{formatCurrency(Number(item.current_price))}</TableCell>
                         <TableCell><Badge className={`text-[10px] border ${pb.cls}`}>{pb.label}</Badge></TableCell>
-                        <TableCell className="text-right">
-                          <span className={`text-sm font-bold ${item.stock <= 0 ? "text-red-400" : item.stock <= item.stock_min ? "text-amber-400" : "text-slate-200"}`}>{Number(item.stock)}</span>
-                          <span className="text-xs text-slate-600 ml-1">{item.unidad_venta}</span>
-                        </TableCell>
-                        <TableCell><Badge className={`text-[10px] border ${badge.cls}`}>{badge.label}</Badge></TableCell>
+                        <TableCell className="text-sm text-slate-400">{item.ubicacion ?? "—"}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
                             <Button size="sm" variant="ghost" className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10" onClick={() => openPriceDialog(item)} title="Actualizar precio"><DollarSign className="w-4 h-4" /></Button>
@@ -492,7 +469,6 @@ export default function InventarioAdminPage() {
                   <h3 className="text-base font-semibold text-slate-100">{detailItem.descripcion}</h3>
                   <div className="flex items-center gap-2 mt-1.5 flex-wrap">
                     <Badge className="text-[10px] border bg-[#0174bd]/15 text-[#4da8e8] border-[#0174bd]/30 font-mono">{detailItem.codigo}</Badge>
-                    <Badge className={`text-[10px] border ${getStockBadge(Number(detailItem.stock), Number(detailItem.stock_min)).cls}`}>{getStockBadge(Number(detailItem.stock), Number(detailItem.stock_min)).label}</Badge>
                     <Badge className={`text-[10px] border ${getPriceExpiryBadge(detailItem.price_valid_until).cls}`}>Precio: {getPriceExpiryBadge(detailItem.price_valid_until).label}</Badge>
                   </div>
                 </div>
@@ -504,7 +480,6 @@ export default function InventarioAdminPage() {
                     { icon: Package, label: "Unidad de venta", value: detailItem.unidad_venta },
                     { icon: DollarSign, label: "Precio público", value: formatCurrency(Number(detailItem.current_price)) },
                     { icon: CalendarClock, label: "Caducidad precio", value: formatDate(detailItem.price_valid_until) },
-                    { icon: Layers, label: "Stock actual", value: `${Number(detailItem.stock)} (mín: ${Number(detailItem.stock_min)})` },
                     { icon: Barcode, label: "Código de barras", value: detailItem.codigo_barras ?? "—" },
                     { icon: BoxIcon, label: "Ubicación", value: detailItem.ubicacion ?? "—" },
                   ].map((row) => {
@@ -516,10 +491,6 @@ export default function InventarioAdminPage() {
                       </div>
                     )
                   })}
-                </div>
-                <div className="rounded-lg border border-[#0174bd]/30 bg-[#0174bd]/10 p-4 flex items-center justify-between">
-                  <span className="text-sm text-slate-300">Valor total en inventario</span>
-                  <span className="text-lg font-bold text-[#4da8e8]">{formatCurrency(Number(detailItem.current_price) * Number(detailItem.stock))}</span>
                 </div>
                 <div className="flex justify-between gap-2 pt-2">
                   <Button variant="outline" className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white" onClick={() => openHistory(detailItem)}>
@@ -566,13 +537,6 @@ export default function InventarioAdminPage() {
                 <Field label="Precio público *"><Input value={formData.current_price} onChange={(e) => setFormData({ ...formData, current_price: e.target.value })} className={inputCls} placeholder="2484.89" /></Field>
                 <Field label="Caducidad del precio"><Input type="date" value={formData.price_valid_until} onChange={(e) => setFormData({ ...formData, price_valid_until: e.target.value })} className={inputCls} /></Field>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label={editingItem ? "Stock actual (usa órdenes/kardex)" : "Stock inicial"}>
-                  <Input value={formData.stock} onChange={(e) => setFormData({ ...formData, stock: e.target.value })} className={inputCls} placeholder="0" disabled={!!editingItem} />
-                </Field>
-                <Field label="Stock mínimo"><Input value={formData.stock_min} onChange={(e) => setFormData({ ...formData, stock_min: e.target.value })} className={inputCls} placeholder="0" /></Field>
-              </div>
-              {editingItem && <p className="text-[11px] text-slate-500">El stock se ajusta con órdenes de reabasto/salida o movimientos de kardex, no desde aquí.</p>}
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-700">
                 <Button variant="outline" onClick={() => setFormOpen(false)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
                 <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white" onClick={saveProduct} disabled={saving}>
@@ -637,7 +601,7 @@ export default function InventarioAdminPage() {
             {deleteItem && (
               <div className="space-y-4 mt-2">
                 <p className="text-sm text-slate-300">¿Estás seguro de eliminar <span className="font-semibold text-white">{deleteItem.descripcion}</span>?</p>
-                <p className="text-xs text-slate-500">Se borrará también su historial de precios y kardex. Esta acción no se puede deshacer.</p>
+                <p className="text-xs text-slate-500">Se borrará también su historial de precios. Esta acción no se puede deshacer.</p>
                 <div className="flex justify-end gap-2 pt-2">
                   <Button variant="outline" onClick={() => setDeleteItem(null)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
                   <Button onClick={confirmDelete} disabled={saving} className="cursor-pointer bg-red-600 hover:bg-red-700 text-white">{saving && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<Trash2 className="w-4 h-4 mr-1.5" /> Eliminar</Button>

@@ -17,8 +17,6 @@ export type InventoryProduct = {
   price_valid_from: string | null
   price_valid_until: string | null
   price_updated_at: string | null
-  stock: number
-  stock_min: number
   ubicacion: string | null
   is_active: boolean
   created_at: string
@@ -89,20 +87,6 @@ export type OrderInvoice = {
   uploaded_at: string
 }
 
-export type StockMovement = {
-  id: string
-  product_id: string
-  movement_type: "in" | "out" | "adjustment"
-  quantity: number
-  stock_before: number
-  stock_after: number
-  reason: string
-  order_id: string | null
-  obra_id: string | null
-  note: string | null
-  created_at: string
-}
-
 // ─── Formatters ─────────────────────────────────────────────────────────────
 
 export function formatCurrency(val: number | null | undefined): string {
@@ -114,14 +98,6 @@ export function formatDate(d: string | null | undefined): string {
   return new Date(d + (d.length === 10 ? "T00:00:00" : "")).toLocaleDateString("es-MX", {
     day: "2-digit", month: "short", year: "numeric",
   })
-}
-
-// ─── Stock ──────────────────────────────────────────────────────────────────
-
-export function getStockBadge(stock: number, min: number) {
-  if (stock <= 0) return { label: "Agotado", cls: "bg-red-500/15 text-red-400 border-red-500/30" }
-  if (stock <= min) return { label: "Bajo", cls: "bg-amber-500/15 text-amber-400 border-amber-500/30" }
-  return { label: "OK", cls: "bg-green-500/15 text-green-400 border-green-500/30" }
 }
 
 // ─── Price expiry ─────────────────────────────────────────────────────────────

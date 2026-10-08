@@ -13,18 +13,18 @@ import {
 } from "@/components/ui/table"
 import {
   ClipboardList, Eye, Upload, CheckCircle2, XCircle, Loader2, Search,
-  Trash2, FileText, ArrowDownToLine, ArrowUpFromLine, PackagePlus, Truck, Download,
+  Trash2, FileText, Truck, Download,
 } from "lucide-react"
 import {
-  InventoryProduct, InventoryOrder, OrderItem, OrderInvoice, OrderType,
-  formatCurrency, formatDate, orderTypeBadge, orderStatusBadge, ORDER_TYPE_LABEL,
+  InventoryProduct, InventoryOrder, OrderItem, OrderInvoice,
+  formatCurrency, formatDate, orderTypeBadge, orderStatusBadge,
 } from "@/lib/inventory"
 
 type OrderRow = InventoryOrder & { obra_name?: string | null; item_count?: number; invoice_count?: number }
 type Obra = { id: string; name: string; code: string | null }
 type Draft = { product: InventoryProduct; quantity: string }
 
-export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
+export function InventoryOrders({ role, headerRight }: { role: "admin" | "almacen"; headerRight?: React.ReactNode }) {
   const { user } = useAuth()
   const [orders, setOrders] = useState<OrderRow[]>([])
   const [products, setProducts] = useState<InventoryProduct[]>([])
@@ -32,14 +32,11 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
-  const [typeFilter, setTypeFilter] = useState<string>("all")
   const [statusFilter, setStatusFilter] = useState<string>("all")
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
-  const [newType, setNewType] = useState<OrderType>("restock")
   const [newObra, setNewObra] = useState("")
-  const [newSupplier, setNewSupplier] = useState("")
   const [newNotes, setNewNotes] = useState("")
   const [drafts, setDrafts] = useState<Draft[]>([])
   const [prodSearch, setProdSearch] = useState("")
@@ -49,10 +46,9 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
   const [detailItems, setDetailItems] = useState<OrderItem[]>([])
   const [detailInvoices, setDetailInvoices] = useState<OrderInvoice[]>([])
 
-  // Invoice form
+  // Invoice form (la fecha la fija el servidor, no es editable)
   const [invNumber, setInvNumber] = useState("")
   const [invAmount, setInvAmount] = useState("")
-  const [invDate, setInvDate] = useState(new Date().toISOString().slice(0, 10))
   const [invFile, setInvFile] = useState<File | null>(null)
 
   const loadOrders = useCallback(async () => {
@@ -85,19 +81,17 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
 
   const filtered = useMemo(() => {
     let arr = [...orders]
-    if (typeFilter !== "all") arr = arr.filter((o) => o.type === typeFilter)
     if (statusFilter !== "all") arr = arr.filter((o) => o.status === statusFilter)
     return arr
-  }, [orders, typeFilter, statusFilter])
+  }, [orders, statusFilter])
 
   const pendingCount = orders.filter((o) => o.status === "pending" || o.status === "in_progress").length
-  const restockCount = orders.filter((o) => o.type === "restock").length
-  const dispatchCount = orders.filter((o) => o.type === "dispatch").length
+  const totalCount = orders.length
   const completedCount = orders.filter((o) => o.status === "completed").length
 
   // ─── Create order ───
-  function openCreate(type: OrderType) {
-    setNewType(type); setNewObra(""); setNewSupplier(""); setNewNotes(""); setDrafts([]); setProdSearch("")
+  function openCreate() {
+    setNewObra(""); setNewNotes(""); setDrafts([]); setProdSearch("")
     setCreateOpen(true)
   }
   function addDraft(p: InventoryProduct) {
@@ -109,19 +103,19 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
 
   async function createOrder() {
     if (drafts.length === 0) return
-    if (newType === "dispatch" && !newObra) { alert("Selecciona la obra destino."); return }
+    if (!newObra) { alert("Selecciona la obra destino."); return }
     if (drafts.some((d) => !(Number(d.quantity) > 0))) { alert("Todas las cantidades deben ser mayores a 0."); return }
     setBusy(true)
     try {
-      const { data: folio } = await supabase.rpc("inventory_next_folio", { p_type: newType })
+      const { data: folio } = await supabase.rpc("inventory_next_folio", { p_type: "dispatch" })
       const { data: order, error } = await supabase
         .from("inventory_orders")
         .insert({
-          folio: folio ?? `${newType === "restock" ? "RE" : "SA"}-${Date.now()}`,
-          type: newType,
+          folio: folio ?? `SA-${Date.now()}`,
+          type: "dispatch",
           status: "pending",
-          obra_id: newType === "dispatch" ? newObra : null,
-          supplier_name: newType === "restock" ? (newSupplier || null) : null,
+          obra_id: newObra,
+          supplier_name: null,
           notes: newNotes || null,
           created_by: user?.id ?? null,
           created_by_role: role,
@@ -139,7 +133,7 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
         unit_price: Number(d.product.current_price),
       }))
       await supabase.from("inventory_order_items").insert(itemRows)
-      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: order.id, entity_label: order.folio, metadata: { type: newType, items: drafts.length } })
+      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: order.id, entity_label: order.folio, metadata: { type: "dispatch", items: drafts.length } })
       setCreateOpen(false)
       await loadOrders()
     } catch (e) {
@@ -150,7 +144,7 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
   // ─── Detail ───
   async function openDetail(o: OrderRow) {
     setDetail(o); setDetailItems([]); setDetailInvoices([])
-    setInvNumber(""); setInvAmount(""); setInvDate(new Date().toISOString().slice(0, 10)); setInvFile(null)
+    setInvNumber(""); setInvAmount(""); setInvFile(null)
     const [{ data: its }, { data: invs }] = await Promise.all([
       supabase.from("inventory_order_items").select("*").eq("order_id", o.id),
       supabase.from("inventory_order_invoices").select("*").eq("order_id", o.id).order("uploaded_at", { ascending: false }),
@@ -174,10 +168,10 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
       if (upErr) throw upErr
 
       await supabase.from("inventory_order_invoices").insert({
+        // date: la fija la base de datos (CURRENT_DATE), no se puede modificar
         order_id: detail.id,
         invoice_number: invNumber || null,
         amount: Number(invAmount) || 0,
-        date: invDate,
         bucket: up.bucket,
         object_path: up.path,
         file_name: invFile.name,
@@ -205,17 +199,20 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
 
   async function completeOrder() {
     if (!detail) return
-    if (detailInvoices.length === 0) { alert("Debes subir al menos una factura antes de confirmar."); return }
-    if (!confirm(`¿Confirmar la orden ${detail.folio}? Esto ${detail.type === "restock" ? "sumará" : "restará"} el stock.`)) return
+    if (detailInvoices.length === 0) { alert("Debes subir la factura antes de confirmar la entrega."); return }
+    if (!confirm(`¿Confirmar que el pedido ${detail.folio} está listo y entregado a obra?`)) return
     setBusy(true)
     try {
-      const { error } = await supabase.rpc("inventory_complete_order", { p_order_id: detail.id })
+      const { error } = await supabase
+        .from("inventory_orders")
+        .update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .eq("id", detail.id)
       if (error) throw error
       await logActivity({ event_type: "billing.payment_registered" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "completed", type: detail.type } })
       setDetail(null)
       await loadOrders()
     } catch (e: any) {
-      console.error(e); alert(e?.message || "No se pudo completar la orden (¿stock insuficiente?).")
+      console.error(e); alert(e?.message || "No se pudo confirmar la orden.")
     } finally { setBusy(false) }
   }
 
@@ -250,27 +247,26 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
             Órdenes de inventario
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            {role === "admin" ? "Genera reabastos y salidas a obra; almacén sube facturas y confirma." : "Recibe órdenes, sube la factura y confirma la entrega/recepción."}
+            {role === "admin" ? "Genera salidas a obra con la cantidad a surtir; almacén prepara el pedido, sube la factura y confirma la entrega." : "Recibe las órdenes, prepara el pedido, sube la factura y confirma la entrega a obra."}
           </p>
         </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <Button size="sm" className="cursor-pointer bg-emerald-600 hover:bg-emerald-700 text-white" onClick={() => openCreate("restock")}>
-            <PackagePlus className="w-4 h-4 mr-1.5" /> Reabasto
-          </Button>
-          {role === "admin" && (
-            <Button size="sm" className="cursor-pointer bg-violet-600 hover:bg-violet-700 text-white" onClick={() => openCreate("dispatch")}>
-              <Truck className="w-4 h-4 mr-1.5" /> Salida a obra
-            </Button>
-          )}
-        </div>
+        {(role === "admin" || headerRight) && (
+          <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+            {role === "admin" && (
+              <Button size="sm" className="cursor-pointer bg-violet-600 hover:bg-violet-700 text-white" onClick={() => openCreate()}>
+                <Truck className="w-4 h-4 mr-1.5" /> Nueva salida a obra
+              </Button>
+            )}
+            {headerRight}
+          </div>
+        )}
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+      <div className="grid grid-cols-3 gap-3">
         {[
           { label: "Pendientes", value: pendingCount, icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
-          { label: "Reabastos", value: restockCount, icon: ArrowDownToLine, color: "#10b981", bg: "rgba(16,185,129,0.12)" },
-          { label: "Salidas", value: dispatchCount, icon: ArrowUpFromLine, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
+          { label: "Salidas a obra", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
           { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#4da8e8", bg: "rgba(1,116,189,0.12)" },
         ].map((kpi) => {
           const Icon = kpi.icon
@@ -287,9 +283,6 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
 
       {/* Filters */}
       <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-4 flex items-center gap-2 flex-wrap">
-        <select value={typeFilter} onChange={(e) => setTypeFilter(e.target.value)} className={selectCls}>
-          <option value="all">Todos los tipos</option><option value="restock">Reabasto</option><option value="dispatch">Salida a obra</option>
-        </select>
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
           <option value="all">Todos los estados</option><option value="pending">Pendiente</option><option value="in_progress">En proceso</option><option value="completed">Completada</option><option value="cancelled">Cancelada</option>
         </select>
@@ -344,21 +337,17 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
         <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
             <DialogTitle className="text-slate-100 flex items-center gap-2">
-              {newType === "restock" ? <PackagePlus className="w-5 h-5 text-emerald-400" /> : <Truck className="w-5 h-5 text-violet-400" />}
-              Nueva orden · {ORDER_TYPE_LABEL[newType]}
+              <Truck className="w-5 h-5 text-violet-400" />
+              Nueva salida a obra
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-            {newType === "dispatch" ? (
-              <Field label="Obra destino *">
-                <select value={newObra} onChange={(e) => setNewObra(e.target.value)} className={selectCls}>
-                  <option value="">Selecciona una obra…</option>
-                  {obras.map((o) => <option key={o.id} value={o.id}>{o.code ? `${o.code} · ` : ""}{o.name}</option>)}
-                </select>
-              </Field>
-            ) : (
-              <Field label="Proveedor"><Input value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)} className={inputCls} placeholder="Comex, distribuidor…" /></Field>
-            )}
+            <Field label="Obra destino *">
+              <select value={newObra} onChange={(e) => setNewObra(e.target.value)} className={selectCls}>
+                <option value="">Selecciona una obra…</option>
+                {obras.map((o) => <option key={o.id} value={o.id}>{o.code ? `${o.code} · ` : ""}{o.name}</option>)}
+              </select>
+            </Field>
 
             {/* Product picker */}
             <div>
@@ -371,7 +360,7 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
                     {prodResults.map((p) => (
                       <button key={p.id} onClick={() => addDraft(p)} className="w-full text-left px-3 py-2 hover:bg-slate-700 flex items-center justify-between gap-2">
                         <span className="text-sm text-slate-200 truncate">{p.descripcion} <span className="font-mono text-[10px] text-[#4da8e8]">{p.codigo}</span></span>
-                        <span className="text-xs text-slate-500 shrink-0">stock: {Number(p.stock)}</span>
+                        <span className="text-xs text-slate-500 shrink-0">{formatCurrency(Number(p.current_price))}</span>
                       </button>
                     ))}
                   </div>
@@ -384,7 +373,7 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
                   <div key={d.product.id} className="flex items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-700/20 p-2.5">
                     <div className="flex-1 min-w-0">
                       <p className="text-sm text-slate-200 truncate">{d.product.descripcion}</p>
-                      <p className="text-[10px] text-slate-500 font-mono">{d.product.codigo} · {formatCurrency(Number(d.product.current_price))} · stock {Number(d.product.stock)}</p>
+                      <p className="text-[10px] text-slate-500 font-mono">{d.product.codigo} · {formatCurrency(Number(d.product.current_price))}</p>
                     </div>
                     <Input value={d.quantity} onChange={(e) => setDrafts((prev) => prev.map((x) => x.product.id === d.product.id ? { ...x, quantity: e.target.value } : x))} className={`w-20 h-9 text-center ${inputCls}`} placeholder="Cant." />
                     <span className="text-[10px] text-slate-500 w-8">{d.product.unidad_venta}</span>
@@ -467,9 +456,9 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
                     <div className="grid grid-cols-2 gap-2">
                       <Input value={invNumber} onChange={(e) => setInvNumber(e.target.value)} className={inputCls} placeholder="No. factura / CFDI" />
                       <Input value={invAmount} onChange={(e) => setInvAmount(e.target.value)} className={inputCls} placeholder="Monto" />
-                      <Input type="date" value={invDate} onChange={(e) => setInvDate(e.target.value)} className={inputCls} />
-                      <Input type="file" accept=".pdf,.xml,.jpg,.jpeg,.png" onChange={(e) => setInvFile(e.target.files?.[0] ?? null)} className={`${inputCls} file:text-slate-300 file:bg-slate-600 file:border-0 file:rounded file:px-2 file:mr-2 text-xs`} />
+                      <Input type="file" accept=".pdf,.xml,.jpg,.jpeg,.png" onChange={(e) => setInvFile(e.target.files?.[0] ?? null)} className={`col-span-2 ${inputCls} file:text-slate-300 file:bg-slate-600 file:border-0 file:rounded file:px-2 file:mr-2 text-xs`} />
                     </div>
+                    <p className="text-[10px] text-slate-500">La fecha de la factura se registra automáticamente al subirla y no se puede modificar.</p>
                     <div className="flex justify-end">
                       <Button size="sm" onClick={uploadInvoice} disabled={busy || !invFile} className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white">{busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}Subir factura</Button>
                     </div>
@@ -487,8 +476,8 @@ export function InventoryOrders({ role }: { role: "admin" | "almacen" }) {
                 <div className="flex gap-2">
                   <Button variant="outline" onClick={() => setDetail(null)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cerrar</Button>
                   {(detail.status === "pending" || detail.status === "in_progress") && (
-                    <Button onClick={completeOrder} disabled={busy || !canComplete} title={!canComplete ? "Sube al menos una factura" : ""} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white disabled:opacity-40">
-                      {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<CheckCircle2 className="w-4 h-4 mr-1.5" /> Confirmar y {detail.type === "restock" ? "sumar stock" : "restar stock"}
+                    <Button onClick={completeOrder} disabled={busy || !canComplete} title={!canComplete ? "Sube la factura primero" : ""} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white disabled:opacity-40">
+                      {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<CheckCircle2 className="w-4 h-4 mr-1.5" /> Confirmar entrega
                     </Button>
                   )}
                 </div>
