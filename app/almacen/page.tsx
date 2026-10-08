@@ -8,7 +8,7 @@ import { useAuth } from "@/lib/auth-context"
 import { supabase } from "@/lib/supabaseClient"
 import { Badge } from "@/components/ui/badge"
 import {
-  Package, ClipboardList, AlertTriangle, BoxIcon, CalendarClock, ArrowRight,
+  Package, ClipboardList, CalendarClock, ArrowRight,
   PackagePlus, Truck, Loader2,
 } from "lucide-react"
 import {
@@ -21,25 +21,22 @@ type OrderRow = InventoryOrder & { obra_name?: string | null }
 export default function AlmacenDashboard() {
   const { user } = useAuth()
   const [pendingOrders, setPendingOrders] = useState<OrderRow[]>([])
-  const [lowStock, setLowStock] = useState<InventoryProduct[]>([])
   const [priceSoon, setPriceSoon] = useState<{ id: string; descripcion: string; codigo: string; price_valid_until: string }[]>([])
-  const [counts, setCounts] = useState({ products: 0, units: 0, pending: 0 })
+  const [counts, setCounts] = useState({ products: 0, pending: 0 })
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(async () => {
     setLoading(true)
     const [{ data: orders }, { data: products }, { data: notifs }] = await Promise.all([
       supabase.from("inventory_orders").select("*, obras(name)").in("status", ["pending", "in_progress"]).order("created_at", { ascending: false }),
-      supabase.from("inventory_products").select("*").eq("is_active", true),
+      supabase.from("inventory_products").select("id").eq("is_active", true),
       supabase.from("inventory_price_notifications").select("id, price_valid_until, inventory_products(id, descripcion, codigo)").eq("status", "pending").order("price_valid_until"),
     ])
-    const prods = (products ?? []) as InventoryProduct[]
+    const prods = (products ?? []) as Pick<InventoryProduct, "id">[]
     setPendingOrders((orders ?? []).map((o: any) => ({ ...o, obra_name: o.obras?.name ?? null })))
-    setLowStock(prods.filter((p) => p.stock <= p.stock_min).sort((a, b) => Number(a.stock) - Number(b.stock)).slice(0, 8))
     setPriceSoon((notifs ?? []).map((n: any) => ({ id: n.id, price_valid_until: n.price_valid_until, descripcion: n.inventory_products?.descripcion ?? "", codigo: n.inventory_products?.codigo ?? "" })))
     setCounts({
       products: prods.length,
-      units: prods.reduce((s, p) => s + Number(p.stock), 0),
       pending: (orders ?? []).length,
     })
     setLoading(false)
@@ -58,10 +55,9 @@ export default function AlmacenDashboard() {
           </div>
 
           {/* KPIs */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             {[
               { label: "Artículos", value: counts.products, icon: Package, color: "#4da8e8", bg: "rgba(1,116,189,0.12)", href: "/almacen/inventario" },
-              { label: "Unidades en stock", value: counts.units.toLocaleString("es-MX"), icon: BoxIcon, color: "#10b981", bg: "rgba(16,185,129,0.12)", href: "/almacen/inventario" },
               { label: "Órdenes pendientes", value: counts.pending, icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)", href: "/almacen/ordenes" },
               { label: "Precios por caducar", value: priceSoon.length, icon: CalendarClock, color: "#ef4444", bg: "rgba(239,68,68,0.12)", href: "/almacen/inventario" },
             ].map((kpi) => {
@@ -110,21 +106,8 @@ export default function AlmacenDashboard() {
                 </div>
               </div>
 
-              {/* Alerts: low stock + price expiry */}
+              {/* Alerts: price expiry */}
               <div className="space-y-6">
-                <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-5">
-                  <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2 mb-4"><AlertTriangle className="w-4 h-4 text-amber-400" /> Stock bajo / agotado</h2>
-                  <div className="space-y-2">
-                    {lowStock.length === 0 && <p className="text-xs text-slate-500 py-2 text-center">Todo el stock está por encima del mínimo.</p>}
-                    {lowStock.map((p) => (
-                      <div key={p.id} className="flex items-center justify-between gap-2 text-xs">
-                        <span className="text-slate-300 truncate">{p.descripcion}</span>
-                        <span className={`font-bold shrink-0 ${p.stock <= 0 ? "text-red-400" : "text-amber-400"}`}>{Number(p.stock)} / mín {Number(p.stock_min)}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
                 <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-5">
                   <h2 className="text-sm font-semibold text-slate-200 flex items-center gap-2 mb-4"><CalendarClock className="w-4 h-4 text-red-400" /> Precios por caducar</h2>
                   <div className="space-y-2">
