@@ -23,6 +23,7 @@ import {
   ChevronDown,
   ChevronUp,
   AlertTriangle,
+  RefreshCw,
 } from "lucide-react"
 import jsPDF from "jspdf"
 
@@ -42,6 +43,7 @@ type NominaRow = {
   employee_count: number
   pdf_object_path: string | null
   created_at: string
+  is_current?: boolean
 }
 
 type NominaDetail = {
@@ -63,17 +65,6 @@ type NominaDetail = {
   total_paid: number
 }
 
-type TeamMemberForNomina = {
-  assignment_id: string
-  employee_id: string
-  full_name: string
-  role_on_site: string | null
-  real_salary: number
-  bonus_amount: number
-  viatics_amount: number
-  overtime_hour_cost: number
-}
-
 type AttendanceRecord = {
   employee_id: string
   date: string
@@ -81,60 +72,7 @@ type AttendanceRecord = {
   overtime_hours: number
 }
 
-type MissingAttendance = {
-  employee_name: string
-  date: string
-  date_display: string
-}
-
 // ───── Helpers ─────
-
-/** Get Thursday of a given period offset (0 = current period, -1 = last, etc.) */
-function getThursdayOfPeriod(offset: number = 0): Date {
-  const now = new Date()
-  const day = now.getDay() // 0=Sun..6=Sat
-  // Thursday = 4. Calculate diff to most recent Thursday (or today if Thu)
-  let diff = day - 4
-  if (diff < 0) diff += 7 // if before Thu this week, go back to last Thu
-  const thursday = new Date(now)
-  thursday.setDate(now.getDate() - diff + offset * 7)
-  thursday.setHours(0, 0, 0, 0)
-  return thursday
-}
-
-function getWednesdayFromThursday(thursday: Date): Date {
-  const wed = new Date(thursday)
-  wed.setDate(thursday.getDate() + 6)
-  return wed
-}
-
-/** Get the 6 work days (Thu-Sat + Mon-Wed), skipping Sunday */
-function getWorkDates(thursday: Date): string[] {
-  const dates: string[] = []
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(thursday)
-    d.setDate(thursday.getDate() + i)
-    if (d.getDay() !== 0) { // skip Sunday
-      dates.push(fmtDate(d))
-    }
-  }
-  return dates // 6 dates
-}
-
-/** Get all 7 calendar days Thu-Wed (including Sunday) for calendar display */
-function getAllPeriodDates(thursday: Date): string[] {
-  const dates: string[] = []
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(thursday)
-    d.setDate(thursday.getDate() + i)
-    dates.push(fmtDate(d))
-  }
-  return dates
-}
-
-function fmtDate(d: Date): string {
-  return d.toISOString().split("T")[0]
-}
 
 function fmtDateDisplay(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00")
@@ -153,11 +91,18 @@ function getDayName(dateStr: string): string {
 }
 
 function fmtCurrency(n: number): string {
-  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n)
+  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(Number(n) || 0)
 }
 
-function nominaName(weekStart: string): string {
-  return `Nomina${weekStart.replace(/-/g, "")}`
+/** Los 7 días calendario (Jue–Mié, incluye domingo) a partir del week_start. */
+function allDatesFromWeekStart(weekStart: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart + "T00:00:00Z")
+    d.setUTCDate(d.getUTCDate() + i)
+    out.push(d.toISOString().split("T")[0])
+  }
+  return out
 }
 
 // ───── Component ─────
@@ -165,34 +110,47 @@ function nominaName(weekStart: string): string {
 export function NominasTab({ obraId }: { obraId: string }) {
   const [nominas, setNominas] = useState<NominaRow[]>([])
   const [loading, setLoading] = useState(true)
-  const [generating, setGenerating] = useState(false)
+  const [syncing, setSyncing] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, NominaDetail[]>>({})
   const [loadingDetails, setLoadingDetails] = useState<string | null>(null)
   const [downloading, setDownloading] = useState<string | null>(null)
   const [obraName, setObraName] = useState("")
-  const [validationAlert, setValidationAlert] = useState<{ missing: MissingAttendance[]; directorName: string } | null>(null)
+  const [lastSync, setLastSync] = useState<Date | null>(null)
 
-  // ── Fetch history ──
-  const fetchNominas = useCallback(async () => {
-    setLoading(true)
-    const { data } = await supabase
-      .from("obra_nominas")
-      .select("*")
-      .eq("obra_id", obraId)
-      .order("week_start", { ascending: false })
-    setNominas((data as NominaRow[]) ?? [])
-    setLoading(false)
+  // ── Sync: recalcula y mantiene al día todas las semanas desde el inicio ──
+  const runSync = useCallback(async (manual: boolean) => {
+    if (manual) setSyncing(true)
+    else setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch("/api/obra-nomina/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obraId }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || "Error al sincronizar la nómina.")
+      setNominas((json.nominas as NominaRow[]) ?? [])
+      if (json.obra_name) setObraName(json.obra_name as string)
+      setDetails({}) // invalida detalles en caché (pueden haber cambiado)
+      setExpandedId(null)
+      setLastSync(new Date())
+    } catch (e: any) {
+      console.error("sync nómina error:", e)
+      setError(e?.message || "Error al sincronizar la nómina.")
+    } finally {
+      setSyncing(false)
+      setLoading(false)
+    }
   }, [obraId])
 
   useEffect(() => {
-    fetchNominas()
-    supabase.from("obras").select("name").eq("id", obraId).single().then(({ data }: { data: any }) => {
-      if (data) setObraName((data as { name: string }).name)
-    })
-  }, [obraId, fetchNominas])
+    runSync(false)
+  }, [runSync])
 
-  // ── Fetch details for expanded row ──
+  // ── Detalles por semana (lazy) ──
   async function fetchDetails(nominaId: string) {
     if (details[nominaId]) return
     setLoadingDetails(nominaId)
@@ -201,7 +159,7 @@ export function NominasTab({ obraId }: { obraId: string }) {
       .select("*")
       .eq("nomina_id", nominaId)
       .order("full_name")
-    setDetails((prev: Record<string, NominaDetail[]>) => ({ ...prev, [nominaId]: (data as NominaDetail[]) ?? [] }))
+    setDetails((prev) => ({ ...prev, [nominaId]: (data as NominaDetail[]) ?? [] }))
     setLoadingDetails(null)
   }
 
@@ -214,365 +172,129 @@ export function NominasTab({ obraId }: { obraId: string }) {
     }
   }
 
-  // ── Available periods ──
-  function getAvailablePeriods(): { thursday: Date; wednesday: Date; label: string }[] {
-    const periods: { thursday: Date; wednesday: Date; label: string }[] = []
-    for (let i = 0; i >= -4; i--) {
-      const thursday = getThursdayOfPeriod(i)
-      const wednesday = getWednesdayFromThursday(thursday)
-      const startStr = fmtDate(thursday)
-      const alreadyGenerated = nominas.some((n: NominaRow) => n.week_start === startStr)
-      if (!alreadyGenerated) {
-        const label = `${fmtDateDisplay(startStr)} – ${fmtDateDisplay(fmtDate(wednesday))}`
-        periods.push({ thursday, wednesday, label })
-      }
-    }
-    return periods
-  }
-
-  // ── Generate nomina ──
-  async function handleGenerate(thursday: Date, wednesday: Date) {
-    setGenerating(true)
-    setValidationAlert(null)
+  // ── Descargar PDF (generado al vuelo con los datos vigentes) ──
+  async function handleDownload(nomina: NominaRow) {
+    setDownloading(nomina.id)
     try {
-      const weekStartStr = fmtDate(thursday)
-      const weekEndStr = fmtDate(wednesday)
-      const workDates = getWorkDates(thursday)
-      const allDates = getAllPeriodDates(thursday)
-
-      // 1. Get team
-      const { data: assignments } = await supabase
-        .from("obra_assignments")
-        .select(`
-          id,
-          employee_id,
-          role_on_site,
-          employees(full_name, real_salary, bonus_amount, viatics_amount, overtime_hour_cost)
-        `)
-        .eq("obra_id", obraId)
-        .is("assigned_to", null)
-
-      if (!assignments || assignments.length === 0) {
-        alert("No hay empleados asignados a esta obra.")
-        setGenerating(false)
+      let dets = details[nomina.id]
+      if (!dets) {
+        const { data } = await supabase
+          .from("obra_nomina_details")
+          .select("*")
+          .eq("nomina_id", nomina.id)
+          .order("full_name")
+        dets = (data as NominaDetail[]) ?? []
+        setDetails((prev) => ({ ...prev, [nomina.id]: dets! }))
+      }
+      if (dets.length === 0) {
+        alert("Esta semana no tiene empleados con asistencia para generar el reporte.")
         return
       }
 
-      const team: TeamMemberForNomina[] = assignments.map((a: any) => {
-        const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
-        return {
-          assignment_id: a.id,
-          employee_id: a.employee_id,
-          full_name: emp?.full_name ?? "Sin nombre",
-          role_on_site: a.role_on_site,
-          real_salary: Number(emp?.real_salary) || 0,
-          bonus_amount: Number(emp?.bonus_amount) || 0,
-          viatics_amount: Number(emp?.viatics_amount) || 0,
-          overtime_hour_cost: Number(emp?.overtime_hour_cost) || 0,
-        }
-      })
-
-      // 2. Get attendance for period (Thu-Wed)
-      const employeeIds = team.map((t: TeamMemberForNomina) => t.employee_id)
-      const { data: attendanceData } = await supabase
+      const { data: attData } = await supabase
         .from("obra_attendance")
         .select("employee_id, date, status, overtime_hours")
         .eq("obra_id", obraId)
-        .in("employee_id", employeeIds)
-        .gte("date", weekStartStr)
-        .lte("date", weekEndStr)
+        .gte("date", nomina.week_start)
+        .lte("date", nomina.week_end)
+      const attendance = (attData as AttendanceRecord[]) ?? []
+      const allDates = allDatesFromWeekStart(nomina.week_start)
 
-      const attendance = (attendanceData as AttendanceRecord[]) ?? []
-
-      // 3. VALIDATION: check all work days have attendance for all employees
-      const directorAssignment = assignments.find((a: any) => a.role_on_site === "director_obra")
-      const directorEmp = directorAssignment
-        ? (Array.isArray(directorAssignment.employees) ? directorAssignment.employees[0] : directorAssignment.employees)
-        : null
-      const directorName: string = directorEmp?.full_name ?? "Sin asignar"
-
-      const missing: MissingAttendance[] = []
-      for (const member of team) {
-        for (const workDate of workDates) {
-          const hasRecord = attendance.some(
-            (a: AttendanceRecord) => a.employee_id === member.employee_id && a.date === workDate
-          )
-          if (!hasRecord) {
-            missing.push({
-              employee_name: member.full_name,
-              date: workDate,
-              date_display: `${getDayName(workDate)} ${fmtDateShort(workDate)}`,
-            })
-          }
-        }
-      }
-
-      if (missing.length > 0) {
-        setValidationAlert({ missing, directorName })
-        setGenerating(false)
-        return
-      }
-
-      // 4. Calculate each employee
-      let totalSalarios = 0
-      let totalBonificaciones = 0
-      let totalViaticos = 0
-      let totalOvertime = 0
-      let totalGeneral = 0
-
-      const nominaDetails: Omit<NominaDetail, "id" | "nomina_id">[] = team.map((member: TeamMemberForNomina) => {
-        const empAttendance = attendance.filter((a: AttendanceRecord) => a.employee_id === member.employee_id)
-
-        let daysWorked = 0
-        let daysBajada = 0
-        let daysAbsent = 0
-        let overtimeHours = 0
-
-        for (const workDate of workDates) {
-          const rec = empAttendance.find((a: AttendanceRecord) => a.date === workDate)
-          if (!rec || rec.status === "absent" || rec.status === "justified") {
-            daysAbsent += 1
-          } else if (rec.status === "present") {
-            daysWorked += 1
-          } else if (rec.status === "half_day") {
-            daysWorked += 0.5
-            daysAbsent += 0.5
-          } else if (rec.status === "bajada") {
-            daysWorked += 1
-            daysBajada += 1
-          }
-          if (rec) overtimeHours += Number(rec.overtime_hours) || 0
-        }
-
-        // Salary: full salary minus deduction per falta
-        let salaryPaid: number
-        if (daysAbsent === 0) {
-          salaryPaid = member.real_salary
-        } else {
-          salaryPaid = member.real_salary - (member.real_salary / 7) * daysAbsent
-        }
-        salaryPaid = Math.round(salaryPaid * 100) / 100
-
-        const bonus = member.bonus_amount
-        const viatics = member.viatics_amount
-        const overtimePay = Math.round(overtimeHours * member.overtime_hour_cost * 100) / 100
-        const total = salaryPaid + bonus + viatics + overtimePay
-
-        totalSalarios += salaryPaid
-        totalBonificaciones += bonus
-        totalViaticos += viatics
-        totalOvertime += overtimePay
-        totalGeneral += total
-
-        return {
-          employee_id: member.employee_id,
-          full_name: member.full_name,
-          role_on_site: member.role_on_site,
-          days_worked: daysWorked,
-          days_absent: daysAbsent,
-          days_bajada: daysBajada,
-          real_salary: member.real_salary,
-          salary_paid: salaryPaid,
-          bonus_amount: bonus,
-          viatics_amount: viatics,
-          overtime_hours: overtimeHours,
-          overtime_rate: member.overtime_hour_cost,
-          overtime_pay: overtimePay,
-          total_paid: total,
-        }
-      })
-
-      // Round totals
-      totalSalarios = Math.round(totalSalarios * 100) / 100
-      totalBonificaciones = Math.round(totalBonificaciones * 100) / 100
-      totalViaticos = Math.round(totalViaticos * 100) / 100
-      totalOvertime = Math.round(totalOvertime * 100) / 100
-      totalGeneral = Math.round(totalGeneral * 100) / 100
-
-      const name = nominaName(weekStartStr)
-
-      // 5. Generate PDF (with calendar and attendance data)
       const pdfBlob = generatePDF({
         obraName,
-        name,
-        weekStart: weekStartStr,
-        weekEnd: weekEndStr,
-        details: nominaDetails,
-        totalSalarios,
-        totalBonificaciones,
-        totalViaticos,
-        totalOvertime,
-        totalGeneral,
+        name: nomina.name,
+        weekStart: nomina.week_start,
+        weekEnd: nomina.week_end,
+        details: dets.map((d) => ({
+          employee_id: d.employee_id,
+          full_name: d.full_name,
+          role_on_site: d.role_on_site,
+          days_worked: d.days_worked,
+          days_absent: d.days_absent,
+          days_bajada: d.days_bajada,
+          real_salary: d.real_salary,
+          salary_paid: d.salary_paid,
+          bonus_amount: d.bonus_amount,
+          viatics_amount: d.viatics_amount,
+          overtime_hours: d.overtime_hours,
+          overtime_rate: d.overtime_rate,
+          overtime_pay: d.overtime_pay,
+          total_paid: d.total_paid,
+        })),
+        totalSalarios: nomina.total_salarios,
+        totalBonificaciones: nomina.total_bonificaciones,
+        totalViaticos: nomina.total_viaticos,
+        totalOvertime: nomina.total_overtime,
+        totalGeneral: nomina.total_general,
         attendance,
         allDates,
       })
 
-      // 6. Upload PDF
-      const pdfPath = `${obraId}/${name}.pdf`
-      const { error: uploadError } = await supabase.storage
-        .from("obra-nominas")
-        .upload(pdfPath, pdfBlob, { contentType: "application/pdf", upsert: true })
-
-      if (uploadError) {
-        alert("Error al subir el PDF: " + uploadError.message)
-        setGenerating(false)
-        return
-      }
-
-      // 7. Get current user
-      const { data: { user } } = await supabase.auth.getUser()
-
-      // 8. Insert nomina record
-      const { data: nominaInsert, error: nominaError } = await supabase
-        .from("obra_nominas")
-        .insert({
-          obra_id: obraId,
-          week_start: weekStartStr,
-          week_end: weekEndStr,
-          name,
-          total_salarios: totalSalarios,
-          total_bonificaciones: totalBonificaciones,
-          total_viaticos: totalViaticos,
-          total_overtime: totalOvertime,
-          total_general: totalGeneral,
-          employee_count: team.length,
-          pdf_object_path: pdfPath,
-          generated_by: user?.id ?? null,
-        })
-        .select("id")
-        .single()
-
-      if (nominaError || !nominaInsert) {
-        alert("Error al guardar la nómina: " + (nominaError?.message ?? "Unknown"))
-        setGenerating(false)
-        return
-      }
-
-      // 9. Insert detail rows
-      const detailRows = nominaDetails.map((d: Omit<NominaDetail, "id" | "nomina_id">) => ({
-        ...d,
-        nomina_id: (nominaInsert as { id: string }).id,
-      }))
-
-      await supabase.from("obra_nomina_details").insert(detailRows)
-      await fetchNominas()
-    } catch (err) {
-      console.error("Error generating nomina:", err)
-      alert("Error inesperado al generar la nómina.")
-    } finally {
-      setGenerating(false)
-    }
-  }
-
-  // ── Download PDF ──
-  async function handleDownload(nomina: NominaRow) {
-    if (!nomina.pdf_object_path) return
-    setDownloading(nomina.id)
-    try {
-      const { data, error } = await supabase.storage
-        .from("obra-nominas")
-        .download(nomina.pdf_object_path)
-      if (error || !data) {
-        alert("Error al descargar: " + (error?.message ?? ""))
-        return
-      }
-      const url = URL.createObjectURL(data)
+      const url = URL.createObjectURL(pdfBlob)
       const a = document.createElement("a")
       a.href = url
       a.download = `${nomina.name}.pdf`
       a.click()
       URL.revokeObjectURL(url)
+    } catch (e: any) {
+      console.error("download nómina error:", e)
+      alert("No se pudo generar el PDF.")
     } finally {
       setDownloading(null)
     }
   }
 
   // ── Render ──
-  const availablePeriods = getAvailablePeriods()
-
   return (
     <div className="space-y-6">
-      {/* Validation alert modal */}
-      {validationAlert && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-slate-800 border border-red-500/30 rounded-2xl shadow-2xl max-w-lg w-full mx-4 max-h-[80vh] overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-700 flex items-center gap-3">
-              <div className="p-2 rounded-lg bg-red-500/15">
-                <AlertTriangle className="w-5 h-5 text-red-400" />
+      {/* Header / sync */}
+      <Card className="bg-slate-800 border-slate-700">
+        <CardHeader>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-lg bg-[#0174bd]/15">
+                <DollarSign className="w-4.5 h-4.5 text-[#4da8e8]" />
               </div>
               <div>
-                <h3 className="text-slate-100 font-semibold">Asistencias Incompletas</h3>
-                <p className="text-xs text-slate-400">
-                  Director responsable: <span className="text-amber-400 font-medium">{validationAlert.directorName}</span>
+                <CardTitle className="text-slate-100">Nómina semanal</CardTitle>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  Resumen real por semana (Jue – Mié) desde el inicio de la obra. Se mantiene al día
+                  automáticamente con las asistencias capturadas; no incluye nómina fiscal.
                 </p>
               </div>
             </div>
-            <div className="px-5 py-4 max-h-[50vh] overflow-y-auto space-y-2">
-              <p className="text-sm text-slate-300 mb-3">
-                No se puede generar la nómina. Faltan {validationAlert.missing.length} registro{validationAlert.missing.length !== 1 ? "s" : ""} de asistencia:
-              </p>
-              {validationAlert.missing.map((m: MissingAttendance, i: number) => (
-                <div key={i} className="flex items-center justify-between bg-slate-900/60 rounded-lg px-3 py-2 border border-slate-700/50">
-                  <span className="text-sm text-slate-200">{m.employee_name}</span>
-                  <span className="text-xs text-red-400 font-medium">{m.date_display}</span>
-                </div>
-              ))}
-            </div>
-            <div className="px-5 py-3 border-t border-slate-700 flex justify-end">
+            <div className="flex items-center gap-3 shrink-0">
+              {lastSync && (
+                <span className="hidden sm:inline text-[11px] text-slate-500">
+                  Actualizado {lastSync.toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
               <Button
-                onClick={() => setValidationAlert(null)}
-                className="bg-slate-700 hover:bg-slate-600 text-slate-200"
+                size="sm"
+                onClick={() => runSync(true)}
+                disabled={syncing || loading}
+                className="cursor-pointer bg-slate-700 hover:bg-slate-600 text-slate-100"
               >
-                Entendido
+                {syncing ? (
+                  <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
+                ) : (
+                  <RefreshCw className="w-4 h-4 mr-1.5" />
+                )}
+                Actualizar
               </Button>
             </div>
           </div>
-        </div>
-      )}
-
-      {/* Generate section */}
-      <Card className="bg-slate-800 border-slate-700">
-        <CardHeader>
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-[#0174bd]/15">
-              <DollarSign className="w-4.5 h-4.5 text-[#4da8e8]" />
-            </div>
-            <div>
-              <CardTitle className="text-slate-100">Generar Nomina</CardTitle>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Periodo: Jueves a Miércoles (6 días laborales + Domingo descanso)
-              </p>
-            </div>
-          </div>
         </CardHeader>
-        <CardContent>
-          {availablePeriods.length === 0 ? (
-            <p className="text-sm text-slate-400">
-              Todas las semanas recientes ya tienen nómina generada.
-            </p>
-          ) : (
-            <div className="flex flex-wrap gap-3">
-              {availablePeriods.map(({ thursday, wednesday, label }) => (
-                <Button
-                  key={fmtDate(thursday)}
-                  onClick={() => handleGenerate(thursday, wednesday)}
-                  disabled={generating}
-                  className="bg-[#0174bd] hover:bg-[#015a94] text-white"
-                >
-                  {generating ? (
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  ) : (
-                    <FileText className="w-4 h-4 mr-2" />
-                  )}
-                  {label}
-                </Button>
-              ))}
+        {error && (
+          <CardContent>
+            <div className="flex items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+              <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
             </div>
-          )}
-        </CardContent>
+          </CardContent>
+        )}
       </Card>
 
-      {/* History */}
+      {/* Historial semanal */}
       <Card className="bg-slate-800 border-slate-700">
         <CardHeader>
           <div className="flex items-center gap-2.5">
@@ -580,9 +302,9 @@ export function NominasTab({ obraId }: { obraId: string }) {
               <CalendarDays className="w-4.5 h-4.5 text-[#4da8e8]" />
             </div>
             <div>
-              <CardTitle className="text-slate-100">Historial de Nóminas</CardTitle>
+              <CardTitle className="text-slate-100">Resúmenes por semana</CardTitle>
               <p className="text-xs text-slate-500 mt-0.5">
-                {nominas.length} nómina{nominas.length !== 1 ? "s" : ""} generada{nominas.length !== 1 ? "s" : ""}
+                {nominas.length} semana{nominas.length !== 1 ? "s" : ""} almacenada{nominas.length !== 1 ? "s" : ""}
               </p>
             </div>
           </div>
@@ -595,7 +317,10 @@ export function NominasTab({ obraId }: { obraId: string }) {
           ) : nominas.length === 0 ? (
             <div className="text-center py-12">
               <FileText className="w-10 h-10 text-slate-600 mx-auto mb-3" />
-              <p className="text-sm text-slate-400">Aún no se han generado nóminas para esta obra.</p>
+              <p className="text-sm text-slate-400">
+                Aún no hay semanas con información. Captura las asistencias de la obra para generar los
+                resúmenes automáticamente.
+              </p>
             </div>
           ) : (
             <div className="space-y-3">
@@ -604,6 +329,7 @@ export function NominasTab({ obraId }: { obraId: string }) {
                 const dets = details[nomina.id]
                 const isLoadingDets = loadingDetails === nomina.id
                 const isDl = downloading === nomina.id
+                const hasData = nomina.employee_count > 0
 
                 return (
                   <div key={nomina.id} className="border border-slate-700 rounded-xl overflow-hidden">
@@ -612,18 +338,30 @@ export function NominasTab({ obraId }: { obraId: string }) {
                       className="flex items-center justify-between px-4 py-3 hover:bg-slate-700/30 cursor-pointer transition-colors"
                       onClick={() => toggleExpand(nomina.id)}
                     >
-                      <div className="flex items-center gap-3">
-                        <div className="p-2 bg-slate-700/50 rounded-lg">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="p-2 bg-slate-700/50 rounded-lg shrink-0">
                           <FileText className="w-4 h-4 text-[#4da8e8]" />
                         </div>
-                        <div>
-                          <p className="text-sm font-medium text-slate-100">{nomina.name}</p>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <p className="text-sm font-medium text-slate-100">{nomina.name}</p>
+                            {nomina.is_current && (
+                              <Badge className="text-[10px] border bg-[#0174bd]/15 text-[#4da8e8] border-[#0174bd]/30">
+                                En curso
+                              </Badge>
+                            )}
+                            {!hasData && (
+                              <Badge className="text-[10px] border bg-slate-600/40 text-slate-400 border-slate-600">
+                                Sin asistencia registrada
+                              </Badge>
+                            )}
+                          </div>
                           <p className="text-xs text-slate-500">
                             {fmtDateDisplay(nomina.week_start)} – {fmtDateDisplay(nomina.week_end)}
                           </p>
                         </div>
                       </div>
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-4 shrink-0">
                         <div className="hidden sm:flex items-center gap-4 text-xs text-slate-400">
                           <span className="flex items-center gap-1">
                             <Users className="w-3.5 h-3.5" />
@@ -634,9 +372,10 @@ export function NominasTab({ obraId }: { obraId: string }) {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="text-slate-400 hover:text-slate-200"
+                          className="cursor-pointer text-slate-400 hover:text-slate-200"
                           onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDownload(nomina) }}
-                          disabled={isDl || !nomina.pdf_object_path}
+                          disabled={isDl || !hasData}
+                          title={hasData ? "Descargar reporte PDF" : "Sin empleados con asistencia"}
                         >
                           {isDl ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                         </Button>
@@ -732,7 +471,9 @@ export function NominasTab({ obraId }: { obraId: string }) {
                             </div>
                           </>
                         ) : (
-                          <p className="text-sm text-slate-500 text-center py-4">Sin detalles disponibles.</p>
+                          <p className="text-sm text-slate-500 text-center py-4">
+                            Esta semana no tiene empleados con asistencia registrada.
+                          </p>
                         )}
                       </div>
                     )}
