@@ -41,6 +41,7 @@ type AttRecord = {
   date: string
   status: AttStatus
   overtime_hours: number
+  bajada_kind?: "recurrente" | "ticket" | null
 }
 
 // Orden del ciclo al hacer clic: Asistió → Falta → ½ día → Justificada → (repite)
@@ -202,7 +203,7 @@ export function AdminAttendance() {
     if (!obraId || !period) { setAttendance([]); return }
     const { data } = await supabase
       .from("obra_attendance")
-      .select("id, employee_id, date, status, overtime_hours")
+      .select("id, employee_id, date, status, overtime_hours, bajada_kind")
       .eq("obra_id", obraId)
       .gte("date", period.weekStart)
       .lte("date", period.weekEnd)
@@ -226,14 +227,14 @@ export function AdminAttendance() {
           .from("obra_attendance")
           .update({ status, updated_at: new Date().toISOString() })
           .eq("id", existing.id)
-          .select("id, employee_id, date, status, overtime_hours")
+          .select("id, employee_id, date, status, overtime_hours, bajada_kind")
           .single()
         if (data) setAttendance((p) => p.map((a) => (a.id === existing.id ? (data as AttRecord) : a)))
       } else {
         const { data } = await supabase
           .from("obra_attendance")
           .insert({ obra_id: obraId, employee_id: empId, date, status, recorded_by: auth?.user?.id ?? null })
-          .select("id, employee_id, date, status, overtime_hours")
+          .select("id, employee_id, date, status, overtime_hours, bajada_kind")
           .single()
         if (data) setAttendance((p) => [...p, data as AttRecord])
       }
@@ -264,14 +265,14 @@ export function AdminAttendance() {
         .from("obra_attendance")
         .update({ overtime_hours: clamped, updated_at: new Date().toISOString() })
         .eq("id", existing.id)
-        .select("id, employee_id, date, status, overtime_hours")
+        .select("id, employee_id, date, status, overtime_hours, bajada_kind")
         .single()
       if (data) setAttendance((p) => p.map((a) => (a.id === existing.id ? (data as AttRecord) : a)))
     } else {
       const { data } = await supabase
         .from("obra_attendance")
         .insert({ obra_id: obraId, employee_id: empId, date, status: "present", overtime_hours: clamped, recorded_by: auth?.user?.id ?? null })
-        .select("id, employee_id, date, status, overtime_hours")
+        .select("id, employee_id, date, status, overtime_hours, bajada_kind")
         .single()
       if (data) setAttendance((p) => [...p, data as AttRecord])
     }
@@ -477,7 +478,12 @@ export function AdminAttendance() {
                     const key = `${selectedMember.id}-${c.date}`
                     const busy = savingCell === key
                     const isToday = c.date === todayStr()
-                    const cfg = rec ? SQ[rec.status] : null
+                    const isTicketBajada = rec?.status === "bajada" && rec?.bajada_kind === "ticket"
+                    const cfg = rec
+                      ? (isTicketBajada
+                          ? { label: "Bajada (T)", icon: CalendarDays, cls: "bg-amber-500 border-amber-500 text-white" }
+                          : SQ[rec.status])
+                      : null
                     const Icon = cfg?.icon
 
                     return (

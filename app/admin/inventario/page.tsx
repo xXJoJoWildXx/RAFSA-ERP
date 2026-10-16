@@ -15,15 +15,15 @@ import {
 } from "@/components/ui/table"
 import {
   Package, Search, Plus, Eye, Pencil, Trash2, Download, Layers, DollarSign,
-  ChevronLeft, ChevronRight, X, Barcode, Weight, Ruler, Tag,
+  ChevronLeft, ChevronRight, ChevronDown, Check, X, Barcode, Weight, Ruler, Tag,
   ArrowUpDown, ArrowUp, ArrowDown, BoxIcon, ClipboardList, CalendarClock, History, Loader2,
 } from "lucide-react"
 import {
   InventoryProduct, PriceNotification, PriceHistoryRow,
-  formatCurrency, formatDate, getPriceExpiryBadge, daysUntil,
+  formatCurrency, formatDate, getPriceExpiryBadge, daysUntil, withIva,
 } from "@/lib/inventory"
 
-type SortField = "codigo" | "descripcion" | "linea" | "current_price" | "price_valid_until"
+type SortField = "codigo" | "descripcion" | "linea" | "capacidad" | "current_price" | "price_with_iva" | "price_valid_until"
 type SortDir = "asc" | "desc"
 
 const emptyForm = {
@@ -40,11 +40,12 @@ export default function InventarioAdminPage() {
 
   const [search, setSearch] = useState("")
   const [lineaFilter, setLineaFilter] = useState<string>("all")
+  const [lineaMenuOpen, setLineaMenuOpen] = useState(false)
   const [stockFilter, setStockFilter] = useState<string>("all") // all | price_soon
   const [sortField, setSortField] = useState<SortField>("descripcion")
   const [sortDir, setSortDir] = useState<SortDir>("asc")
   const [page, setPage] = useState(1)
-  const perPage = 10
+  const perPage = 50
 
   const [detailItem, setDetailItem] = useState<InventoryProduct | null>(null)
   const [formOpen, setFormOpen] = useState(false)
@@ -61,10 +62,19 @@ export default function InventarioAdminPage() {
   // ─── Data loading ───
   const loadData = useCallback(async () => {
     setLoading(true)
-    const { data: products } = await supabase
-      .from("inventory_products")
-      .select("*")
-      .order("descripcion", { ascending: true })
+    // PostgREST devuelve máx. 1000 filas por consulta → paginamos para traer TODO.
+    const PAGE = 1000
+    let products: InventoryProduct[] = []
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from("inventory_products")
+        .select("*")
+        .order("descripcion", { ascending: true })
+        .range(from, from + PAGE - 1)
+      if (error || !data) break
+      products = products.concat(data as InventoryProduct[])
+      if (data.length < PAGE) break
+    }
 
     const { data: notifRows } = await supabase
       .from("inventory_price_notifications")
@@ -72,7 +82,7 @@ export default function InventarioAdminPage() {
       .eq("status", "pending")
       .order("price_valid_until", { ascending: true })
 
-    setItems((products ?? []) as InventoryProduct[])
+    setItems(products)
     setNotifs(
       (notifRows ?? []).map((n: any) => ({
         ...n,
@@ -90,6 +100,11 @@ export default function InventarioAdminPage() {
     () => [...new Set(items.map((i) => i.linea).filter(Boolean) as string[])].sort(),
     [items],
   )
+  const lineaCounts = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const i of items) if (i.linea) m[i.linea] = (m[i.linea] ?? 0) + 1
+    return m
+  }, [items])
 
   // ─── Filtering / sorting ───
   const filtered = useMemo(() => {
@@ -160,6 +175,8 @@ export default function InventarioAdminPage() {
     if (!formData.codigo.trim() || !formData.descripcion.trim()) return
     setSaving(true)
     try {
+      const price = Number(formData.current_price) || 0
+      const validUntil = formData.price_valid_until || null
       const base = {
         codigo: formData.codigo.trim(),
         descripcion: formData.descripcion.trim(),
@@ -171,9 +188,8 @@ export default function InventarioAdminPage() {
         linea: formData.linea || null,
         codigo_barras: formData.codigo_barras || null,
         ubicacion: formData.ubicacion || null,
+        price_with_iva: withIva(price), // con IVA siempre sincronizado con el precio base
       }
-      const price = Number(formData.current_price) || 0
-      const validUntil = formData.price_valid_until || null
 
       if (editingItem) {
         await supabase.from("inventory_products").update(base).eq("id", editingItem.id)
@@ -228,12 +244,15 @@ export default function InventarioAdminPage() {
   async function savePrice() {
     if (!priceItem) return
     setSaving(true)
+    const newPrice = Number(priceForm.price) || 0
     await supabase.rpc("inventory_set_price", {
       p_product_id: priceItem.id,
-      p_price: Number(priceForm.price) || 0,
+      p_price: newPrice,
       p_valid_until: priceForm.valid_until || null,
       p_note: priceForm.note || "Actualización de precio",
     })
+    // Mantener el precio con IVA sincronizado con el nuevo precio base
+    await supabase.from("inventory_products").update({ price_with_iva: withIva(newPrice) }).eq("id", priceItem.id)
     await logActivity({ event_type: "billing.cotizacion_updated" as any, entity_type: "inventory.price", entity_id: priceItem.id, entity_label: priceItem.descripcion, metadata: { price: priceForm.price, valid_until: priceForm.valid_until } })
     setPriceItem(null)
     setSaving(false)
@@ -257,7 +276,7 @@ export default function InventarioAdminPage() {
   }
 
   function exportCsv() {
-    const headers = ["codigo", "descripcion", "linea", "capacidad", "unidad_venta", "codigo_barras", "current_price", "price_valid_until", "ubicacion"]
+    const headers = ["codigo", "descripcion", "linea", "capacidad", "unidad_venta", "codigo_barras", "current_price", "price_with_iva", "price_valid_until", "ubicacion"]
     const rows = filtered.map((i) => headers.map((h) => {
       const v = (i as any)[h]
       const s = v == null ? "" : String(v)
@@ -369,11 +388,45 @@ export default function InventarioAdminPage() {
                   className="pl-9 bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <select value={lineaFilter} onChange={(e) => { setLineaFilter(e.target.value); setPage(1) }}
-                  className="h-10 rounded-md border border-slate-600 bg-slate-700/60 px-3 text-sm text-slate-100 focus:border-[#0174bd] outline-none">
-                  <option value="all">Todas las líneas</option>
-                  {LINEAS.map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
+                {/* Filtro de líneas — selector con estética de marca */}
+                <div className="relative">
+                  <button type="button" onClick={() => setLineaMenuOpen((v) => !v)}
+                    className={`group h-10 inline-flex items-center gap-2 rounded-lg border px-3 text-sm transition-colors cursor-pointer outline-none ${lineaFilter !== "all" ? "border-[#0174bd]/50 bg-[#0174bd]/10 text-[#4da8e8]" : "border-slate-600 bg-slate-700/60 text-slate-200 hover:border-slate-500"}`}>
+                    <Layers className={`w-4 h-4 ${lineaFilter !== "all" ? "text-[#4da8e8]" : "text-slate-400 group-hover:text-slate-300"}`} />
+                    <span className="max-w-[180px] truncate font-medium">{lineaFilter === "all" ? "Todas las líneas" : lineaFilter}</span>
+                    <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform duration-200 ${lineaMenuOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {lineaMenuOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setLineaMenuOpen(false)} />
+                      <div className="absolute z-50 mt-2 w-72 rounded-xl border border-slate-700 bg-slate-800 shadow-2xl shadow-black/40 overflow-hidden">
+                        <div className="px-3 py-2 border-b border-slate-700/70 flex items-center gap-2">
+                          <Tag className="w-3.5 h-3.5 text-[#4da8e8]" />
+                          <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Filtrar por línea</span>
+                          <span className="ml-auto text-[11px] text-slate-500">{LINEAS.length}</span>
+                        </div>
+                        <div className="max-h-72 overflow-y-auto py-1">
+                          <button type="button" onClick={() => { setLineaFilter("all"); setPage(1); setLineaMenuOpen(false) }}
+                            className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors cursor-pointer ${lineaFilter === "all" ? "bg-[#0174bd]/15 text-[#4da8e8]" : "text-slate-200 hover:bg-slate-700/60"}`}>
+                            <Layers className="w-4 h-4 shrink-0 text-slate-400" />
+                            <span className="flex-1 font-medium">Todas las líneas</span>
+                            <span className="text-[11px] text-slate-500">{items.length}</span>
+                            {lineaFilter === "all" && <Check className="w-4 h-4 text-[#4da8e8]" />}
+                          </button>
+                          {LINEAS.map((l) => (
+                            <button key={l} type="button" onClick={() => { setLineaFilter(l); setPage(1); setLineaMenuOpen(false) }}
+                              className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors cursor-pointer ${lineaFilter === l ? "bg-[#0174bd]/15 text-[#4da8e8]" : "text-slate-200 hover:bg-slate-700/60"}`}>
+                              <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${lineaFilter === l ? "bg-[#4da8e8]" : "bg-slate-600"}`} />
+                              <span className="flex-1 truncate">{l}</span>
+                              <span className="text-[11px] text-slate-500 tabular-nums">{lineaCounts[l] ?? 0}</span>
+                              {lineaFilter === l && <Check className="w-4 h-4 shrink-0 text-[#4da8e8]" />}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
                 {(search || lineaFilter !== "all" || stockFilter !== "all") && (
                   <Button variant="ghost" size="sm" className="cursor-pointer text-xs text-slate-400 hover:text-white"
                     onClick={() => { setSearch(""); setLineaFilter("all"); setStockFilter("all"); setPage(1) }}>
@@ -397,27 +450,31 @@ export default function InventarioAdminPage() {
                     <TableHead className="text-slate-400 font-semibold text-xs cursor-pointer select-none min-w-[260px]" onClick={() => toggleSort("descripcion")}>
                       <span className="flex items-center">Descripción <SortIcon field="descripcion" /></span>
                     </TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs cursor-pointer select-none" onClick={() => toggleSort("capacidad")}>
+                      <span className="flex items-center">Capacidad <SortIcon field="capacidad" /></span>
+                    </TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs">Unidad</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Múltiplo</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right cursor-pointer select-none" onClick={() => toggleSort("current_price")}>
-                      <span className="flex items-center justify-end">Precio <SortIcon field="current_price" /></span>
+                      <span className="flex items-center justify-end">Precio s/IVA <SortIcon field="current_price" /></span>
                     </TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs cursor-pointer select-none" onClick={() => toggleSort("price_valid_until")}>
-                      <span className="flex items-center">Caducidad precio <SortIcon field="price_valid_until" /></span>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-right cursor-pointer select-none" onClick={() => toggleSort("price_with_iva")}>
+                      <span className="flex items-center justify-end">Precio c/IVA <SortIcon field="price_with_iva" /></span>
                     </TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Ubicación</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Acciones</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
-                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-slate-500">
+                    <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-500">
                       <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin text-slate-600" /> Cargando inventario…
                     </TableCell></TableRow>
                   ) : paginated.length === 0 ? (
-                    <TableRow><TableCell colSpan={6} className="text-center py-12 text-slate-500">
+                    <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-500">
                       <Package className="w-10 h-10 mx-auto mb-2 text-slate-600" /><p>No se encontraron artículos</p>
                     </TableCell></TableRow>
                   ) : paginated.map((item) => {
-                    const pb = getPriceExpiryBadge(item.price_valid_until)
+                    const iva = Number(item.price_with_iva) || withIva(item.current_price)
                     return (
                       <TableRow key={item.id} className="border-slate-700/40 hover:bg-slate-700/20 transition-colors">
                         <TableCell className="font-mono text-xs text-[#4da8e8]">{item.codigo}</TableCell>
@@ -425,9 +482,11 @@ export default function InventarioAdminPage() {
                           <p className="text-sm font-medium text-slate-200 truncate max-w-[300px]">{item.descripcion}</p>
                           {item.linea && <Badge className="mt-1 text-[10px] border bg-slate-700/60 text-slate-300 border-slate-600">{item.linea}</Badge>}
                         </TableCell>
-                        <TableCell className="text-right text-sm font-medium text-slate-200">{formatCurrency(Number(item.current_price))}</TableCell>
-                        <TableCell><Badge className={`text-[10px] border ${pb.cls}`}>{pb.label}</Badge></TableCell>
-                        <TableCell className="text-sm text-slate-400">{item.ubicacion ?? "—"}</TableCell>
+                        <TableCell className="text-sm text-slate-300 whitespace-nowrap">{item.capacidad ?? "—"}</TableCell>
+                        <TableCell className="text-sm text-slate-400 whitespace-nowrap">{item.unidad_venta}</TableCell>
+                        <TableCell className="text-center text-sm text-slate-400 whitespace-nowrap">{item.multiplo_venta}</TableCell>
+                        <TableCell className="text-right text-sm text-slate-400 whitespace-nowrap">{formatCurrency(Number(item.current_price))}</TableCell>
+                        <TableCell className="text-right text-sm font-semibold text-slate-100 whitespace-nowrap">{formatCurrency(iva)}</TableCell>
                         <TableCell className="text-right">
                           <div className="flex items-center justify-end gap-1">
                             <Button size="sm" variant="ghost" className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-emerald-400 hover:bg-emerald-500/10" onClick={() => openPriceDialog(item)} title="Actualizar precio"><DollarSign className="w-4 h-4" /></Button>
@@ -478,7 +537,8 @@ export default function InventarioAdminPage() {
                     { icon: Ruler, label: "Capacidad", value: detailItem.capacidad ?? "—" },
                     { icon: Weight, label: "Peso", value: detailItem.peso != null ? `${detailItem.peso} ${detailItem.um_peso}` : "—" },
                     { icon: Package, label: "Unidad de venta", value: detailItem.unidad_venta },
-                    { icon: DollarSign, label: "Precio público", value: formatCurrency(Number(detailItem.current_price)) },
+                    { icon: DollarSign, label: "Precio s/IVA", value: formatCurrency(Number(detailItem.current_price)) },
+                    { icon: DollarSign, label: "Precio c/IVA", value: formatCurrency(Number(detailItem.price_with_iva) || withIva(detailItem.current_price)) },
                     { icon: CalendarClock, label: "Caducidad precio", value: formatDate(detailItem.price_valid_until) },
                     { icon: Barcode, label: "Código de barras", value: detailItem.codigo_barras ?? "—" },
                     { icon: BoxIcon, label: "Ubicación", value: detailItem.ubicacion ?? "—" },
@@ -533,8 +593,13 @@ export default function InventarioAdminPage() {
                 <Field label="Múltiplo"><Input value={formData.multiplo_venta} onChange={(e) => setFormData({ ...formData, multiplo_venta: e.target.value })} className={inputCls} placeholder="1" /></Field>
                 <Field label="Ubicación"><Input value={formData.ubicacion} onChange={(e) => setFormData({ ...formData, ubicacion: e.target.value })} className={inputCls} placeholder="A-01-01" /></Field>
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Precio público *"><Input value={formData.current_price} onChange={(e) => setFormData({ ...formData, current_price: e.target.value })} className={inputCls} placeholder="2484.89" /></Field>
+              <div className="grid grid-cols-3 gap-3">
+                <Field label="Precio s/IVA *"><Input value={formData.current_price} onChange={(e) => setFormData({ ...formData, current_price: e.target.value })} className={inputCls} placeholder="2484.89" /></Field>
+                <Field label="Precio c/IVA (16%)">
+                  <div className="h-10 flex items-center rounded-md border border-slate-700 bg-slate-800/60 px-3 text-sm font-medium text-slate-300">
+                    {formatCurrency(withIva(Number(formData.current_price) || 0))}
+                  </div>
+                </Field>
                 <Field label="Caducidad del precio"><Input type="date" value={formData.price_valid_until} onChange={(e) => setFormData({ ...formData, price_valid_until: e.target.value })} className={inputCls} /></Field>
               </div>
               <div className="flex justify-end gap-2 pt-3 border-t border-slate-700">
@@ -554,11 +619,12 @@ export default function InventarioAdminPage() {
             {priceItem && (
               <div className="space-y-4 mt-2">
                 <p className="text-sm text-slate-300">{priceItem.descripcion} <span className="font-mono text-xs text-[#4da8e8]">({priceItem.codigo})</span></p>
-                <p className="text-xs text-slate-500">Precio actual: {formatCurrency(Number(priceItem.current_price))} · caduca {formatDate(priceItem.price_valid_until)}</p>
+                <p className="text-xs text-slate-500">Precio actual: {formatCurrency(Number(priceItem.current_price))} s/IVA · {formatCurrency(Number(priceItem.price_with_iva) || withIva(priceItem.current_price))} c/IVA · caduca {formatDate(priceItem.price_valid_until)}</p>
                 <div className="grid grid-cols-2 gap-3">
-                  <Field label="Nuevo precio *"><Input value={priceForm.price} onChange={(e) => setPriceForm({ ...priceForm, price: e.target.value })} className={inputCls} placeholder="0.00" /></Field>
+                  <Field label="Nuevo precio s/IVA *"><Input value={priceForm.price} onChange={(e) => setPriceForm({ ...priceForm, price: e.target.value })} className={inputCls} placeholder="0.00" /></Field>
                   <Field label="Nueva caducidad"><Input type="date" value={priceForm.valid_until} onChange={(e) => setPriceForm({ ...priceForm, valid_until: e.target.value })} className={inputCls} /></Field>
                 </div>
+                <p className="text-[11px] text-slate-500">Con IVA (16%): <span className="font-medium text-slate-300">{formatCurrency(withIva(Number(priceForm.price) || 0))}</span></p>
                 <Field label="Nota (opcional)"><Input value={priceForm.note} onChange={(e) => setPriceForm({ ...priceForm, note: e.target.value })} className={inputCls} placeholder="Ajuste de lista de precios…" /></Field>
                 <p className="text-[11px] text-slate-500">El precio anterior se conserva en el historial. La notificación de caducidad se genera automáticamente 1 semana antes.</p>
                 <div className="flex justify-end gap-2 pt-2">

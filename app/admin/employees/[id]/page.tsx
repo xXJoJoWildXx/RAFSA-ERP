@@ -53,9 +53,18 @@ import {
   LayoutDashboard,
   MapPin,
   Home,
+  Ticket,
+  Plane,
+  Loader2,
+  CheckCircle2,
+  CalendarClock,
 } from "lucide-react"
+import { Calendar as BajadaCalendar } from "@/components/ui/calendar"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import type { DateRange } from "react-day-picker"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
+import { upcomingOccurrences, mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 // -------------------- Tipos reales de la DB --------------------
 
@@ -82,6 +91,9 @@ type EmployeeRow = {
   is_foraneo: boolean
   residence_location: string | null
   next_bajada_date: string | null
+  next_reingreso_date: string | null
+  bajada_anchor_start: string | null
+  bajada_anchor_end: string | null
   created_at: string
 }
 
@@ -149,6 +161,9 @@ type EmployeeDetail = {
   is_foraneo: boolean
   residence_location: string | null
   next_bajada_date: string | null
+  next_reingreso_date: string | null
+  bajada_anchor_start: string | null
+  bajada_anchor_end: string | null
   created_at: string
   photo_url: string | null
   roles: EmployeeRole[]
@@ -453,6 +468,9 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     is_foraneo: row.is_foraneo ?? false,
     residence_location: row.residence_location ?? null,
     next_bajada_date: row.next_bajada_date ?? null,
+    next_reingreso_date: row.next_reingreso_date ?? null,
+    bajada_anchor_start: row.bajada_anchor_start ?? null,
+    bajada_anchor_end: row.bajada_anchor_end ?? null,
     created_at: row.created_at,
     photo_url: row.photo_url ?? null,
     roles: [],
@@ -860,6 +878,24 @@ export default function EmployeeDetailPage() {
   // Residencia foráneo/local
   const [savingResidencia, setSavingResidencia] = useState(false)
 
+  // Bajada / tickets (foráneo)
+  const [ticketBalance, setTicketBalance] = useState<number>(0)
+  const [currentObra, setCurrentObra] = useState<{ id: string; name: string } | null>(null)
+  const [useModalOpen, setUseModalOpen] = useState(false)
+  const [useRange, setUseRange] = useState<DateRange | undefined>(undefined)
+  const [usingTicket, setUsingTicket] = useState(false)
+  const [anchorCalOpen, setAnchorCalOpen] = useState(false)
+  const [calMonths, setCalMonths] = useState(2) // 2 hojas en escritorio, 1 en móvil
+
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const mq = window.matchMedia("(min-width: 640px)")
+    const apply = () => setCalMonths(mq.matches ? 2 : 1)
+    apply()
+    mq.addEventListener("change", apply)
+    return () => mq.removeEventListener("change", apply)
+  }, [])
+
   const [salaryHistoryOpen, setSalaryHistoryOpen] = useState(false)
   const [salaryHistoryLoading, setSalaryHistoryLoading] = useState(false)
   const [salaryHistoryError, setSalaryHistoryError] = useState<string | null>(null)
@@ -998,6 +1034,9 @@ export default function EmployeeDetailPage() {
             is_foraneo,
             residence_location,
             next_bajada_date,
+            next_reingreso_date,
+            bajada_anchor_start,
+            bajada_anchor_end,
             created_at
           `,
           )
@@ -1306,6 +1345,9 @@ export default function EmployeeDetailPage() {
       // switching to local → clear foráneo fields
       payload.residence_location = null
       payload.next_bajada_date = null
+      payload.next_reingreso_date = null
+      payload.bajada_anchor_start = null
+      payload.bajada_anchor_end = null
     }
     const { error: err } = await supabase.from("employees").update(payload).eq("id", id)
     if (!err) {
@@ -1314,15 +1356,25 @@ export default function EmployeeDetailPage() {
           ? {
               ...prev,
               is_foraneo: newVal,
-              ...(newVal ? {} : { residence_location: null, next_bajada_date: null }),
+              ...(newVal
+                ? {}
+                : {
+                    residence_location: null,
+                    next_bajada_date: null,
+                    next_reingreso_date: null,
+                    bajada_anchor_start: null,
+                    bajada_anchor_end: null,
+                  }),
             }
           : prev,
       )
+      if (newVal) refreshBajadaSync()
+      else { setTicketBalance(0); setCurrentObra(null) }
     }
     setSavingResidencia(false)
   }
 
-  const handleResidenciaFieldSave = async (field: "residence_location" | "next_bajada_date", value: string) => {
+  const handleResidenciaFieldSave = async (field: "residence_location", value: string) => {
     if (!employee || !id) return
     setSavingResidencia(true)
     const dbVal = value.trim() || null
@@ -1332,6 +1384,124 @@ export default function EmployeeDetailPage() {
     }
     setSavingResidencia(false)
   }
+
+  // ── Bajada recurrente (rango ancla) + sync de tickets ──
+  const refreshBajadaSync = async () => {
+    if (!id) return
+    try {
+      const res = await fetch("/api/foraneo/sync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ employeeId: id }),
+      })
+      const json = await res.json()
+      const r = json?.results?.[0]
+      if (r) {
+        setTicketBalance(Number(r.balance) || 0)
+        setCurrentObra(r.current_obra ?? null)
+        setEmployee((prev) =>
+          prev ? { ...prev, next_bajada_date: r.next_bajada_date ?? prev.next_bajada_date, next_reingreso_date: r.next_reingreso_date ?? prev.next_reingreso_date } : prev,
+        )
+      }
+    } catch (e) {
+      console.error("bajada sync error:", e)
+    }
+  }
+
+  const handleSaveAnchor = async (start: string | null, end: string | null, doSync = true) => {
+    if (!employee || !id) return
+    setSavingResidencia(true)
+    const payload = {
+      bajada_anchor_start: start,
+      bajada_anchor_end: end,
+      // la ocurrencia vigente arranca en el ancla; el sync la recalcula
+      next_bajada_date: start,
+      next_reingreso_date: end,
+    }
+    const { error: err } = await supabase.from("employees").update(payload).eq("id", id)
+    if (!err) {
+      setEmployee((prev) => (prev ? { ...prev, ...payload } : prev))
+      if (doSync) await refreshBajadaSync()
+    } else {
+      console.error("save anchor error:", err)
+    }
+    setSavingResidencia(false)
+  }
+
+  // Mismo comportamiento que el tab de Equipo: 1° clic = salida, 2° clic = reingreso
+  const handleAnchorDayClick = async (day: Date) => {
+    const clicked = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`
+    const hasStart = !!employee?.bajada_anchor_start
+    const hasEnd = !!employee?.bajada_anchor_end
+    if (!hasStart || hasEnd) {
+      // Rango nuevo: fija la salida y espera el reingreso (sin sync todavía)
+      await handleSaveAnchor(clicked, null, false)
+      return
+    }
+    const start = employee!.bajada_anchor_start as string
+    const salida = clicked >= start ? start : clicked
+    const reingreso = clicked >= start ? clicked : start
+    await handleSaveAnchor(salida, reingreso, true)
+    setAnchorCalOpen(false)
+  }
+
+  const handleAnchorClear = async () => {
+    await handleSaveAnchor(null, null, true)
+  }
+
+  // Mismo comportamiento que los demás calendarios: 1° clic salida, 2° clic reingreso
+  const handleUseDayClick = (day: Date) => {
+    const hasStart = !!useRange?.from
+    const hasEnd = !!useRange?.to
+    if (!hasStart || hasEnd) {
+      setUseRange({ from: day, to: undefined })
+      return
+    }
+    const start = useRange!.from as Date
+    if (day.getTime() >= start.getTime()) setUseRange({ from: start, to: day })
+    else setUseRange({ from: day, to: start })
+  }
+
+  const handleConfirmUseTicket = async () => {
+    if (!employee || !id) return
+    if (!currentObra) { alert("El empleado no tiene una obra asignada actualmente."); return }
+    if (ticketBalance <= 0) { alert("No hay tickets disponibles."); return }
+    const from = useRange?.from
+    const to = useRange?.to ?? useRange?.from
+    if (!from) { alert("Selecciona la fecha (o rango) de bajada."); return }
+    const toLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
+    setUsingTicket(true)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const res = await fetch("/api/foraneo/use-ticket", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          employeeId: id,
+          obraId: currentObra.id,
+          start: toLocal(from),
+          end: toLocal(to as Date),
+          userId: authData?.user?.id ?? null,
+        }),
+      })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json?.error || "No se pudo usar el ticket.")
+      setTicketBalance(Number(json.balance) || 0)
+      setUseModalOpen(false)
+      setUseRange(undefined)
+    } catch (e: any) {
+      console.error("use ticket error:", e)
+      alert(e?.message || "No se pudo usar el ticket.")
+    } finally {
+      setUsingTicket(false)
+    }
+  }
+
+  // Sincroniza recurrencia + tickets al cargar el empleado foráneo
+  useEffect(() => {
+    if (employee?.is_foraneo && id) refreshBajadaSync()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [employee?.id, employee?.is_foraneo])
 
   const handleSave = async () => {
     if (!editForm || !id) return
@@ -2454,27 +2624,201 @@ export default function EmployeeDetailPage() {
                           className="flex-1 bg-slate-900/50 border border-slate-700/50 rounded-lg px-2.5 py-1 text-xs text-slate-300 placeholder:text-slate-600 focus:outline-none focus:border-amber-500/40 transition-colors"
                         />
                       </div>
-                      <div className="flex items-center gap-3 text-sm">
-                        <Calendar className="w-4 h-4 text-amber-500/70 flex-shrink-0" />
-                        <span className="text-slate-500 text-xs w-20 flex-shrink-0">Bajada:</span>
-                        <input
-                          type="date"
-                          defaultValue={employee.next_bajada_date ?? ""}
-                          onBlur={(e: React.FocusEvent<HTMLInputElement>) => {
-                            const val = e.target.value
-                            if (val) {
-                              const d = new Date(val + "T00:00:00")
-                              if (d.getDay() !== 5) {
-                                alert("Solo se permiten fechas de Viernes.")
-                                e.target.value = employee.next_bajada_date ?? ""
-                                return
-                              }
-                            }
-                            handleResidenciaFieldSave("next_bajada_date", val)
-                          }}
-                          className="flex-1 bg-slate-900/50 border border-slate-700/50 rounded-lg px-2.5 py-1 text-xs text-slate-300 focus:outline-none focus:border-amber-500/40 transition-colors"
-                        />
+
+                      {/* Rango ancla de bajada (viaje redondo; recurre cada 2 meses) */}
+                      <div className="flex items-start gap-3 text-sm">
+                        <CalendarClock className="w-4 h-4 text-amber-500/70 flex-shrink-0 mt-1.5" />
+                        <span className="text-slate-500 text-xs w-20 flex-shrink-0 mt-1.5">Bajada:</span>
+                        <div className="flex-1 space-y-1.5">
+                          {(() => {
+                            const fmt = (s: string | null) =>
+                              s ? new Date(s + "T00:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "short" }) : "—"
+                            const range: DateRange | undefined = employee.bajada_anchor_start
+                              ? {
+                                  from: new Date(employee.bajada_anchor_start + "T00:00:00"),
+                                  to: employee.bajada_anchor_end ? new Date(employee.bajada_anchor_end + "T00:00:00") : undefined,
+                                }
+                              : undefined
+                            const label = employee.bajada_anchor_start
+                              ? `${fmt(employee.bajada_anchor_start)} → ${employee.bajada_anchor_end ? fmt(employee.bajada_anchor_end) : "…"}`
+                              : "Definir fechas"
+                            return (
+                              <Popover open={anchorCalOpen} onOpenChange={setAnchorCalOpen}>
+                                <PopoverTrigger asChild>
+                                  <button className="inline-flex items-center gap-1.5 bg-slate-900 border border-slate-700 rounded-md px-2.5 py-1.5 text-xs text-slate-300 hover:border-[#0174bd]/60 cursor-pointer">
+                                    <CalendarClock className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                                    <span className={employee.bajada_anchor_start ? "" : "text-slate-500"}>{label}</span>
+                                  </button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-auto p-0 bg-slate-800 border-slate-700 text-slate-200">
+                                  <BajadaCalendar
+                                    mode="range"
+                                    numberOfMonths={1}
+                                    defaultMonth={range?.from}
+                                    selected={range}
+                                    onSelect={() => {}}
+                                    onDayClick={(day: Date) => handleAnchorDayClick(day)}
+                                    className={[
+                                      "[&_[data-day]]:text-slate-200",
+                                      "[&_[data-day]:hover]:!bg-slate-700 [&_[data-day]:hover]:!text-white",
+                                      "[&_[data-selected-single=true]]:!bg-[#0174bd] [&_[data-selected-single=true]]:!text-white",
+                                      "[&_[data-range-start=true]]:!bg-[#0174bd] [&_[data-range-start=true]]:!text-white",
+                                      "[&_[data-range-end=true]]:!bg-[#0174bd] [&_[data-range-end=true]]:!text-white",
+                                      "[&_[data-range-middle=true]]:!bg-[#0174bd]/30 [&_[data-range-middle=true]]:!text-slate-100",
+                                    ].join(" ")}
+                                    classNames={{
+                                      weekday: "text-slate-500 flex-1 font-normal text-[0.8rem] select-none",
+                                      caption_label: "text-slate-200 text-sm font-medium select-none",
+                                      month_caption: "flex items-center justify-center h-8 w-full px-8 text-slate-200",
+                                      button_previous: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                      button_next: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                      today:
+                                        "rounded-full bg-[#0174bd]/25 ring-2 ring-inset ring-[#0174bd] text-[#4da8e8] font-semibold animate-pulse " +
+                                        "data-[selected=true]:animate-none data-[selected=true]:bg-transparent data-[selected=true]:ring-0 data-[selected=true]:text-inherit",
+                                      outside: "text-slate-600",
+                                      disabled: "text-slate-700 opacity-50",
+                                    }}
+                                  />
+                                  <div className="flex items-center justify-between gap-2 border-t border-slate-700 px-3 py-2">
+                                    <span className="text-[11px] text-slate-500">1° clic salida · 2° clic reingreso</span>
+                                    <button
+                                      onClick={handleAnchorClear}
+                                      className="text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+                                    >
+                                      Limpiar
+                                    </button>
+                                  </div>
+                                </PopoverContent>
+                              </Popover>
+                            )
+                          })()}
+                          {employee.bajada_anchor_start && (() => {
+                            const aStart = employee.bajada_anchor_start as string
+                            const aEnd = (employee.bajada_anchor_end ?? employee.bajada_anchor_start) as string
+                            const f = (s: string) => new Date(s + "T00:00:00").toLocaleDateString("es-MX", { day: "numeric", month: "short" })
+                            const occs = upcomingOccurrences(aStart, aEnd, mexicoTodayISO(), 3)
+                            return (
+                              <p className="text-[11px] text-slate-500 leading-relaxed">
+                                Recurrente cada 2 meses · Próximas:{" "}
+                                <span className="text-slate-400">{occs.map((o) => `${f(o.start)}–${f(o.end)}`).join("  ·  ")}</span>
+                              </p>
+                            )
+                          })()}
+                        </div>
                       </div>
+
+                      {/* Tickets de bajada + Utilizar */}
+                      <div className="flex items-center gap-3 text-sm">
+                        <Ticket className="w-4 h-4 text-amber-500/70 flex-shrink-0" />
+                        <span className="text-slate-500 text-xs w-20 flex-shrink-0">Tickets:</span>
+                        <div className="flex-1 flex items-center justify-between gap-2">
+                          <span className="inline-flex items-baseline gap-1.5">
+                            <span className="text-base font-bold text-amber-300">{ticketBalance}</span>
+                            <span className="text-[11px] text-slate-500">disponible{ticketBalance === 1 ? "" : "s"}</span>
+                          </span>
+                          <button
+                            onClick={() => { setUseRange(undefined); setUseModalOpen(true) }}
+                            disabled={ticketBalance <= 0}
+                            title={ticketBalance <= 0 ? "Sin tickets disponibles" : "Usar un ticket de bajada"}
+                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-all
+                              ${ticketBalance > 0
+                                ? "bg-amber-500/15 text-amber-300 border-amber-500/30 hover:bg-amber-500/25 cursor-pointer"
+                                : "bg-slate-700/30 text-slate-600 border-slate-700/40 cursor-not-allowed"}`}
+                          >
+                            <Plane className="w-3.5 h-3.5" /> Utilizar
+                          </button>
+                        </div>
+                      </div>
+                      {currentObra ? (
+                        <p className="text-[11px] text-slate-500 pl-7">Obra actual: <span className="text-slate-300">{currentObra.name}</span></p>
+                      ) : (
+                        <p className="text-[11px] text-slate-600 pl-7">Sin obra asignada actualmente</p>
+                      )}
+
+                      {/* Modal: usar ticket de bajada (fecha extraordinaria) */}
+                      <Dialog open={useModalOpen} onOpenChange={setUseModalOpen}>
+                        <DialogContent className="w-[calc(100vw-2rem)] sm:max-w-[600px] max-h-[90vh] overflow-y-auto bg-slate-900 border-slate-700 text-slate-100">
+                          <DialogHeader>
+                            <DialogTitle className="flex items-center gap-2 text-slate-100">
+                              <Plane className="w-5 h-5 text-amber-400" /> Usar ticket de bajada
+                            </DialogTitle>
+                            <DialogDescription className="text-slate-400">
+                              Fecha de bajada <span className="text-amber-300 font-medium">por ticket</span> (extraordinaria, distinta a la bimestral).
+                            </DialogDescription>
+                          </DialogHeader>
+
+                          <div className="flex flex-wrap items-center gap-2 text-xs">
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/15 text-amber-300 border border-amber-500/30">
+                              <Ticket className="w-3.5 h-3.5" /> {ticketBalance} ticket{ticketBalance === 1 ? "" : "s"} disponible{ticketBalance === 1 ? "" : "s"}
+                            </span>
+                            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-700/40 text-slate-300 border border-slate-600/40">
+                              <Building2 className="w-3.5 h-3.5" /> {currentObra ? currentObra.name : "Sin obra asignada"}
+                            </span>
+                          </div>
+
+                          <div className="rounded-lg border border-slate-700 bg-slate-800 text-slate-200 p-0 flex justify-center overflow-x-auto">
+                            <BajadaCalendar
+                              mode="range"
+                              numberOfMonths={calMonths}
+                              defaultMonth={useRange?.from}
+                              selected={useRange}
+                              onSelect={() => {}}
+                              onDayClick={(day: Date) => handleUseDayClick(day)}
+                              className={[
+                                "!bg-transparent",
+                                "[&_[data-day]]:text-slate-200",
+                                "[&_[data-day]:hover]:!bg-slate-700 [&_[data-day]:hover]:!text-white",
+                                "[&_[data-selected-single=true]]:!bg-[#0174bd] [&_[data-selected-single=true]]:!text-white",
+                                "[&_[data-range-start=true]]:!bg-[#0174bd] [&_[data-range-start=true]]:!text-white",
+                                "[&_[data-range-end=true]]:!bg-[#0174bd] [&_[data-range-end=true]]:!text-white",
+                                "[&_[data-range-middle=true]]:!bg-[#0174bd]/30 [&_[data-range-middle=true]]:!text-slate-100",
+                              ].join(" ")}
+                              classNames={{
+                                weekday: "text-slate-500 flex-1 font-normal text-[0.8rem] select-none",
+                                caption_label: "text-slate-200 text-sm font-medium select-none",
+                                month_caption: "flex items-center justify-center h-8 w-full px-8 text-slate-200",
+                                button_previous: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                button_next: "size-8 p-0 text-slate-300 hover:bg-slate-700 rounded-md aria-disabled:opacity-40",
+                                today:
+                                  "rounded-full bg-[#0174bd]/25 ring-2 ring-inset ring-[#0174bd] text-[#4da8e8] font-semibold " +
+                                  "data-[selected=true]:bg-transparent data-[selected=true]:ring-0 data-[selected=true]:text-inherit",
+                                outside: "text-slate-600",
+                                disabled: "text-slate-700 opacity-50",
+                              }}
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[11px] text-slate-500">1° clic salida · 2° clic reingreso</span>
+                            {useRange?.from && (
+                              <button
+                                onClick={() => setUseRange(undefined)}
+                                className="text-[11px] text-slate-400 hover:text-slate-200 cursor-pointer"
+                              >
+                                Limpiar
+                              </button>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-400 text-center">
+                            {useRange?.from
+                              ? `Seleccionado: ${useRange.from.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}${useRange.to && useRange.to.getTime() !== useRange.from.getTime() ? ` → ${useRange.to.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })}` : ""}`
+                              : "Selecciona la fecha de salida (y reingreso) de la bajada."}
+                          </p>
+
+                          <DialogFooter className="flex-col-reverse sm:flex-row gap-2">
+                            <Button variant="outline" onClick={() => setUseModalOpen(false)}
+                              className="w-full sm:w-auto cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">
+                              Cancelar
+                            </Button>
+                            <Button onClick={handleConfirmUseTicket}
+                              disabled={usingTicket || !currentObra || ticketBalance <= 0 || !useRange?.from}
+                              className="w-full sm:w-auto cursor-pointer bg-amber-600 hover:bg-amber-700 text-white disabled:opacity-40">
+                              {usingTicket ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin shrink-0" /> : <CheckCircle2 className="w-4 h-4 mr-1.5 shrink-0" />}
+                              Confirmar bajada de ticket
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
                     </>
                   )}
                 </div>

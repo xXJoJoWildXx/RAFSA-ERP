@@ -14,6 +14,7 @@ export type InventoryProduct = {
   linea: string | null
   codigo_barras: string | null
   current_price: number
+  price_with_iva: number
   price_valid_from: string | null
   price_valid_until: string | null
   price_updated_at: string | null
@@ -98,6 +99,16 @@ export function formatDate(d: string | null | undefined): string {
   return new Date(d + (d.length === 10 ? "T00:00:00" : "")).toLocaleDateString("es-MX", {
     day: "2-digit", month: "short", year: "numeric",
   })
+}
+
+// ─── IVA ──────────────────────────────────────────────────────────────────────
+
+/** Tasa de IVA (16%). */
+export const IVA_RATE = 0.16
+
+/** Precio con IVA a partir del precio base (redondeado a 2 decimales). */
+export function withIva(base: number | null | undefined): number {
+  return Math.round((Number(base) || 0) * (1 + IVA_RATE) * 100) / 100
 }
 
 // ─── Price expiry ─────────────────────────────────────────────────────────────

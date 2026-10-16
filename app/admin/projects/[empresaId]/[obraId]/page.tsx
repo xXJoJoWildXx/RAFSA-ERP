@@ -417,6 +417,8 @@ export default function ProjectDetailPage() {
   const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
   const [bajadaLoading, setBajadaLoading] = useState(false)
   const [processingBajadaId, setProcessingBajadaId] = useState<string | null>(null)
+  // Bajadas de ticket confirmadas (extraordinarias)
+  const [ticketBajadas, setTicketBajadas] = useState<BajadaNotification[]>([])
 
   // ------------------ Documentos: UI + Modal (Opcion B) ------------------
 
@@ -1440,6 +1442,25 @@ export default function ProjectDetailPage() {
     } else {
       setBajadaNotifications([])
     }
+
+    // Bajadas de ticket confirmadas (extraordinarias) de esta obra
+    const { data: ticketRows } = await supabase
+      .from("bajada_notifications")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, reingreso_date, status")
+      .eq("obra_id", obraId)
+      .eq("kind", "ticket")
+      .eq("status", "confirmed")
+      .order("bajada_date", { ascending: false })
+    if (ticketRows && ticketRows.length > 0) {
+      const tEmpIds = [...new Set(ticketRows.map((n: any) => n.employee_id))]
+      const { data: tEmpData } = await supabase.from("employees").select("id, full_name").in("id", tEmpIds)
+      const tMap = new Map<string, string>()
+      ;(tEmpData || []).forEach((e: any) => tMap.set(e.id, e.full_name))
+      setTicketBajadas(ticketRows.map((n: any) => ({ ...n, employee_name: tMap.get(n.employee_id) ?? "Empleado" })))
+    } else {
+      setTicketBajadas([])
+    }
+
     if (!silent) setBajadaLoading(false)
   }
 
@@ -1449,60 +1470,36 @@ export default function ProjectDetailPage() {
       const { data: authData } = await supabase.auth.getUser()
       const resolvedBy = authData?.user?.id ?? null
 
-      // 1. Mark notification as confirmed
-      await supabase
-        .from("bajada_notifications")
-        .update({ status: "confirmed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
-        .eq("id", notification.id)
+      // Confirmar consume un ticket de bajada (el mismo cupo que la extemporánea).
+      const res = await fetch("/api/foraneo/confirm-bajada", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notificationId: notification.id,
+          obraId: notification.obra_id,
+          employeeId: notification.employee_id,
+          start: notification.bajada_date,
+          end: notification.reingreso_date ?? notification.bajada_date,
+          userId: resolvedBy,
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
 
-      // 2. Marcar asistencia 'bajada' para todo el rango [salida, reingreso] (ambos inclusive)
-      const salida = notification.bajada_date
-      const reingreso = notification.reingreso_date
-      const dates: string[] = []
-      if (reingreso && reingreso >= salida) {
-        let cur = salida
-        let guard = 0
-        while (cur <= reingreso && guard < 120) {
-          dates.push(cur)
-          cur = addDaysStr(cur, 1)
-          guard++
-        }
-      } else {
-        dates.push(salida)
+      if (res.status === 409 || json?.error === "no_tickets") {
+        alert("Ya no hay tickets de bajada disponibles en este bimestre.")
+        return
+      }
+      if (!res.ok) {
+        alert(json?.error || "No se pudo confirmar la bajada.")
+        return
       }
 
-      for (const dateStr of dates) {
-        // Check if record exists
-        const { data: existing } = await supabase
-          .from("obra_attendance")
-          .select("id")
-          .eq("obra_id", notification.obra_id)
-          .eq("employee_id", notification.employee_id)
-          .eq("date", dateStr)
-          .limit(1)
-
-        if (existing && existing.length > 0) {
-          await supabase
-            .from("obra_attendance")
-            .update({ status: "bajada" })
-            .eq("id", existing[0].id)
-        } else {
-          await supabase.from("obra_attendance").insert({
-            obra_id: notification.obra_id,
-            employee_id: notification.employee_id,
-            date: dateStr,
-            status: "bajada",
-            recorded_by: resolvedBy,
-          })
-        }
-      }
-
-      // 3. Keep next_bajada_date on the assignment (locked until weekend passes)
-
-      // 4. Remove from local state
+      // Confirmada: la quitamos de pendientes y refrescamos
       setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+      await generateAndFetchBajadaNotifications(notification.obra_id, true)
     } catch (e) {
       console.error("confirmBajada error:", e)
+      alert("No se pudo confirmar la bajada.")
     } finally {
       setProcessingBajadaId(null)
     }
@@ -1683,6 +1680,16 @@ export default function ProjectDetailPage() {
         applyTeamStats(assignments, today)
 
         await fetchDocuments(obraId)
+        // Sincroniza recurrencia bimestral de foráneos (recalcula next_* desde el ancla)
+        try {
+          await fetch("/api/foraneo/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ obraId }),
+          })
+        } catch (e) {
+          console.error("foraneo sync (obra) error:", e)
+        }
         await generateAndFetchBajadaNotifications(obraId)
       } catch (e) {
         console.error(e)
@@ -2414,6 +2421,49 @@ export default function ProjectDetailPage() {
                   <p className="text-[11px] text-slate-600 text-center pt-1">
                     Al confirmar, se marcará asistencia automática para todo el rango (salida → reingreso).
                   </p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Bajadas de ticket (extraordinarias) confirmadas */}
+            {ticketBajadas.length > 0 && (
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-amber-500/15">
+                      <CalendarDays className="w-4.5 h-4.5 text-amber-400" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-slate-100">Bajadas de ticket</CardTitle>
+                      <p className="text-xs text-slate-500 mt-0.5">Fechas de bajada por ticket confirmadas (extraordinarias)</p>
+                    </div>
+                  </div>
+                  <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25">{ticketBajadas.length}</Badge>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {ticketBajadas.map((n: BajadaNotification) => {
+                    const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
+                    const salidaLabel = new Date(n.bajada_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                    const reingresoLabel = n.reingreso_date
+                      ? new Date(n.reingreso_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                      : null
+                    return (
+                      <div key={n.id} className="flex items-center justify-between gap-4 p-3 rounded-xl border border-slate-700/60 bg-slate-700/20">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                            <CalendarDays className="w-4 h-4 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-200 truncate">{n.employee_name}</p>
+                            <p className="text-xs text-slate-500">
+                              {reingresoLabel ? `${salidaLabel} → ${reingresoLabel}` : salidaLabel}
+                            </p>
+                          </div>
+                        </div>
+                        <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25 shrink-0">Ticket · Confirmada</Badge>
+                      </div>
+                    )
+                  })}
                 </CardContent>
               </Card>
             )}

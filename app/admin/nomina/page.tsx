@@ -43,12 +43,12 @@ import {
   History,
   Trash2,
   BadgeCheck,
-  Download,
   ClipboardCheck,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { listRecentPeriods, fmtDateDisplay } from "@/lib/payroll/weeks"
 import { generatePayrollReportPdf } from "@/lib/payroll/report"
+import { generatePayrollReportXlsx } from "@/lib/payroll/reportXlsx"
 import { AdminAttendance } from "@/components/adminAttendance"
 import type { ReconLine, ReconResult } from "@/lib/payroll/types"
 
@@ -238,7 +238,7 @@ export default function NominaPage() {
     if (res.ok) await refreshHistory()
   }
 
-  async function downloadRunReport(runId: string) {
+  async function downloadRunReport(runId: string, format: "pdf" | "xlsx" = "pdf") {
     const res = await fetch(`/api/payroll/${runId}`)
     const json = await res.json()
     if (!res.ok) {
@@ -282,7 +282,8 @@ export default function NominaPage() {
       counts: { total: lines.length, matched: 0, unmatched: 0, sin_nomina: 0, sin_fiscal: 0 },
       lines,
     }
-    generatePayrollReportPdf(asResult)
+    if (format === "xlsx") await generatePayrollReportXlsx(asResult)
+    else generatePayrollReportPdf(asResult)
   }
 
   const groups = useMemo(() => {
@@ -472,7 +473,14 @@ export default function NominaPage() {
                     variant="outline"
                     className="cursor-pointer border-slate-300 text-slate-900 hover:bg-slate-100 h-9"
                   >
-                    <FileDown className="w-4 h-4 mr-2" />Descargar reporte
+                    <FileDown className="w-4 h-4 mr-2" />PDF
+                  </Button>
+                  <Button
+                    onClick={() => generatePayrollReportXlsx(result)}
+                    variant="outline"
+                    className="cursor-pointer border-emerald-300 text-emerald-700 hover:bg-emerald-50 h-9"
+                  >
+                    <FileSpreadsheet className="w-4 h-4 mr-2" />Excel
                   </Button>
                 </div>
               </div>
@@ -614,9 +622,13 @@ export default function NominaPage() {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center justify-end gap-1">
-                            <Button size="sm" variant="ghost" onClick={() => downloadRunReport(r.id)}
-                              className="h-7 cursor-pointer text-slate-400 hover:text-slate-100" title="Descargar reporte">
-                              <Download className="w-4 h-4" />
+                            <Button size="sm" variant="ghost" onClick={() => downloadRunReport(r.id, "pdf")}
+                              className="h-7 cursor-pointer text-slate-400 hover:text-slate-100" title="Descargar PDF">
+                              <FileDown className="w-4 h-4" />
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => downloadRunReport(r.id, "xlsx")}
+                              className="h-7 cursor-pointer text-slate-400 hover:text-emerald-400" title="Descargar Excel">
+                              <FileSpreadsheet className="w-4 h-4" />
                             </Button>
                             {r.status !== "paid" && (
                               <Button size="sm" variant="ghost" onClick={() => markPaid(r.id)}
