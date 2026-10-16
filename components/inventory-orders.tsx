@@ -13,11 +13,13 @@ import {
 } from "@/components/ui/table"
 import {
   ClipboardList, Eye, Upload, CheckCircle2, XCircle, Loader2, Search,
-  Trash2, FileText, Truck, Download,
+  Trash2, FileText, Truck, Download, AlertTriangle, FileCheck2, PackageCheck, FileCode2,
+  Info, X,
 } from "lucide-react"
 import {
-  InventoryProduct, InventoryOrder, OrderItem, OrderInvoice,
+  InventoryProduct, InventoryOrder, OrderItem, OrderInvoice, CfdiData,
   formatCurrency, formatDate, orderTypeBadge, orderStatusBadge,
+  withIva, parseCfdiXml, invoiceMatchesOrder, cfdiRef, INVOICE_MATCH_TOLERANCE,
 } from "@/lib/inventory"
 
 type OrderRow = InventoryOrder & { obra_name?: string | null; item_count?: number; invoice_count?: number }
@@ -50,6 +52,26 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
   const [invNumber, setInvNumber] = useState("")
   const [invAmount, setInvAmount] = useState("")
   const [invFile, setInvFile] = useState<File | null>(null)
+  const [cfdi, setCfdi] = useState<CfdiData | null>(null) // CFDI parseado del XML seleccionado
+  const [parsingCfdi, setParsingCfdi] = useState(false)
+
+  // ─── Notificaciones propias (toasts) ───
+  type ToastVariant = "success" | "error" | "warning" | "info"
+  type Toast = { id: number; variant: ToastVariant; title?: string; message: string }
+  const [toasts, setToasts] = useState<Toast[]>([])
+  const dismissToast = useCallback((id: number) => setToasts((t) => t.filter((x) => x.id !== id)), [])
+  const notify = useCallback((message: string, variant: ToastVariant = "info", title?: string) => {
+    const id = Date.now() + Math.random()
+    setToasts((t) => [...t, { id, variant, title, message }])
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), variant === "error" || variant === "warning" ? 7000 : 4500)
+  }, [])
+
+  // ─── Confirmación propia (reemplaza window.confirm) ───
+  type ConfirmTone = "primary" | "danger" | "warn" | "success"
+  type ConfirmOpts = { title: string; message: string; confirmLabel: string; tone?: ConfirmTone }
+  const [confirmState, setConfirmState] = useState<(ConfirmOpts & { resolve: (v: boolean) => void }) | null>(null)
+  const askConfirm = useCallback((opts: ConfirmOpts) => new Promise<boolean>((resolve) => setConfirmState({ ...opts, resolve })), [])
+  function resolveConfirm(v: boolean) { setConfirmState((s) => { s?.resolve(v); return null }) }
 
   const loadOrders = useCallback(async () => {
     setLoading(true)
@@ -86,6 +108,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
   }, [orders, statusFilter])
 
   const pendingCount = orders.filter((o) => o.status === "pending" || o.status === "in_progress").length
+  const deliveredCount = orders.filter((o) => o.status === "delivered").length
   const totalCount = orders.length
   const completedCount = orders.filter((o) => o.status === "completed").length
 
@@ -103,8 +126,8 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   async function createOrder() {
     if (drafts.length === 0) return
-    if (!newObra) { alert("Selecciona la obra destino."); return }
-    if (drafts.some((d) => !(Number(d.quantity) > 0))) { alert("Todas las cantidades deben ser mayores a 0."); return }
+    if (!newObra) { notify("Selecciona la obra destino.", "warning"); return }
+    if (drafts.some((d) => !(Number(d.quantity) > 0))) { notify("Todas las cantidades deben ser mayores a 0.", "warning"); return }
     setBusy(true)
     try {
       const { data: folio } = await supabase.rpc("inventory_next_folio", { p_type: "dispatch" })
@@ -136,15 +159,16 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: order.id, entity_label: order.folio, metadata: { type: "dispatch", items: drafts.length } })
       setCreateOpen(false)
       await loadOrders()
+      notify("Orden creada correctamente.", "success")
     } catch (e) {
-      console.error(e); alert("No se pudo crear la orden.")
+      console.error(e); notify("No se pudo crear la orden.", "error")
     } finally { setBusy(false) }
   }
 
   // ─── Detail ───
   async function openDetail(o: OrderRow) {
     setDetail(o); setDetailItems([]); setDetailInvoices([])
-    setInvNumber(""); setInvAmount(""); setInvFile(null)
+    setInvNumber(""); setInvAmount(""); setInvFile(null); setCfdi(null)
     const [{ data: its }, { data: invs }] = await Promise.all([
       supabase.from("inventory_order_items").select("*").eq("order_id", o.id),
       supabase.from("inventory_order_invoices").select("*").eq("order_id", o.id).order("uploaded_at", { ascending: false }),
@@ -153,8 +177,36 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     setDetailInvoices((invs ?? []) as OrderInvoice[])
   }
 
+  // Al seleccionar archivo: si es XML, lo parseamos como CFDI y precargamos monto/folio.
+  async function onInvoiceFile(file: File | null) {
+    setInvFile(file); setCfdi(null)
+    if (!file) return
+    const isXml = file.name.toLowerCase().endsWith(".xml") || file.type.includes("xml")
+    if (!isXml) {
+      // adjunto no fiscal (PDF/imagen): no valida monto
+      setCfdi({ isCfdi: false, uuid: null, total: null, subtotal: null, descuento: null, rfcEmisor: null, rfcReceptor: null, emisorNombre: null, serie: null, folio: null, fecha: null })
+      return
+    }
+    setParsingCfdi(true)
+    try {
+      const text = await file.text()
+      const parsed = parseCfdiXml(text)
+      setCfdi(parsed)
+      if (parsed.isCfdi) {
+        setInvNumber(cfdiRef(parsed) || invNumber)
+        if (parsed.total != null) setInvAmount(String(parsed.total))
+      }
+    } catch {
+      setCfdi({ isCfdi: false, uuid: null, total: null, subtotal: null, descuento: null, rfcEmisor: null, rfcReceptor: null, emisorNombre: null, serie: null, folio: null, fecha: null })
+    } finally { setParsingCfdi(false) }
+  }
+
   async function uploadInvoice() {
-    if (!detail || !invFile) { alert("Selecciona el archivo de la factura."); return }
+    if (!detail || !invFile) { notify("Selecciona el archivo de la factura.", "warning"); return }
+    const isCfdi = !!cfdi?.isCfdi
+    // El Total del CFDI manda sobre el monto; para adjuntos no-XML se usa el monto capturado.
+    const amount = isCfdi && cfdi?.total != null ? cfdi.total : (Number(invAmount) || 0)
+    const matches = isCfdi ? invoiceMatchesOrder(cfdi?.total, orderTotalConIva) : false
     setBusy(true)
     try {
       const res = await fetch("/api/inventory-invoice-upload-url", {
@@ -167,28 +219,56 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       const { error: upErr } = await supabase.storage.from(up.bucket).uploadToSignedUrl(up.path, up.token, invFile)
       if (upErr) throw upErr
 
-      await supabase.from("inventory_order_invoices").insert({
+      const { error: insErr } = await supabase.from("inventory_order_invoices").insert({
         // date: la fija la base de datos (CURRENT_DATE), no se puede modificar
         order_id: detail.id,
-        invoice_number: invNumber || null,
-        amount: Number(invAmount) || 0,
+        invoice_number: invNumber || (isCfdi ? cfdiRef(cfdi!) : null) || null,
+        amount,
         bucket: up.bucket,
         object_path: up.path,
         file_name: invFile.name,
         mime_type: invFile.type || null,
         size_bytes: invFile.size,
         uploaded_by: user?.id ?? null,
+        // Datos fiscales del CFDI
+        is_cfdi: isCfdi,
+        cfdi_uuid: cfdi?.uuid ?? null,
+        cfdi_total: cfdi?.total ?? null,
+        cfdi_subtotal: cfdi?.subtotal ?? null,
+        cfdi_descuento: cfdi?.descuento ?? null,
+        cfdi_rfc_emisor: cfdi?.rfcEmisor ?? null,
+        cfdi_rfc_receptor: cfdi?.rfcReceptor ?? null,
+        cfdi_emisor_nombre: cfdi?.emisorNombre ?? null,
+        cfdi_serie: cfdi?.serie ?? null,
+        cfdi_folio: cfdi?.folio ?? null,
+        cfdi_fecha: cfdi?.fecha ?? null,
+        matches_order: matches,
       })
+      if (insErr) {
+        // Índice único sobre cfdi_uuid → CFDI duplicado
+        if ((insErr as any).code === "23505") {
+          notify("Este CFDI ya está registrado (mismo UUID). No se puede duplicar la factura.", "error", "CFDI duplicado")
+          return
+        }
+        throw insErr
+      }
       // pasar a "en proceso" si estaba pendiente
       if (detail.status === "pending") {
         await supabase.from("inventory_orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", detail.id)
       }
-      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order_invoice", entity_id: detail.id, entity_label: detail.folio })
+      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order_invoice", entity_id: detail.id, entity_label: detail.folio, metadata: { is_cfdi: isCfdi, cfdi_total: cfdi?.total ?? null, matches } })
       await openDetail({ ...detail, status: detail.status === "pending" ? "in_progress" : detail.status })
       await loadOrders()
-      setInvNumber(""); setInvAmount(""); setInvFile(null)
+      setInvNumber(""); setInvAmount(""); setInvFile(null); setCfdi(null)
+      if (isCfdi && matches) {
+        notify(`El CFDI cuadra con el total de la orden (${formatCurrency(orderTotalConIva)}). Ya puedes completarla al 100%.`, "success", "Factura validada")
+      } else if (isCfdi && !matches) {
+        notify(`El Total del CFDI (${formatCurrency(Number(cfdi?.total) || 0)}) NO cuadra con el precio final de la orden (${formatCurrency(orderTotalConIva)} c/IVA). Queda como factura pendiente; no se puede completar al 100% hasta subir un CFDI que cuadre.`, "error", "Sin correlación")
+      } else {
+        notify(`Archivo adjunto registrado. No es un CFDI XML, así que no valida el monto: sin un CFDI que cuadre no se puede completar al 100%.`, "warning", "Adjunto sin validar")
+      }
     } catch (e) {
-      console.error(e); alert("No se pudo subir la factura.")
+      console.error(e); notify("No se pudo subir la factura.", "error")
     } finally { setBusy(false) }
   }
 
@@ -197,35 +277,81 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     if (data?.signedUrl) window.open(data.signedUrl, "_blank")
   }
 
-  async function completeOrder() {
+  // Confirmar entrega física → queda "entregada · factura pendiente" (no 100%).
+  async function deliverOrder() {
     if (!detail) return
-    if (detailInvoices.length === 0) { alert("Debes subir la factura antes de confirmar la entrega."); return }
-    if (!confirm(`¿Confirmar que el pedido ${detail.folio} está listo y entregado a obra?`)) return
+    const ok = await askConfirm({
+      title: `Confirmar entrega · ${detail.folio}`,
+      message: `El pedido quedará como "entregada · factura pendiente" hasta registrar un CFDI que cuadre con el total de la orden (${formatCurrency(orderTotalConIva)} c/IVA).`,
+      confirmLabel: "Confirmar entrega",
+      tone: "warn",
+    })
+    if (!ok) return
     setBusy(true)
     try {
       const { error } = await supabase
         .from("inventory_orders")
-        .update({ status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+        .update({ status: "delivered", delivered_at: new Date().toISOString(), delivered_by: user?.id ?? null, updated_at: new Date().toISOString() })
         .eq("id", detail.id)
+      if (error) throw error
+      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "delivered", type: detail.type } })
+      setDetail(null)
+      await loadOrders()
+      notify(`Entrega confirmada. ${detail.folio} quedó como "entregada · factura pendiente".`, "success")
+    } catch (e: any) {
+      console.error(e); notify(e?.message || "No se pudo confirmar la entrega.", "error")
+    } finally { setBusy(false) }
+  }
+
+  // Completar al 100% → requiere un CFDI que cuadre con el precio final de la orden.
+  async function completeOrder() {
+    if (!detail) return
+    if (!hasMatchingCfdi) {
+      notify(`La factura (CFDI) no tiene correlación con el precio final de la orden (${formatCurrency(orderTotalConIva)} c/IVA). Sin un CFDI cuyo Total cuadre (±${formatCurrency(INVOICE_MATCH_TOLERANCE)}) no se puede completar al 100%. Puedes confirmar la entrega y dejarla como "factura pendiente".`, "error", "Sin correlación")
+      return
+    }
+    const ok = await askConfirm({
+      title: `Completar al 100% · ${detail.folio}`,
+      message: `El CFDI cuadra con el total de la orden (${formatCurrency(orderTotalConIva)}). La orden quedará marcada como completada al 100%.`,
+      confirmLabel: "Completar al 100%",
+      tone: "success",
+    })
+    if (!ok) return
+    setBusy(true)
+    try {
+      const patch: Record<string, any> = {
+        status: "completed", completed_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }
+      if (!detail.delivered_at) { patch.delivered_at = new Date().toISOString(); patch.delivered_by = user?.id ?? null }
+      const { error } = await supabase.from("inventory_orders").update(patch).eq("id", detail.id)
       if (error) throw error
       await logActivity({ event_type: "billing.payment_registered" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "completed", type: detail.type } })
       setDetail(null)
       await loadOrders()
+      notify(`${detail.folio} completada al 100%.`, "success")
     } catch (e: any) {
-      console.error(e); alert(e?.message || "No se pudo confirmar la orden.")
+      console.error(e); notify(e?.message || "No se pudo completar la orden.", "error")
     } finally { setBusy(false) }
   }
 
   async function cancelOrder() {
     if (!detail) return
-    if (!confirm(`¿Cancelar la orden ${detail.folio}?`)) return
+    const ok = await askConfirm({
+      title: `Cancelar orden · ${detail.folio}`,
+      message: "La orden se marcará como cancelada. Esta acción no se puede deshacer.",
+      confirmLabel: "Cancelar orden",
+      tone: "danger",
+    })
+    if (!ok) return
     setBusy(true)
+    const folio = detail.folio
     await supabase.from("inventory_orders").update({
       status: "cancelled", cancelled_at: new Date().toISOString(), cancelled_by: user?.id ?? null, updated_at: new Date().toISOString(),
     }).eq("id", detail.id)
     await logActivity({ event_type: "document.deleted" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "cancelled" } })
     setDetail(null); setBusy(false)
     await loadOrders()
+    notify(`Orden ${folio} cancelada.`, "info")
   }
 
   const prodResults = useMemo(() => {
@@ -234,8 +360,23 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     return products.filter((p) => p.codigo.toLowerCase().includes(q) || p.descripcion.toLowerCase().includes(q)).slice(0, 8)
   }, [prodSearch, products])
 
-  const canComplete = detail && (detail.status === "pending" || detail.status === "in_progress") && detailInvoices.length > 0
-  const canCancel = detail && (detail.status === "pending" || detail.status === "in_progress") && (role === "admin" || detail.created_by === user?.id)
+  // Precio final de la orden: s/IVA y c/IVA (el CFDI se compara contra el total c/IVA).
+  const orderTotalSinIva = useMemo(
+    () => detailItems.reduce((s, it) => s + Number(it.quantity) * Number(it.unit_price), 0),
+    [detailItems],
+  )
+  const orderTotalConIva = useMemo(
+    () => detailItems.reduce((s, it) => s + Number(it.quantity) * withIva(Number(it.unit_price)), 0),
+    [detailItems],
+  )
+  const hasMatchingCfdi = useMemo(
+    () => detailInvoices.some((inv) => inv.is_cfdi && invoiceMatchesOrder(inv.cfdi_total, orderTotalConIva)),
+    [detailInvoices, orderTotalConIva],
+  )
+  const openState = detail && (detail.status === "pending" || detail.status === "in_progress" || detail.status === "delivered")
+  const canDeliver = detail && (detail.status === "pending" || detail.status === "in_progress")
+  const canComplete = !!openState && hasMatchingCfdi
+  const canCancel = !!openState && (role === "admin" || detail?.created_by === user?.id)
 
   return (
     <div className="space-y-6">
@@ -263,11 +404,12 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       </div>
 
       {/* KPIs */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
         {[
           { label: "Pendientes", value: pendingCount, icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
-          { label: "Salidas a obra", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
-          { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#4da8e8", bg: "rgba(1,116,189,0.12)" },
+          { label: "Entregadas · fact. pend.", value: deliveredCount, icon: AlertTriangle, color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
+          { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
+          { label: "Total", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
         ].map((kpi) => {
           const Icon = kpi.icon
           return (
@@ -284,7 +426,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       {/* Filters */}
       <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-4 flex items-center gap-2 flex-wrap">
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
-          <option value="all">Todos los estados</option><option value="pending">Pendiente</option><option value="in_progress">En proceso</option><option value="completed">Completada</option><option value="cancelled">Cancelada</option>
+          <option value="all">Todos los estados</option><option value="pending">Pendiente</option><option value="in_progress">En proceso</option><option value="delivered">Entregada · factura pendiente</option><option value="completed">Completada</option><option value="cancelled">Cancelada</option>
         </select>
         <span className="ml-auto text-xs text-slate-500">{filtered.length} orden{filtered.length !== 1 ? "es" : ""}</span>
       </div>
@@ -430,6 +572,11 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                     </tbody>
                   </table>
                 </div>
+                <div className="mt-2 flex flex-col items-end gap-0.5 text-sm">
+                  <div className="text-slate-400">Subtotal (s/IVA): <span className="ml-1 text-slate-300">{formatCurrency(orderTotalSinIva)}</span></div>
+                  <div className="text-slate-300 font-semibold">Precio final de la orden (c/IVA): <span className="ml-1 text-slate-100">{formatCurrency(orderTotalConIva)}</span></div>
+                  <div className="text-[10px] text-slate-500">El CFDI debe cuadrar con este total (±{formatCurrency(INVOICE_MATCH_TOLERANCE)}).</div>
+                </div>
               </div>
 
               {/* Invoices */}
@@ -437,30 +584,73 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Facturas ({detailInvoices.length})</p>
                 <div className="space-y-2">
                   {detailInvoices.length === 0 && <p className="text-xs text-slate-500">Aún no se sube factura.</p>}
-                  {detailInvoices.map((inv) => (
+                  {detailInvoices.map((inv) => {
+                    const match = inv.is_cfdi ? invoiceMatchesOrder(inv.cfdi_total, orderTotalConIva) : false
+                    return (
                     <div key={inv.id} className="flex items-center gap-2 rounded-lg border border-slate-700/60 bg-slate-700/20 p-2.5">
-                      <FileText className="w-4 h-4 text-[#4da8e8] shrink-0" />
+                      {inv.is_cfdi ? <FileCode2 className="w-4 h-4 text-[#4da8e8] shrink-0" /> : <FileText className="w-4 h-4 text-slate-400 shrink-0" />}
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-slate-200 truncate">{inv.invoice_number || inv.file_name}</p>
-                        <p className="text-[10px] text-slate-500">{formatCurrency(Number(inv.amount))} · {formatDate(inv.date)}</p>
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <p className="text-sm text-slate-200 truncate max-w-[180px]">{inv.invoice_number || inv.file_name}</p>
+                          {inv.is_cfdi
+                            ? <Badge className="text-[9px] border bg-[#0174bd]/15 text-[#4da8e8] border-[#0174bd]/30">CFDI</Badge>
+                            : <Badge className="text-[9px] border bg-slate-600/40 text-slate-400 border-slate-600">Adjunto</Badge>}
+                          {inv.is_cfdi && (match
+                            ? <Badge className="text-[9px] border bg-green-500/15 text-green-400 border-green-500/30 flex items-center gap-1"><CheckCircle2 className="w-2.5 h-2.5" /> Cuadra</Badge>
+                            : <Badge className="text-[9px] border bg-red-500/15 text-red-400 border-red-500/30 flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> No cuadra</Badge>)}
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          {formatCurrency(Number(inv.amount))} · {formatDate(inv.date)}
+                          {inv.is_cfdi && inv.cfdi_emisor_nombre ? ` · ${inv.cfdi_emisor_nombre}` : ""}
+                        </p>
                       </div>
                       <Button size="sm" variant="ghost" className="cursor-pointer h-8 px-2 text-slate-400 hover:text-white hover:bg-slate-700" onClick={() => downloadInvoice(inv)}><Download className="w-4 h-4" /></Button>
                     </div>
-                  ))}
+                    )
+                  })}
                 </div>
 
-                {/* Upload form (both roles, only when not completed/cancelled) */}
-                {(detail.status === "pending" || detail.status === "in_progress") && (
+                {/* Upload form (both roles, while the order is open) */}
+                {openState && (
                   <div className="mt-3 rounded-lg border border-slate-700/60 bg-slate-700/10 p-3 space-y-2">
-                    <p className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" /> Subir factura</p>
+                    <p className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" /> Subir factura (CFDI XML)</p>
+                    <Input type="file" accept=".xml,.pdf,.jpg,.jpeg,.png" onChange={(e) => onInvoiceFile(e.target.files?.[0] ?? null)} className={`${inputCls} file:text-slate-300 file:bg-slate-600 file:border-0 file:rounded file:px-2 file:mr-2 text-xs`} />
+
+                    {/* Correlación del CFDI con el total de la orden */}
+                    {parsingCfdi && <p className="text-[11px] text-slate-400 flex items-center gap-1.5"><Loader2 className="w-3 h-3 animate-spin" /> Leyendo CFDI…</p>}
+                    {cfdi?.isCfdi && (() => {
+                      const match = invoiceMatchesOrder(cfdi.total, orderTotalConIva)
+                      const diff = (Number(cfdi.total) || 0) - orderTotalConIva
+                      return (
+                        <div className={`rounded-lg border p-2.5 text-xs space-y-1 ${match ? "border-green-500/30 bg-green-500/10" : "border-red-500/30 bg-red-500/10"}`}>
+                          <div className="flex items-center gap-1.5 font-semibold">
+                            {match
+                              ? <><FileCheck2 className="w-3.5 h-3.5 text-green-400" /><span className="text-green-300">El CFDI cuadra con el total de la orden</span></>
+                              : <><AlertTriangle className="w-3.5 h-3.5 text-red-400" /><span className="text-red-300">El CFDI NO cuadra — sin correlación</span></>}
+                          </div>
+                          <div className="flex justify-between text-slate-300"><span>Total CFDI</span><span className="font-medium">{formatCurrency(Number(cfdi.total) || 0)}</span></div>
+                          <div className="flex justify-between text-slate-300"><span>Total orden (c/IVA)</span><span className="font-medium">{formatCurrency(orderTotalConIva)}</span></div>
+                          <div className="flex justify-between text-slate-400"><span>Diferencia</span><span className={match ? "text-green-400" : "text-red-400"}>{diff >= 0 ? "+" : "−"}{formatCurrency(Math.abs(diff))}</span></div>
+                          {cfdi.uuid && <div className="text-[10px] text-slate-500 pt-0.5 border-t border-slate-700/60">UUID {cfdi.uuid} {cfdi.rfcEmisor ? `· Emisor ${cfdi.rfcEmisor}` : ""}</div>}
+                          {!match && <p className="text-[10px] text-red-300/80">Se registrará como factura pendiente; la orden no podrá completarse al 100% hasta subir un CFDI que cuadre.</p>}
+                        </div>
+                      )
+                    })()}
+                    {invFile && cfdi && !cfdi.isCfdi && (
+                      <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-2.5 text-[11px] text-amber-200/90 flex items-start gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+                        <span>Este archivo no es un CFDI XML válido. Se guardará como adjunto pero <b>no valida el monto</b>: sin un CFDI que cuadre, la orden no se puede completar al 100%.</span>
+                      </div>
+                    )}
+
+                    {/* Referencia / monto (el monto lo fija el CFDI; editable solo para adjuntos) */}
                     <div className="grid grid-cols-2 gap-2">
-                      <Input value={invNumber} onChange={(e) => setInvNumber(e.target.value)} className={inputCls} placeholder="No. factura / CFDI" />
-                      <Input value={invAmount} onChange={(e) => setInvAmount(e.target.value)} className={inputCls} placeholder="Monto" />
-                      <Input type="file" accept=".pdf,.xml,.jpg,.jpeg,.png" onChange={(e) => setInvFile(e.target.files?.[0] ?? null)} className={`col-span-2 ${inputCls} file:text-slate-300 file:bg-slate-600 file:border-0 file:rounded file:px-2 file:mr-2 text-xs`} />
+                      <Input value={invNumber} onChange={(e) => setInvNumber(e.target.value)} className={inputCls} placeholder="No. factura / Serie-Folio" />
+                      <Input value={invAmount} onChange={(e) => setInvAmount(e.target.value)} disabled={!!cfdi?.isCfdi} className={`${inputCls} disabled:opacity-60`} placeholder="Monto" />
                     </div>
-                    <p className="text-[10px] text-slate-500">La fecha de la factura se registra automáticamente al subirla y no se puede modificar.</p>
+                    <p className="text-[10px] text-slate-500">La fecha de la factura se registra automáticamente al subirla y no se puede modificar.{cfdi?.isCfdi ? " El monto proviene del CFDI." : ""}</p>
                     <div className="flex justify-end">
-                      <Button size="sm" onClick={uploadInvoice} disabled={busy || !invFile} className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white">{busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}Subir factura</Button>
+                      <Button size="sm" onClick={uploadInvoice} disabled={busy || !invFile || parsingCfdi} className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white">{busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}Subir factura</Button>
                     </div>
                   </div>
                 )}
@@ -473,11 +663,16 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                     <Button variant="outline" onClick={cancelOrder} disabled={busy} className="cursor-pointer bg-transparent border-red-500/30 text-red-400 hover:bg-red-500/10"><XCircle className="w-4 h-4 mr-1.5" /> Cancelar orden</Button>
                   )}
                 </div>
-                <div className="flex gap-2">
+                <div className="flex gap-2 flex-wrap justify-end">
                   <Button variant="outline" onClick={() => setDetail(null)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cerrar</Button>
-                  {(detail.status === "pending" || detail.status === "in_progress") && (
-                    <Button onClick={completeOrder} disabled={busy || !canComplete} title={!canComplete ? "Sube la factura primero" : ""} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white disabled:opacity-40">
-                      {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<CheckCircle2 className="w-4 h-4 mr-1.5" /> Confirmar entrega
+                  {canDeliver && (
+                    <Button onClick={deliverOrder} disabled={busy} className="cursor-pointer bg-orange-600 hover:bg-orange-700 text-white">
+                      {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<PackageCheck className="w-4 h-4 mr-1.5" /> Confirmar entrega
+                    </Button>
+                  )}
+                  {openState && (
+                    <Button onClick={completeOrder} disabled={busy || !canComplete} title={!canComplete ? "Requiere un CFDI que cuadre con el total de la orden" : ""} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white disabled:opacity-40">
+                      {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<CheckCircle2 className="w-4 h-4 mr-1.5" /> Completar al 100%
                     </Button>
                   )}
                 </div>
@@ -486,6 +681,64 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ─── Confirmación propia (sustituye window.confirm) ─── */}
+      <Dialog open={!!confirmState} onOpenChange={(v) => { if (!v) resolveConfirm(false) }}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          {confirmState && (() => {
+            const tone = confirmState.tone ?? "primary"
+            const toneIcon: Record<string, React.ReactNode> = {
+              primary: <CheckCircle2 className="w-5 h-5 text-[#4da8e8]" />,
+              danger: <XCircle className="w-5 h-5 text-red-400" />,
+              warn: <PackageCheck className="w-5 h-5 text-orange-400" />,
+              success: <CheckCircle2 className="w-5 h-5 text-green-400" />,
+            }
+            const toneBtn: Record<string, string> = {
+              primary: "bg-[#0174bd] hover:bg-[#0163a3]",
+              danger: "bg-red-600 hover:bg-red-700",
+              warn: "bg-orange-600 hover:bg-orange-700",
+              success: "bg-green-600 hover:bg-green-700",
+            }
+            return (
+              <>
+                <DialogHeader>
+                  <DialogTitle className="text-slate-100 flex items-center gap-2">{toneIcon[tone]} {confirmState.title}</DialogTitle>
+                </DialogHeader>
+                <p className="text-sm text-slate-300 mt-1">{confirmState.message}</p>
+                <div className="flex justify-end gap-2 pt-4">
+                  <Button variant="outline" onClick={() => resolveConfirm(false)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
+                  <Button onClick={() => resolveConfirm(true)} className={`cursor-pointer text-white ${toneBtn[tone]}`}>{confirmState.confirmLabel}</Button>
+                </div>
+              </>
+            )
+          })()}
+        </DialogContent>
+      </Dialog>
+
+      {/* ─── Toasts propios (sustituye window.alert) ─── */}
+      {toasts.length > 0 && (
+        <div className="fixed bottom-4 right-4 z-[120] flex flex-col gap-2 w-[min(92vw,22rem)] pointer-events-none">
+          {toasts.map((t) => {
+            const cfg = {
+              success: { icon: <CheckCircle2 className="w-4 h-4 text-green-400" />, bar: "bg-green-500", ring: "border-green-500/30" },
+              error: { icon: <AlertTriangle className="w-4 h-4 text-red-400" />, bar: "bg-red-500", ring: "border-red-500/30" },
+              warning: { icon: <AlertTriangle className="w-4 h-4 text-amber-400" />, bar: "bg-amber-500", ring: "border-amber-500/30" },
+              info: { icon: <Info className="w-4 h-4 text-[#4da8e8]" />, bar: "bg-[#0174bd]", ring: "border-[#0174bd]/30" },
+            }[t.variant]
+            return (
+              <div key={t.id} className={`pointer-events-auto relative overflow-hidden flex items-start gap-2.5 rounded-xl border ${cfg.ring} bg-slate-800/95 backdrop-blur shadow-2xl shadow-black/40 p-3 pr-8`}>
+                <span className={`absolute left-0 top-0 bottom-0 w-1 ${cfg.bar}`} />
+                <div className="shrink-0 mt-0.5">{cfg.icon}</div>
+                <div className="min-w-0 flex-1">
+                  {t.title && <p className="text-sm font-semibold text-slate-100">{t.title}</p>}
+                  <p className="text-xs text-slate-300 leading-relaxed">{t.message}</p>
+                </div>
+                <button onClick={() => dismissToast(t.id)} className="absolute top-2 right-2 text-slate-500 hover:text-slate-200 cursor-pointer" aria-label="Cerrar"><X className="w-3.5 h-3.5" /></button>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }
