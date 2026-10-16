@@ -13,11 +13,11 @@ import {
 } from "@/components/ui/table"
 import {
   Package, Search, Eye, Layers, Tag, Loader2, CalendarClock,
-  Barcode, Ruler, Weight, DollarSign, BoxIcon,
+  Barcode, Ruler, Weight, DollarSign, BoxIcon, ChevronDown, Check,
 } from "lucide-react"
 import {
   InventoryProduct,
-  formatCurrency, formatDate, getPriceExpiryBadge,
+  formatCurrency, formatDate, getPriceExpiryBadge, withIva,
 } from "@/lib/inventory"
 
 export default function AlmacenInventarioPage() {
@@ -26,18 +26,37 @@ export default function AlmacenInventarioPage() {
 
   const [search, setSearch] = useState("")
   const [lineaFilter, setLineaFilter] = useState("all")
+  const [lineaMenuOpen, setLineaMenuOpen] = useState(false)
 
   const [detail, setDetail] = useState<InventoryProduct | null>(null)
 
   const loadData = useCallback(async () => {
     setLoading(true)
-    const { data } = await supabase.from("inventory_products").select("*").eq("is_active", true).order("descripcion")
-    setItems((data ?? []) as InventoryProduct[])
+    // PostgREST devuelve máx. 1000 filas por consulta → paginamos para traer TODO.
+    const PAGE = 1000
+    let all: InventoryProduct[] = []
+    for (let from = 0; ; from += PAGE) {
+      const { data, error } = await supabase
+        .from("inventory_products")
+        .select("*")
+        .eq("is_active", true)
+        .order("descripcion")
+        .range(from, from + PAGE - 1)
+      if (error || !data) break
+      all = all.concat(data as InventoryProduct[])
+      if (data.length < PAGE) break
+    }
+    setItems(all)
     setLoading(false)
   }, [])
   useEffect(() => { loadData() }, [loadData])
 
   const LINEAS = useMemo(() => [...new Set(items.map((i) => i.linea).filter(Boolean) as string[])].sort(), [items])
+  const lineaCounts = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const i of items) if (i.linea) m[i.linea] = (m[i.linea] ?? 0) + 1
+    return m
+  }, [items])
 
   const filtered = useMemo(() => {
     let arr = [...items]
@@ -88,10 +107,45 @@ export default function AlmacenInventarioPage() {
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar producto…" className="pl-9 bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
             </div>
-            <select value={lineaFilter} onChange={(e) => setLineaFilter(e.target.value)} className="h-10 rounded-md border border-slate-600 bg-slate-700/60 px-3 text-sm text-slate-100 focus:border-[#0174bd] outline-none cursor-pointer">
-              <option value="all">Todas las líneas</option>
-              {LINEAS.map((l) => <option key={l} value={l}>{l}</option>)}
-            </select>
+            {/* Filtro de líneas — selector con estética de marca */}
+            <div className="relative">
+              <button type="button" onClick={() => setLineaMenuOpen((v) => !v)}
+                className={`group h-10 inline-flex items-center gap-2 rounded-lg border px-3 text-sm transition-colors cursor-pointer outline-none ${lineaFilter !== "all" ? "border-[#0174bd]/50 bg-[#0174bd]/10 text-[#4da8e8]" : "border-slate-600 bg-slate-700/60 text-slate-200 hover:border-slate-500"}`}>
+                <Layers className={`w-4 h-4 ${lineaFilter !== "all" ? "text-[#4da8e8]" : "text-slate-400 group-hover:text-slate-300"}`} />
+                <span className="max-w-[180px] truncate font-medium">{lineaFilter === "all" ? "Todas las líneas" : lineaFilter}</span>
+                <ChevronDown className={`w-4 h-4 shrink-0 text-slate-400 transition-transform duration-200 ${lineaMenuOpen ? "rotate-180" : ""}`} />
+              </button>
+              {lineaMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setLineaMenuOpen(false)} />
+                  <div className="absolute z-50 mt-2 w-72 rounded-xl border border-slate-700 bg-slate-800 shadow-2xl shadow-black/40 overflow-hidden">
+                    <div className="px-3 py-2 border-b border-slate-700/70 flex items-center gap-2">
+                      <Tag className="w-3.5 h-3.5 text-[#4da8e8]" />
+                      <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">Filtrar por línea</span>
+                      <span className="ml-auto text-[11px] text-slate-500">{LINEAS.length}</span>
+                    </div>
+                    <div className="max-h-72 overflow-y-auto py-1">
+                      <button type="button" onClick={() => { setLineaFilter("all"); setLineaMenuOpen(false) }}
+                        className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors cursor-pointer ${lineaFilter === "all" ? "bg-[#0174bd]/15 text-[#4da8e8]" : "text-slate-200 hover:bg-slate-700/60"}`}>
+                        <Layers className="w-4 h-4 shrink-0 text-slate-400" />
+                        <span className="flex-1 font-medium">Todas las líneas</span>
+                        <span className="text-[11px] text-slate-500">{items.length}</span>
+                        {lineaFilter === "all" && <Check className="w-4 h-4 text-[#4da8e8]" />}
+                      </button>
+                      {LINEAS.map((l) => (
+                        <button key={l} type="button" onClick={() => { setLineaFilter(l); setLineaMenuOpen(false) }}
+                          className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left transition-colors cursor-pointer ${lineaFilter === l ? "bg-[#0174bd]/15 text-[#4da8e8]" : "text-slate-200 hover:bg-slate-700/60"}`}>
+                          <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${lineaFilter === l ? "bg-[#4da8e8]" : "bg-slate-600"}`} />
+                          <span className="flex-1 truncate">{l}</span>
+                          <span className="text-[11px] text-slate-500 tabular-nums">{lineaCounts[l] ?? 0}</span>
+                          {lineaFilter === l && <Check className="w-4 h-4 shrink-0 text-[#4da8e8]" />}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
             <span className="ml-auto text-xs text-slate-500">{filtered.length} artículo{filtered.length !== 1 ? "s" : ""}</span>
           </div>
 
@@ -103,28 +157,30 @@ export default function AlmacenInventarioPage() {
                   <TableRow className="border-slate-700/60 hover:bg-transparent">
                     <TableHead className="text-slate-400 font-semibold text-xs">Código</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs min-w-[240px]">Descripción</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs">Capacidad</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs">Unidad</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Ubicación</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Precio</TableHead>
-                    <TableHead className="text-slate-400 font-semibold text-xs">Caducidad precio</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-center">Múltiplo</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Precio s/IVA</TableHead>
+                    <TableHead className="text-slate-400 font-semibold text-xs text-right">Precio c/IVA</TableHead>
                     <TableHead className="text-slate-400 font-semibold text-xs text-right">Detalle</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
-                    <TableRow><TableCell colSpan={7} className="text-center py-12 text-slate-500"><Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin text-slate-600" /> Cargando…</TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-500"><Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin text-slate-600" /> Cargando…</TableCell></TableRow>
                   ) : filtered.length === 0 ? (
-                    <TableRow><TableCell colSpan={7} className="text-center py-12 text-slate-500"><Package className="w-10 h-10 mx-auto mb-2 text-slate-600" /><p>Sin artículos</p></TableCell></TableRow>
+                    <TableRow><TableCell colSpan={8} className="text-center py-12 text-slate-500"><Package className="w-10 h-10 mx-auto mb-2 text-slate-600" /><p>Sin artículos</p></TableCell></TableRow>
                   ) : filtered.map((item) => {
-                    const pb = getPriceExpiryBadge(item.price_valid_until)
+                    const iva = Number(item.price_with_iva) || withIva(item.current_price)
                     return (
                       <TableRow key={item.id} className="border-slate-700/40 hover:bg-slate-700/20 transition-colors cursor-pointer" onClick={() => setDetail(item)}>
                         <TableCell className="font-mono text-xs text-[#4da8e8]">{item.codigo}</TableCell>
                         <TableCell><p className="text-sm font-medium text-slate-200 truncate max-w-[280px]">{item.descripcion}</p>{item.linea && <Badge className="mt-1 text-[10px] border bg-slate-700/60 text-slate-300 border-slate-600">{item.linea}</Badge>}</TableCell>
+                        <TableCell className="text-sm text-slate-300 whitespace-nowrap">{item.capacidad ?? "—"}</TableCell>
                         <TableCell className="text-sm text-slate-400">{item.unidad_venta}</TableCell>
-                        <TableCell className="text-sm text-slate-400">{item.ubicacion ?? "—"}</TableCell>
-                        <TableCell className="text-right text-sm font-medium text-slate-200">{formatCurrency(Number(item.current_price))}</TableCell>
-                        <TableCell><Badge className={`text-[10px] border ${pb.cls}`}>{pb.label}</Badge></TableCell>
+                        <TableCell className="text-center text-sm text-slate-400 whitespace-nowrap">{item.multiplo_venta}</TableCell>
+                        <TableCell className="text-right text-sm text-slate-400 whitespace-nowrap">{formatCurrency(Number(item.current_price))}</TableCell>
+                        <TableCell className="text-right text-sm font-semibold text-slate-100 whitespace-nowrap">{formatCurrency(iva)}</TableCell>
                         <TableCell className="text-right">
                           <Button size="sm" variant="ghost" className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700" onClick={(e) => { e.stopPropagation(); setDetail(item) }} title="Ver detalle"><Eye className="w-4 h-4" /></Button>
                         </TableCell>
@@ -156,7 +212,8 @@ export default function AlmacenInventarioPage() {
                     { icon: Ruler, label: "Capacidad", value: detail.capacidad ?? "—" },
                     { icon: Weight, label: "Peso", value: detail.peso != null ? `${detail.peso} ${detail.um_peso}` : "—" },
                     { icon: Package, label: "Unidad de venta", value: detail.unidad_venta },
-                    { icon: DollarSign, label: "Precio público", value: formatCurrency(Number(detail.current_price)) },
+                    { icon: DollarSign, label: "Precio s/IVA", value: formatCurrency(Number(detail.current_price)) },
+                    { icon: DollarSign, label: "Precio c/IVA", value: formatCurrency(Number(detail.price_with_iva) || withIva(detail.current_price)) },
                     { icon: CalendarClock, label: "Caducidad precio", value: formatDate(detail.price_valid_until) },
                     { icon: Barcode, label: "Código de barras", value: detail.codigo_barras ?? "—" },
                     { icon: BoxIcon, label: "Ubicación", value: detail.ubicacion ?? "—" },
