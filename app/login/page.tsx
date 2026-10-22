@@ -1,12 +1,15 @@
 "use client"
 
 import type React from "react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import Image from "next/image"
 import { supabase } from "@/lib/supabaseClient"
 
 type UserRole = "admin" | "user" | "worker" | "almacen"
+
+const ACCOUNT_DISABLED_MESSAGE =
+  "Tu cuenta está desactivada porque el empleado se encuentra inactivo. Contacta al administrador del sistema."
 
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
 
@@ -103,6 +106,18 @@ export default function LoginPage() {
   const [isLoading, setIsLoading]       = useState(false)
   const router = useRouter()
 
+  // El middleware redirige aquí con ?reason=inactive cuando la cuenta fue
+  // desactivada (empleado dado de baja) y cerró la sesión por seguridad.
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const reason = new URLSearchParams(window.location.search).get("reason")
+    if (reason === "inactive") {
+      setError(ACCOUNT_DISABLED_MESSAGE)
+      // Limpia el query param para que el aviso no reaparezca al recargar
+      window.history.replaceState({}, "", window.location.pathname)
+    }
+  }, [])
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
     setError("")
@@ -127,12 +142,22 @@ export default function LoginPage() {
 
       const { data: profile, error: profileError } = await supabase
         .from("app_users")
-        .select("role")
+        .select("role, is_active")
         .eq("id", authUser.id)
         .single()
 
       if (profileError || !profile) {
+        await supabase.auth.signOut()
         setError("Tu cuenta no tiene un rol asignado. Contacta al administrador.")
+        return
+      }
+
+      // Cuenta desactivada (empleado inactivo) → no se permite el acceso.
+      // app_users.is_active lo sincroniza el trigger trg_sync_app_user_active
+      // a partir de employees.status.
+      if (profile.is_active === false) {
+        await supabase.auth.signOut()
+        setError(ACCOUNT_DISABLED_MESSAGE)
         return
       }
 
