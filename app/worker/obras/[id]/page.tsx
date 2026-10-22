@@ -124,6 +124,17 @@ function getMonday(d: Date): Date {
   return date
 }
 
+function addDays(d: Date, days: number): Date {
+  const next = new Date(d)
+  next.setDate(next.getDate() + days)
+  next.setHours(0, 0, 0, 0)
+  return next
+}
+
+function parseDateStr(dateStr: string): Date {
+  return new Date(dateStr + "T00:00:00")
+}
+
 function getWeekDates(monday: Date): string[] {
   return Array.from({ length: 7 }, (_, i) => {
     const d = new Date(monday)
@@ -171,7 +182,9 @@ export default function WorkerObraDetailPage() {
 
   // Attendance state
   const [viewMode, setViewMode] = useState<ViewMode>("day")
-  const [currentMonday, setCurrentMonday] = useState<Date>(() => getMonday(new Date()))
+  // La fecha seleccionada es la única fuente de verdad: la vista de día muestra
+  // este día y la vista de semana muestra la semana que lo contiene.
+  const [selectedDate, setSelectedDate] = useState<string>(() => toDateStr(new Date()))
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([])
   const [loadingAttendance, setLoadingAttendance] = useState(false)
   const [savingCell, setSavingCell] = useState<string | null>(null) // "employeeId-date"
@@ -188,12 +201,18 @@ export default function WorkerObraDetailPage() {
   const [transferNote, setTransferNote] = useState("")
   const [sendingTransfer, setSendingTransfer] = useState(false)
   const [loadingDirectors, setLoadingDirectors] = useState(false)
+  const [directorsError, setDirectorsError] = useState<string | null>(null)
   const [cancellingTransfer, setCancellingTransfer] = useState<string | null>(null)
   const [dismissingTransfers, setDismissingTransfers] = useState<Record<string, TransferStatus>>({}) // transferId → final status shown before removal
 
   const today = toDateStr(new Date())
+  const currentMonday = useMemo(
+    () => getMonday(parseDateStr(selectedDate)),
+    [selectedDate],
+  )
   const weekDates = useMemo(() => getWeekDates(currentMonday), [currentMonday])
   const isCurrentWeek = weekDates.includes(today)
+  const isTodaySelected = selectedDate === today
 
   /* ─── Fetch obra + team ─── */
   useEffect(() => {
@@ -248,11 +267,14 @@ export default function WorkerObraDetailPage() {
             ...e,
             role_on_site: roleMap.get(e.id) ?? null,
           }))
-          // Sort: directors first
+          // Orden: directores primero y, dentro de cada grupo, alfabético.
+          // El desempate por nombre es imprescindible: la numeración de la lista
+          // sólo sirve como referencia si el orden es siempre el mismo.
           teamList.sort((a: TeamMember, b: TeamMember) => {
             const aDir = a.role_on_site === "director_obra" ? 0 : 1
             const bDir = b.role_on_site === "director_obra" ? 0 : 1
-            return aDir - bDir
+            if (aDir !== bDir) return aDir - bDir
+            return a.full_name.localeCompare(b.full_name, "es")
           })
           setTeam(teamList)
         }
@@ -384,25 +406,29 @@ export default function WorkerObraDetailPage() {
     setSavingOvertime(null)
   }
 
-  /* ─── Week navigation ─── */
-  const goToPrevWeek = () => {
-    setCurrentMonday((prev: Date) => {
-      const d = new Date(prev)
-      d.setDate(d.getDate() - 7)
-      return d
-    })
+  /* ─── Navegación: en vista de día avanza un día, en vista de semana una semana ─── */
+  const goToPrev = () => {
+    if (viewMode === "day") {
+      setSelectedDate(toDateStr(addDays(parseDateStr(selectedDate), -1)))
+      return
+    }
+    setSelectedDate(toDateStr(addDays(currentMonday, -7)))
   }
 
-  const goToNextWeek = () => {
-    const nextMonday = new Date(currentMonday)
-    nextMonday.setDate(nextMonday.getDate() + 7)
-    // Don't allow navigating to future weeks
+  const goToNext = () => {
+    if (viewMode === "day") {
+      const next = toDateStr(addDays(parseDateStr(selectedDate), 1))
+      if (next > today) return // no se registra asistencia a futuro
+      setSelectedDate(next)
+      return
+    }
+    const nextMonday = addDays(currentMonday, 7)
     if (nextMonday > getMonday(new Date())) return
-    setCurrentMonday(nextMonday)
+    setSelectedDate(toDateStr(nextMonday))
   }
 
-  const goToCurrentWeek = () => {
-    setCurrentMonday(getMonday(new Date()))
+  const goToToday = () => {
+    setSelectedDate(today)
   }
 
   /* ─── Get attendance for a cell ─── */
@@ -496,30 +522,65 @@ export default function WorkerObraDetailPage() {
   const loadDirectors = async () => {
     if (!myEmployeeId) return
     setLoadingDirectors(true)
+    setDirectorsError(null)
 
-    // Find all employees with role 'worker' in app_users (active directors)
-    const { data: workerUsers } = await supabase
-      .from("app_users")
-      .select("id, role")
-      .eq("role", "worker")
+    try {
+      // Los directores se identifican por su rol en el catálogo, NO por app_users:
+      // esa tabla sólo deja leer la fila propia (RLS "app_users self read"), así que
+      // consultarla desde aquí siempre devolvía una lista vacía.
+      const { data: catalogRow, error: catalogErr } = await supabase
+        .from("employee_roles_catalog")
+        .select("id")
+        .eq("code", "director_obra")
+        .maybeSingle()
 
-    if (!workerUsers || workerUsers.length === 0) {
+      if (catalogErr) throw catalogErr
+      if (!catalogRow) {
+        setDirectors([])
+        return
+      }
+
+      const { data: roleRows, error: roleErr } = await supabase
+        .from("employee_roles")
+        .select("employee_id")
+        .eq("role_id", catalogRow.id)
+
+      if (roleErr) throw roleErr
+
+      const directorIds = Array.from(
+        new Set(
+          (roleRows ?? [])
+            .map((r: { employee_id: string }) => r.employee_id)
+            .filter((eid: string) => eid && eid !== myEmployeeId),
+        ),
+      )
+
+      if (directorIds.length === 0) {
+        setDirectors([])
+        return
+      }
+
+      // Sólo directores dados de alta y con cuenta de acceso vigente.
+      // employees.status se mantiene sincronizado con app_users.is_active
+      // mediante el trigger trg_sync_app_user_active.
+      const { data: directorEmployees, error: empErr } = await supabase
+        .from("employees")
+        .select("id, full_name, user_id")
+        .in("id", directorIds)
+        .eq("status", "active")
+        .not("user_id", "is", null)
+        .order("full_name", { ascending: true })
+
+      if (empErr) throw empErr
+
+      setDirectors((directorEmployees as DirectorOption[]) ?? [])
+    } catch (e: any) {
+      console.error("Error cargando directores de obra:", e)
       setDirectors([])
+      setDirectorsError("No se pudo cargar la lista de directores. Intenta de nuevo.")
+    } finally {
       setLoadingDirectors(false)
-      return
     }
-
-    const workerUserIds = workerUsers.map((u: { id: string }) => u.id)
-
-    // Get employees linked to these active worker users, excluding myself
-    const { data: directorEmployees } = await supabase
-      .from("employees")
-      .select("id, full_name, user_id")
-      .in("user_id", workerUserIds)
-      .neq("id", myEmployeeId)
-
-    setDirectors((directorEmployees as DirectorOption[]) ?? [])
-    setLoadingDirectors(false)
   }
 
   /* ─── Transfers: open modal ─── */
@@ -625,7 +686,7 @@ export default function WorkerObraDetailPage() {
   }
 
   const status = STATUS_CONFIG[obra.status] ?? STATUS_CONFIG.closed
-  const canGoNext = !isCurrentWeek
+  const canGoNext = viewMode === "day" ? selectedDate < today : !isCurrentWeek
 
   /* ─── Attendance summary for week ─── */
   const weekSummary = team.map((member: TeamMember) => {
@@ -725,10 +786,11 @@ export default function WorkerObraDetailPage() {
                 </div>
               </div>
 
-              {/* ── Week Navigator ── */}
+              {/* ── Navegador de fecha ── */}
               <div className="flex items-center justify-between">
                 <button
-                  onClick={goToPrevWeek}
+                  onClick={goToPrev}
+                  aria-label={viewMode === "day" ? "Día anterior" : "Semana anterior"}
                   className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-700/40 transition-all active:scale-90"
                 >
                   <ChevronLeft className="w-5 h-5" />
@@ -737,26 +799,28 @@ export default function WorkerObraDetailPage() {
                 <div className="text-center">
                   <p className="text-sm font-semibold text-slate-200">
                     {viewMode === "day"
-                      ? new Date(today + "T00:00:00").toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })
+                      ? parseDateStr(selectedDate).toLocaleDateString("es-MX", { weekday: "long", day: "numeric", month: "long" })
                       : `${formatDateShort(weekDates[0])} – ${formatDateShort(weekDates[6])} ${formatMonthYear(weekDates[0])}`
                     }
                   </p>
-                  {isCurrentWeek && (
-                    <span className="text-[10px] font-semibold text-emerald-400">Semana actual</span>
-                  )}
-                  {!isCurrentWeek && (
+                  {(viewMode === "day" ? isTodaySelected : isCurrentWeek) ? (
+                    <span className="text-[10px] font-semibold text-emerald-400">
+                      {viewMode === "day" ? "Hoy" : "Semana actual"}
+                    </span>
+                  ) : (
                     <button
-                      onClick={goToCurrentWeek}
+                      onClick={goToToday}
                       className="text-[10px] font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors"
                     >
-                      Ir a semana actual →
+                      {viewMode === "day" ? "Ir a hoy →" : "Ir a semana actual →"}
                     </button>
                   )}
                 </div>
 
                 <button
-                  onClick={goToNextWeek}
+                  onClick={goToNext}
                   disabled={!canGoNext}
+                  aria-label={viewMode === "day" ? "Día siguiente" : "Semana siguiente"}
                   className={cn(
                     "p-2 rounded-xl transition-all active:scale-90",
                     canGoNext
@@ -796,17 +860,22 @@ export default function WorkerObraDetailPage() {
             ) : viewMode === "day" ? (
               /* ═══ DAY VIEW ═══ */
               <div className="divide-y divide-slate-700/30">
-                {team.map((member: TeamMember) => {
-                  const record = getAttendanceForCell(member.id, today)
+                {team.map((member: TeamMember, index: number) => {
+                  const record = getAttendanceForCell(member.id, selectedDate)
                   const cfg = record ? ATTENDANCE_CONFIG[record.status as AttendanceStatus] : null
-                  const isSaving = savingCell === `${member.id}-${today}`
+                  const isSaving = savingCell === `${member.id}-${selectedDate}`
                   const isOvertimeOpen = overtimeOpen === member.id
                   const currentOT = record?.overtime_hours ?? 0
-                  const isSavingOT = savingOvertime === `${member.id}-${today}`
+                  const isSavingOT = savingOvertime === `${member.id}-${selectedDate}`
 
                   return (
                     <div key={member.id}>
                       <div className="flex items-center gap-3 px-4 py-3">
+                        {/* Número de lista: mismo índice que en la vista semanal */}
+                        <span className="shrink-0 w-5 text-right text-[11px] font-bold tabular-nums text-slate-500">
+                          {index + 1}
+                        </span>
+
                         {/* Name */}
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-semibold text-slate-200 truncate">
@@ -837,7 +906,7 @@ export default function WorkerObraDetailPage() {
                           const isBajada = record?.status === "bajada"
                           return (
                             <button
-                              onClick={() => !isBajada && cycleAttendance(member.id, today)}
+                              onClick={() => !isBajada && cycleAttendance(member.id, selectedDate)}
                               disabled={isSaving || isBajada}
                               className={cn(
                                 "shrink-0 w-16 h-12 rounded-xl border-2 flex flex-col items-center justify-center transition-all font-semibold",
@@ -869,7 +938,7 @@ export default function WorkerObraDetailPage() {
                           <span className="text-xs text-slate-400">Horas extras:</span>
                           <div className="flex items-center gap-1.5 bg-slate-800 rounded-lg border border-slate-700 p-1">
                             <button
-                              onClick={() => updateOvertime(member.id, today, currentOT - 1)}
+                              onClick={() => updateOvertime(member.id, selectedDate, currentOT - 1)}
                               disabled={currentOT <= 0 || !!isSavingOT}
                               className="w-8 h-8 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 flex items-center justify-center disabled:opacity-30 transition-colors"
                             >
@@ -882,12 +951,12 @@ export default function WorkerObraDetailPage() {
                               value={currentOT}
                               onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
                                 const v = parseFloat(e.target.value)
-                                if (!isNaN(v)) updateOvertime(member.id, today, v)
+                                if (!isNaN(v)) updateOvertime(member.id, selectedDate, v)
                               }}
                               className="w-12 h-8 text-center bg-transparent text-slate-100 font-semibold text-sm outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
                             />
                             <button
-                              onClick={() => updateOvertime(member.id, today, currentOT + 1)}
+                              onClick={() => updateOvertime(member.id, selectedDate, currentOT + 1)}
                               disabled={currentOT >= 24 || !!isSavingOT}
                               className="w-8 h-8 rounded-md bg-slate-700 hover:bg-slate-600 text-slate-300 flex items-center justify-center disabled:opacity-30 transition-colors"
                             >
@@ -905,8 +974,8 @@ export default function WorkerObraDetailPage() {
               /* ═══ WEEK VIEW ═══ */
               <div>
                 {/* Day headers */}
-                <div className="grid grid-cols-[1fr_repeat(7,40px)] gap-1 px-3 py-2 border-b border-slate-700/30">
-                  <div /> {/* name column */}
+                <div className="grid grid-cols-[18px_1fr_repeat(7,36px)] gap-0.5 px-3 py-2 border-b border-slate-700/30">
+                  <div className="col-span-2" /> {/* columnas de número y nombre */}
                   {weekDates.map((date: string, i: number) => {
                     const isToday = date === today
                     return (
@@ -932,8 +1001,17 @@ export default function WorkerObraDetailPage() {
 
                 {/* Employee rows */}
                 <div className="divide-y divide-slate-700/20">
-                  {team.map((member: TeamMember) => (
-                    <div key={member.id} className="grid grid-cols-[1fr_repeat(7,40px)] gap-1 px-3 py-2 items-center">
+                  {team.map((member: TeamMember, index: number) => (
+                    <div key={member.id} className="grid grid-cols-[18px_1fr_repeat(7,36px)] gap-0.5 px-3 py-2 items-center">
+                      {/* Número de lista: en celular el nombre se corta, así que
+                          este número es lo que identifica el renglón. */}
+                      <span
+                        className="text-right text-[11px] font-bold tabular-nums text-slate-400"
+                        title={member.full_name}
+                      >
+                        {index + 1}
+                      </span>
+
                       {/* Name */}
                       <div className="min-w-0 pr-1">
                         <p className="text-[12px] font-semibold text-slate-300 truncate">
@@ -956,7 +1034,7 @@ export default function WorkerObraDetailPage() {
                             onClick={() => !isDisabled && cycleAttendance(member.id, date)}
                             disabled={isDisabled}
                             className={cn(
-                              "w-10 h-10 rounded-lg border flex items-center justify-center transition-all text-sm font-bold",
+                              "w-9 h-9 rounded-lg border flex items-center justify-center transition-all text-sm font-bold",
                               (isFuture || isBajada) && "cursor-not-allowed",
                               isFuture && !isBajada && "opacity-30",
                               !isDisabled && "active:scale-90",
@@ -1190,6 +1268,16 @@ export default function WorkerObraDetailPage() {
                     {loadingDirectors ? (
                       <div className="flex items-center justify-center py-6">
                         <Loader2 className="w-5 h-5 animate-spin text-slate-500" />
+                      </div>
+                    ) : directorsError ? (
+                      <div className="py-4 text-center space-y-2">
+                        <p className="text-sm text-red-400">{directorsError}</p>
+                        <button
+                          onClick={loadDirectors}
+                          className="text-xs text-[#4da8e8] underline underline-offset-4"
+                        >
+                          Reintentar
+                        </button>
                       </div>
                     ) : directors.length === 0 ? (
                       <p className="text-sm text-slate-500 text-center py-4">No hay otros directores activos</p>

@@ -70,6 +70,7 @@ import { upcomingOccurrences, mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 type EmployeeRow = {
   id: string
+  user_id: string | null
   full_name: string
   email: string | null
   phone: string | null
@@ -138,6 +139,7 @@ type AssignedObra = {
 
 type EmployeeDetail = {
   id: string
+  user_id: string | null
   name: string
   email: string | null
   phone: string | null
@@ -446,6 +448,7 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
 
   return {
     id: row.id,
+    user_id: row.user_id ?? null,
     name: row.full_name,
     email: row.email,
     phone: row.phone,
@@ -1012,6 +1015,7 @@ export default function EmployeeDetailPage() {
           .select(
             `
             id,
+            user_id,
             full_name,
             email,
             phone,
@@ -1534,6 +1538,7 @@ export default function EmployeeDetailPage() {
         .select(
           `
           id,
+          user_id,
           full_name,
           email,
           phone,
@@ -1599,6 +1604,8 @@ export default function EmployeeDetailPage() {
         setEmployee((prev: EmployeeDetail | null) => {
           const next = mapRowToDetail(updatedRow)
           next.roles = prev?.roles || []
+          // La API de salarios no devuelve user_id; conservamos el vínculo de cuenta
+          next.user_id = updatedRow.user_id ?? prev?.user_id ?? null
           return next
         })
       }
@@ -2017,6 +2024,10 @@ export default function EmployeeDetailPage() {
   const primaryRoleLabel = getPrimaryRoleLabelFromSorted(sortedRoles)
   const employeeAge = calculateAge(employee.birth_date)
 
+  // Un empleado con cuenta vinculada solo puede entrar al ERP si está activo
+  const hasPlatformAccess =
+    !!employee.user_id && employee.statusRaw?.toLowerCase() === "active"
+
   return (
     <RoleGuard allowed={["admin"]}>
     <AdminLayout>
@@ -2112,6 +2123,21 @@ export default function EmployeeDetailPage() {
                             <SelectItem value="inactive">Inactivo</SelectItem>
                           </SelectContent>
                         </Select>
+
+                        {/* Aviso solo si el empleado tiene cuenta de acceso */}
+                        {employee.user_id && (
+                          <p
+                            className={
+                              editForm.status === "inactive"
+                                ? "text-[11px] leading-snug text-red-400/90"
+                                : "text-[11px] leading-snug text-slate-500"
+                            }
+                          >
+                            {editForm.status === "inactive"
+                              ? "Al guardar como Inactivo, la cuenta de este empleado dejará de permitir el acceso a la plataforma. No se borra ningún dato."
+                              : "Este empleado tiene cuenta de acceso a la plataforma. Marcarlo como Inactivo bloqueará su inicio de sesión."}
+                          </p>
+                        )}
                       </div>
 
                       <div className="space-y-2">
@@ -2517,6 +2543,38 @@ export default function EmployeeDetailPage() {
                   <Badge className={getStatusColor(employee.statusUi)}>
                     {employee.statusUi}
                   </Badge>
+
+                  {/* Estado de la cuenta de acceso al ERP. Solo aplica a
+                      empleados con cuenta vinculada (p. ej. directores de obra).
+                      app_users.is_active se sincroniza con employees.status
+                      mediante el trigger trg_sync_app_user_active. */}
+                  {employee.user_id && (
+                    <div className="pt-1.5 flex justify-center">
+                      <span
+                        className={
+                          hasPlatformAccess
+                            ? "inline-flex items-center gap-1.5 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-medium text-emerald-400"
+                            : "inline-flex items-center gap-1.5 rounded-full border border-red-500/25 bg-red-500/10 px-2.5 py-1 text-[11px] font-medium text-red-400"
+                        }
+                        title={
+                          hasPlatformAccess
+                            ? "Este empleado puede iniciar sesión en la plataforma."
+                            : "La cuenta existe pero no permite iniciar sesión mientras el empleado esté inactivo."
+                        }
+                      >
+                        <span
+                          className={
+                            hasPlatformAccess
+                              ? "w-1.5 h-1.5 rounded-full bg-emerald-400"
+                              : "w-1.5 h-1.5 rounded-full bg-red-400"
+                          }
+                        />
+                        {hasPlatformAccess
+                          ? "Acceso a plataforma habilitado"
+                          : "Acceso a plataforma bloqueado"}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="mt-3 text-left">
                     {sortedRoles.length === 0 ? (

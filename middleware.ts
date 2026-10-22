@@ -50,8 +50,46 @@ export async function middleware(request: NextRequest) {
     return NextResponse.redirect(url)
   }
 
+  // ──────────────────────────────────────────────────────────────────────────
+  // Cuenta desactivada (empleado dado de baja) → cerrar sesión y bloquear.
+  // app_users.is_active se mantiene sincronizado con employees.status mediante
+  // el trigger trg_sync_app_user_active (ver sql/2026-10-20_bloqueo_acceso_
+  // empleado_inactivo.sql). Esta es la barrera real: aunque el usuario tenga
+  // una cookie de sesión válida, no puede entrar a ninguna ruta protegida.
+  // ──────────────────────────────────────────────────────────────────────────
+  const alreadyFlaggedInactive =
+    pathname === "/login" && request.nextUrl.searchParams.get("reason") === "inactive"
+
+  if (user && !alreadyFlaggedInactive) {
+    const { data: profile } = await supabase
+      .from("app_users")
+      .select("is_active")
+      .eq("id", user.id)
+      .maybeSingle()
+
+    if (profile?.is_active === false) {
+      // Invalida la sesión en Supabase y limpia las cookies del navegador
+      await supabase.auth.signOut()
+
+      const url = request.nextUrl.clone()
+      url.pathname = "/login"
+      url.search = ""
+      url.searchParams.set("reason", "inactive")
+
+      const redirectResponse = NextResponse.redirect(url)
+
+      // Propaga al redirect las cookies de cierre de sesión que signOut()
+      // escribió sobre supabaseResponse.
+      supabaseResponse.cookies.getAll().forEach((cookie) => {
+        redirectResponse.cookies.set(cookie)
+      })
+
+      return redirectResponse
+    }
+  }
+
   // Si ya está logueado e intenta ir a /login → redirige a home (que redirige según rol)
-  if (pathname === "/login" && user) {
+  if (pathname === "/login" && user && !alreadyFlaggedInactive) {
     const url = request.nextUrl.clone()
     url.pathname = "/"
     return NextResponse.redirect(url)

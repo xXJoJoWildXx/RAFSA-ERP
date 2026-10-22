@@ -45,12 +45,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     // 2) obtener rol desde tu tabla de perfiles/roles
     const { data: profile, error } = await supabase
       .from("app_users") // CAMBIA si tu tabla tiene otro nombre
-      .select("role, display_name")
+      .select("role, display_name, is_active")
       .eq("id", authUser.id)
       .single()
 
     if (error || !profile) {
       // sin rol asignado
+      setUser(null)
+      setIsLoading(false)
+      return
+    }
+
+    // 3) cuenta desactivada (empleado inactivo) → se cierra la sesión activa.
+    // Cubre el caso de un usuario que ya estaba dentro cuando lo dieron de baja.
+    if (profile.is_active === false) {
+      await supabase.auth.signOut()
       setUser(null)
       setIsLoading(false)
       return
