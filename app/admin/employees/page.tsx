@@ -29,7 +29,8 @@ import { Search, Plus, Phone, X, FileDown, Calendar, Clock, User } from "lucide-
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
-import { generateEmployeesPdf, type EmployeePdfData, type SalaryPdfData } from "@/lib/generateEmployeesPdf"
+import { generateEmployeesPdf } from "@/lib/generateEmployeesPdf"
+import type { EmployeeAuditSource } from "@/lib/employeeCompleteness"
 
 // ----- Tipos que reflejan la DB real -----
 
@@ -317,7 +318,10 @@ async function uploadEmployeeFileDirect(args: {
 
 // ----- Clases reutilizables -----
 const inputCls = "bg-slate-900 border-slate-700 text-slate-200 focus:border-[#0174bd]/60 placeholder:text-slate-500"
-const selectTriggerCls = "bg-slate-900 border-slate-700 text-slate-200"
+const selectTriggerCls =
+  "bg-slate-900 border-slate-700 text-slate-200 cursor-pointer transition-colors " +
+  "hover:border-white/40 " +
+  "[&_svg]:transition-all hover:[&_svg]:text-white hover:[&_svg]:opacity-90"
 const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
 const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
@@ -325,10 +329,22 @@ const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hov
 
 export default function AdminEmployeesPage() {
   const [searchQuery, setSearchQuery] = useState("")
+  const [searchFocused, setSearchFocused] = useState(false)
   const [roleFilter, setRoleFilter] = useState<string>("all")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
+  // Arranca mostrando sólo a los activos: es la vista que se usa a diario.
+  const [statusFilter, setStatusFilter] = useState<string>("activo")
 
   const [employees, setEmployees] = useState<Employee[]>([])
+  // Conteos del padrón completo (no del filtro): son el panorama general.
+  const activeCount = useMemo(
+    () => employees.filter((e) => e.status === "Activo").length,
+    [employees],
+  )
+  const inactiveCount = useMemo(
+    () => employees.filter((e) => e.status !== "Activo").length,
+    [employees],
+  )
+
   const [rolesCatalog, setRolesCatalog] = useState<RoleCatalogRow[]>([])
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
@@ -729,47 +745,96 @@ export default function AdminEmployeesPage() {
 
   // ── PDF Export ────────────────────────────────────────────────────────────
   const [generatingPdf, setGeneratingPdf] = useState(false)
+  const [pdfError, setPdfError] = useState<string | null>(null)
 
   async function handleExportPdf() {
     setGeneratingPdf(true)
+    setPdfError(null)
     try {
-      const ids = employees.map((e) => e.id)
+      // El reporte necesita bastante más información que el listado, así que
+      // se carga aquí y no en la consulta de la pantalla.
+      const [empRes, rolesRes, docsRes, workDocsRes] = await Promise.all([
+        supabase
+          .from("employees")
+          .select(
+            `
+            id, full_name, status, photo_url, birth_date, rfc, imss_number,
+            hire_date, payroll_code, real_salary, overtime_hour_cost,
+            bonus_amount, viatics_amount, bank_name, account_number,
+            interbank_clabe, is_foraneo, residence_location, phone
+          `,
+          ),
+        supabase
+          .from("employee_roles")
+          .select("employee_id, employee_roles_catalog ( name )"),
+        supabase.from("employee_documents").select("employee_id, doc_type"),
+        supabase.from("employee_work_documents").select("employee_id, folder_type"),
+      ])
 
-      const { data: salaryData } = await supabase
-        .from("employee_salary_history")
-        .select("employee_id, real_salary, payroll_salary, bonus_amount, overtime_hour_cost, viatics_amount, valid_from, valid_to")
-        .in("employee_id", ids)
-        .order("valid_from", { ascending: false })
+      if (empRes.error) throw empRes.error
+      if (!empRes.data || empRes.data.length === 0) {
+        setPdfError("No hay empleados para incluir en el reporte.")
+        return
+      }
 
-      const salaryMap: Record<string, SalaryPdfData> = {}
-      ;(salaryData || []).forEach((row: any) => {
-        if (!salaryMap[row.employee_id]) {
-          salaryMap[row.employee_id] = {
-            real_salary: row.real_salary,
-            payroll_salary: row.payroll_salary,
-            bonus_amount: row.bonus_amount,
-            overtime_hour_cost: row.overtime_hour_cost,
-            viatics_amount: row.viatics_amount,
-          }
-        }
-      })
+      // Roles por empleado
+      const roleMap = new Map<string, string[]>()
+      for (const row of (rolesRes.data as any[]) || []) {
+        const cat = row.employee_roles_catalog
+        const name = Array.isArray(cat) ? cat[0]?.name : cat?.name
+        if (!name) continue
+        const prev = roleMap.get(row.employee_id) || []
+        prev.push(name)
+        roleMap.set(row.employee_id, prev)
+      }
 
-      const pdfData: EmployeePdfData[] = employees.map((emp) => ({
-        id: emp.id,
-        full_name: emp.name,
-        status: emp.status === "Activo" ? "active" : "inactive",
-        hire_date: emp.joinDate || null,
-        tenure: calculateTenure(emp.joinDate || null),
-        roles: emp.roles.map((r) => ({ name: r.name })),
-        signedPhotoUrl: emp.signedPhotoUrl ?? null,
-        salary: salaryMap[emp.id] ?? null,
+      // Documentos del expediente por empleado
+      const docMap = new Map<string, Set<string>>()
+      for (const row of (docsRes.data as any[]) || []) {
+        if (!row?.doc_type) continue
+        const prev = docMap.get(row.employee_id) || new Set<string>()
+        prev.add(row.doc_type)
+        docMap.set(row.employee_id, prev)
+      }
+
+      // Documentos de obra (DC-3, reportes médicos)
+      const workDocMap = new Map<string, Set<string>>()
+      for (const row of (workDocsRes.data as any[]) || []) {
+        if (!row?.folder_type) continue
+        const prev = workDocMap.get(row.employee_id) || new Set<string>()
+        prev.add(row.folder_type)
+        workDocMap.set(row.employee_id, prev)
+      }
+
+      const sources: EmployeeAuditSource[] = (empRes.data as any[]).map((e) => ({
+        id: e.id,
+        full_name: e.full_name,
+        status: e.status,
+        photo_url: e.photo_url,
+        birth_date: e.birth_date,
+        rfc: e.rfc,
+        imss_number: e.imss_number,
+        hire_date: e.hire_date,
+        payroll_code: e.payroll_code,
+        real_salary: e.real_salary,
+        overtime_hour_cost: e.overtime_hour_cost,
+        bonus_amount: e.bonus_amount,
+        viatics_amount: e.viatics_amount,
+        bank_name: e.bank_name,
+        account_number: e.account_number,
+        interbank_clabe: e.interbank_clabe,
+        is_foraneo: !!e.is_foraneo,
+        residence_location: e.residence_location,
+        phone: e.phone,
+        roleNames: roleMap.get(e.id) || [],
+        docTypes: docMap.get(e.id) || new Set<string>(),
+        workDocTypes: workDocMap.get(e.id) || new Set<string>(),
       }))
 
-      const activeCount = employees.filter((e) => e.status === "Activo").length
-      const inactiveCount = employees.filter((e) => e.status !== "Activo").length
-      await generateEmployeesPdf(pdfData, activeCount, inactiveCount)
+      await generateEmployeesPdf(sources)
     } catch (e) {
-      console.error("Error generando PDF:", e)
+      console.error("Error generando PDF:", stringifyAnyError(e))
+      setPdfError("No se pudo generar el reporte. Intenta de nuevo.")
     } finally {
       setGeneratingPdf(false)
     }
@@ -803,7 +868,7 @@ export default function AdminEmployeesPage() {
                 className={`cursor-pointer ${btnOutlineCls}`}
               >
                 <FileDown className={`w-4 h-4 mr-2 ${generatingPdf ? "animate-pulse" : ""}`} />
-                {generatingPdf ? "Generando PDF..." : "Exportar PDF"}
+                {generatingPdf ? "Generando reporte..." : "Reporte general"}
               </Button>
 
               <Dialog
@@ -816,7 +881,7 @@ export default function AdminEmployeesPage() {
                 }}
               >
                 <DialogTrigger asChild>
-                  <Button className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                  <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
                     <Plus className="w-4 h-4 mr-2" />
                     Agregar empleado
                   </Button>
@@ -1029,44 +1094,131 @@ export default function AdminEmployeesPage() {
           </DialogContent>
         </Dialog>
 
-        {/* ── Filtros ── */}
-        <div className="flex flex-col md:flex-row gap-4">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
-            <Input
-              placeholder="Buscar empleados..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className={`pl-10 ${inputCls}`}
-            />
+        {/* ── Contadores + filtros ── */}
+        <div className="flex flex-col md:flex-row md:items-center md:flex-wrap gap-3">
+          {/* ── Contador del padrón ── */}
+          {!loading && !error && (
+            <div className="grid grid-cols-3 items-stretch gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => setStatusFilter("activo")}
+                className={`
+                  group w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
+                  ${statusFilter === "activo"
+                    ? "border-emerald-500/40 bg-emerald-500/10"
+                    : "border-slate-700/60 bg-slate-800/40 hover:border-emerald-500/25"}
+                `}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Activos
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xl font-bold leading-none text-emerald-400 tabular-nums">
+                  {activeCount}
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStatusFilter("inactivo")}
+                className={`
+                  group w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
+                  ${statusFilter === "inactivo"
+                    ? "border-red-500/40 bg-red-500/10"
+                    : "border-slate-700/60 bg-slate-800/40 hover:border-red-500/25"}
+                `}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-red-400/80" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Inactivos
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xl font-bold leading-none text-red-400 tabular-nums">
+                  {inactiveCount}
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setStatusFilter("all")}
+                className={`
+                  w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
+                  ${statusFilter === "all"
+                    ? "border-[#0174bd]/50 bg-[#0174bd]/10"
+                    : "border-slate-700/60 bg-slate-800/40 hover:border-[#0174bd]/30"}
+                `}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                    Total
+                  </span>
+                </div>
+                <p className="mt-0.5 text-xl font-bold leading-none text-slate-200 tabular-nums">
+                  {activeCount + inactiveCount}
+                </p>
+              </button>
+            </div>
+          )}
+
+          {/* Buscador y filtros, alineados a la derecha */}
+          <div className="flex flex-col md:flex-row md:items-center gap-3 w-full md:w-auto md:ml-auto">
+            <div
+              className={`
+                search-expand relative flex items-center rounded-xl border overflow-hidden w-full
+                ${searchFocused
+                  ? "md:w-88 bg-slate-900 border-[#0174bd]/50 shadow-[0_0_0_3px_rgba(1,116,189,0.12)]"
+                  : "md:w-72 bg-slate-900/60 border-slate-700 hover:border-slate-600"}
+              `}
+            >
+              <Search className="absolute left-3 w-4 h-4 text-slate-500 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Buscar empleados..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
+                className="w-full h-9 pl-9 pr-3 text-[13px] bg-transparent outline-none text-slate-300 placeholder:text-slate-600"
+              />
+            </div>
+
+            <Select value={roleFilter} onValueChange={setRoleFilter}>
+              <SelectTrigger className={`w-full md:w-52 ${selectTriggerCls}`}>
+                <SelectValue placeholder="Rol / Puesto" />
+              </SelectTrigger>
+              <SelectContent className={selectContentCls}>
+                <SelectItem value="all">Todos los roles</SelectItem>
+                {rolesCatalog.map((role) => (
+                  <SelectItem key={role.id} value={role.id}>
+                    {role.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+
+            <Select value={statusFilter} onValueChange={setStatusFilter}>
+              <SelectTrigger className={`w-full md:w-36 ${selectTriggerCls}`}>
+                <SelectValue placeholder="Estatus" />
+              </SelectTrigger>
+              <SelectContent className={selectContentCls}>
+                <SelectItem value="all">Todos</SelectItem>
+                <SelectItem value="activo">Activo</SelectItem>
+                <SelectItem value="de-permiso">De permiso</SelectItem>
+                <SelectItem value="inactivo">Inactivo</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
-
-          <Select value={roleFilter} onValueChange={setRoleFilter}>
-            <SelectTrigger className={`w-full md:w-64 ${selectTriggerCls}`}>
-              <SelectValue placeholder="Rol / Puesto" />
-            </SelectTrigger>
-            <SelectContent className={selectContentCls}>
-              <SelectItem value="all">Todos los roles</SelectItem>
-              {rolesCatalog.map((role) => (
-                <SelectItem key={role.id} value={role.id}>
-                  {role.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-
-          <Select value={statusFilter} onValueChange={setStatusFilter}>
-            <SelectTrigger className={`w-full md:w-40 ${selectTriggerCls}`}>
-              <SelectValue placeholder="Estatus" />
-            </SelectTrigger>
-            <SelectContent className={selectContentCls}>
-              <SelectItem value="all">Todos</SelectItem>
-              <SelectItem value="activo">Activo</SelectItem>
-              <SelectItem value="de-permiso">De permiso</SelectItem>
-              <SelectItem value="inactivo">Inactivo</SelectItem>
-            </SelectContent>
-          </Select>
         </div>
+
+        {pdfError && (
+          <div className="rounded-xl border border-red-500/25 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+            {pdfError}
+          </div>
+        )}
 
         {loading && (
           <div className="text-center py-12 text-sm text-slate-500">Cargando empleados...</div>

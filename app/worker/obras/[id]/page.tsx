@@ -33,6 +33,7 @@ import {
   Plus,
   Minus,
   Timer,
+  Lock,
 } from "lucide-react"
 import Link from "next/link"
 import { cn } from "@/lib/utils"
@@ -115,6 +116,18 @@ const ATTENDANCE_CONFIG: Record<AttendanceStatus, { label: string; short: string
 
 const DAYS_SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
 
+/**
+ * Ventana móvil de captura de asistencia.
+ *
+ * Sólo se puede registrar o corregir asistencia dentro de los últimos
+ * ATTENDANCE_EDIT_WINDOW_DAYS días contando hoy. La ventana se recorre sola:
+ * cada día que pasa se abre el día nuevo y se cierra el más antiguo.
+ *
+ *   jueves 22 → editable del miércoles 14 al jueves 22
+ *   viernes 23 → editable del jueves 15 al viernes 23
+ */
+const ATTENDANCE_EDIT_WINDOW_DAYS = 9
+
 function getMonday(d: Date): Date {
   const date = new Date(d)
   const day = date.getDay()
@@ -146,6 +159,14 @@ function getWeekDates(monday: Date): string[] {
 function formatDateShort(dateStr: string): string {
   const d = new Date(dateStr + "T00:00:00")
   return d.getDate().toString()
+}
+
+function formatDayMonth(dateStr: string): string {
+  return parseDateStr(dateStr).toLocaleDateString("es-MX", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+  })
 }
 
 function formatMonthYear(dateStr: string): string {
@@ -206,6 +227,19 @@ export default function WorkerObraDetailPage() {
   const [dismissingTransfers, setDismissingTransfers] = useState<Record<string, TransferStatus>>({}) // transferId → final status shown before removal
 
   const today = toDateStr(new Date())
+
+  // Día más antiguo que todavía admite cambios (incluido).
+  const oldestEditableDate = useMemo(
+    () => toDateStr(addDays(new Date(), -(ATTENDANCE_EDIT_WINDOW_DAYS - 1))),
+    [today],
+  )
+
+  // Una fecha es editable si cae dentro de la ventana y no es futura.
+  const isDateEditable = useCallback(
+    (date: string) => date >= oldestEditableDate && date <= today,
+    [oldestEditableDate, today],
+  )
+
   const currentMonday = useMemo(
     () => getMonday(parseDateStr(selectedDate)),
     [selectedDate],
@@ -213,6 +247,7 @@ export default function WorkerObraDetailPage() {
   const weekDates = useMemo(() => getWeekDates(currentMonday), [currentMonday])
   const isCurrentWeek = weekDates.includes(today)
   const isTodaySelected = selectedDate === today
+  const canEditSelectedDate = isDateEditable(selectedDate)
 
   /* ─── Fetch obra + team ─── */
   useEffect(() => {
@@ -314,6 +349,7 @@ export default function WorkerObraDetailPage() {
   /* ─── Toggle attendance ─── */
   const cycleAttendance = async (employeeId: string, date: string) => {
     if (!user || !id) return
+    if (!isDateEditable(date)) return // fuera de la ventana de captura
 
     const cellKey = `${employeeId}-${date}`
     setSavingCell(cellKey)
@@ -368,6 +404,7 @@ export default function WorkerObraDetailPage() {
   /* ─── Update overtime hours ─── */
   const updateOvertime = async (employeeId: string, date: string, hours: number) => {
     if (!user || !id) return
+    if (!isDateEditable(date)) return // fuera de la ventana de captura
     const clamped = Math.max(0, Math.min(24, hours))
     setSavingOvertime(`${employeeId}-${date}`)
 
@@ -847,6 +884,24 @@ export default function WorkerObraDetailPage() {
               </div>
             </div>
 
+            {/* ── Aviso de periodo cerrado ── */}
+            {viewMode === "day" && !canEditSelectedDate && (
+              <div className="px-4 py-2.5 bg-amber-500/10 border-b border-amber-500/20 flex items-start gap-2">
+                <Lock className="w-3.5 h-3.5 text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-[11px] leading-snug text-amber-300/90">
+                  {selectedDate > today
+                    ? "Todavía no puedes registrar asistencia de un día que no llega."
+                    : (
+                      <>
+                        Periodo cerrado. Sólo puedes registrar o corregir del{" "}
+                        <span className="font-semibold">{formatDayMonth(oldestEditableDate)}</span>{" "}
+                        al <span className="font-semibold">{formatDayMonth(today)}</span>.
+                      </>
+                    )}
+                </p>
+              </div>
+            )}
+
             {/* ── Attendance Content ── */}
             {loadingAttendance ? (
               <div className="flex items-center justify-center py-12">
@@ -888,9 +943,11 @@ export default function WorkerObraDetailPage() {
 
                         {/* Overtime toggle tab */}
                         <button
-                          onClick={() => setOvertimeOpen(isOvertimeOpen ? null : member.id)}
+                          onClick={() => canEditSelectedDate && setOvertimeOpen(isOvertimeOpen ? null : member.id)}
+                          disabled={!canEditSelectedDate}
                           className={cn(
                             "shrink-0 w-10 h-12 rounded-lg border flex flex-col items-center justify-center transition-all text-xs font-medium",
+                            !canEditSelectedDate && "opacity-60 cursor-not-allowed",
                             currentOT > 0
                               ? "bg-orange-500/15 border-orange-500/30 text-orange-400"
                               : "bg-slate-800/40 border-slate-700/40 text-slate-500 hover:text-slate-300",
@@ -904,14 +961,16 @@ export default function WorkerObraDetailPage() {
                         {/* Attendance button — large touch target */}
                         {(() => {
                           const isBajada = record?.status === "bajada"
+                          const bloqueado = isBajada || !canEditSelectedDate
                           return (
                             <button
-                              onClick={() => !isBajada && cycleAttendance(member.id, selectedDate)}
-                              disabled={isSaving || isBajada}
+                              onClick={() => !bloqueado && cycleAttendance(member.id, selectedDate)}
+                              disabled={isSaving || bloqueado}
                               className={cn(
                                 "shrink-0 w-16 h-12 rounded-xl border-2 flex flex-col items-center justify-center transition-all font-semibold",
                                 isSaving && "opacity-50",
-                                isBajada ? "cursor-not-allowed" : "active:scale-90",
+                                bloqueado ? "cursor-not-allowed" : "active:scale-90",
+                                !canEditSelectedDate && "opacity-60",
                                 cfg
                                   ? `${cfg.bg} ${cfg.border} ${cfg.color}`
                                   : "bg-slate-800/60 border-slate-700/50 text-slate-600"
@@ -1025,8 +1084,9 @@ export default function WorkerObraDetailPage() {
                         const cfg = record ? ATTENDANCE_CONFIG[record.status as AttendanceStatus] : null
                         const isSaving = savingCell === `${member.id}-${date}`
                         const isFuture = date > today
+                        const isClosed = !isDateEditable(date) && !isFuture // periodo ya cerrado
                         const isBajada = record?.status === "bajada"
-                        const isDisabled = isSaving || isFuture || isBajada
+                        const isDisabled = isSaving || isFuture || isClosed || isBajada
 
                         return (
                           <button
@@ -1035,8 +1095,11 @@ export default function WorkerObraDetailPage() {
                             disabled={isDisabled}
                             className={cn(
                               "w-9 h-9 rounded-lg border flex items-center justify-center transition-all text-sm font-bold",
-                              (isFuture || isBajada) && "cursor-not-allowed",
+                              (isFuture || isClosed || isBajada) && "cursor-not-allowed",
                               isFuture && !isBajada && "opacity-30",
+                              // Un periodo cerrado conserva el dato legible: es
+                              // historial que sí se consulta, sólo no se edita.
+                              isClosed && "opacity-60",
                               !isDisabled && "active:scale-90",
                               isSaving && "opacity-50",
                               cfg
