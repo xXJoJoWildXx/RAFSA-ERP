@@ -1,380 +1,551 @@
-// Requires: npm install jspdf
+/**
+ * Reporte general de captura de expedientes — RAFSA ERP
+ *
+ * Objetivo del documento: ver de un vistazo qué falta por capturar de cada
+ * empleado y revisar lo ya capturado para confirmar que esté correcto.
+ *
+ * Estructura:
+ *   1. Resumen con indicadores y los pendientes más frecuentes
+ *   2. Matrices de captura (datos y expediente) de los empleados activos
+ *   3. Ficha de cada empleado con los valores capturados y lo que falta
+ *
+ * Requiere: jspdf
+ */
 
-export type SalaryPdfData = {
-  real_salary: number | null
-  payroll_salary: number | null
-  bonus_amount: number | null
-  overtime_hour_cost: number | null
-  viatics_amount: number | null
-}
+import {
+  buildEmployeeAudit,
+  sortAudits,
+  missingRanking,
+  type EmployeeAudit,
+  type EmployeeAuditSource,
+  type CheckItem,
+} from "@/lib/employeeCompleteness"
 
-export type EmployeePdfData = {
-  id: string
-  full_name: string
-  status: string // "active" | "inactive"
-  hire_date: string | null
+type Doc = InstanceType<typeof import("jspdf").default>
 
-  tenure: string // "X años, Y meses, Z días"
-  roles: { name: string }[]
-  signedPhotoUrl: string | null
-  salary: SalaryPdfData | null
-}
+// ── Paleta ─────────────────────────────────────────────────────────────────
+const NAVY: [number, number, number] = [4, 21, 39]
+const BRAND: [number, number, number] = [1, 116, 189]
+const GREEN: [number, number, number] = [22, 163, 74]
+const RED: [number, number, number] = [220, 38, 38]
+const AMBER: [number, number, number] = [217, 119, 6]
+const INK: [number, number, number] = [30, 41, 59]
+const MUTED: [number, number, number] = [110, 123, 136]
+const HAIR: [number, number, number] = [214, 224, 233]
+const ZEBRA: [number, number, number] = [245, 249, 252]
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+// ── Métricas de página ─────────────────────────────────────────────────────
+const PW = 210
+const PH = 297
+const ML = 12
+const CW = PW - ML * 2 // 186
+const TOP = 26 // debajo del encabezado
+const BOTTOM = PH - 14
 
-async function imageUrlToBase64(url: string): Promise<string | null> {
-  try {
-    const res = await fetch(url)
-    if (!res.ok) return null
-    const blob = await res.blob()
-    return new Promise((resolve) => {
-      const reader = new FileReader()
-      reader.onloadend = () => resolve(reader.result as string)
-      reader.onerror = () => resolve(null)
-      reader.readAsDataURL(blob)
-    })
-  } catch {
-    return null
+// Columnas de las matrices: claves fijas (la residencia del foráneo es
+// condicional, así que sólo aparece en la ficha de detalle).
+const MATRIX_DATOS = [
+  { key: "photo", short: "Foto" },
+  { key: "birth_date", short: "Nac" },
+  { key: "rfc", short: "RFC" },
+  { key: "imss_number", short: "NSS" },
+  { key: "hire_date", short: "Ing" },
+  { key: "roles", short: "Rol" },
+  { key: "payroll_code", short: "Cód" },
+  { key: "real_salary", short: "Sdo" },
+  { key: "overtime", short: "HEx" },
+  { key: "bank_name", short: "Bco" },
+  { key: "account_number", short: "Cta" },
+  { key: "clabe", short: "CLB" },
+]
+
+const MATRIX_EXPEDIENTE = [
+  { key: "curp", short: "CURP" },
+  { key: "ine", short: "INE" },
+  { key: "tax_certificate", short: "Fisc" },
+  { key: "birth_certificate", short: "Acta" },
+  { key: "address_proof", short: "Dom" },
+  { key: "imss", short: "IMSS" },
+  { key: "imss_alta", short: "Alta" },
+  { key: "dc3", short: "DC-3" },
+]
+
+// ── Utilidades de dibujo ───────────────────────────────────────────────────
+
+function itemByKey(audit: EmployeeAudit, key: string): CheckItem | null {
+  for (const g of audit.groups) {
+    const found = g.items.find((i) => i.key === key)
+    if (found) return found
   }
+  return null
 }
 
-function fmtMXN(val: number | null | undefined): string {
-  const n = typeof val === "number" ? val : 0
-  return new Intl.NumberFormat("es-MX", {
-    style: "currency",
-    currency: "MXN",
-    minimumFractionDigits: 2,
-  }).format(n)
+function fit(doc: Doc, text: string, maxW: number, size: number): string {
+  doc.setFontSize(size)
+  if (doc.getTextWidth(text) <= maxW) return text
+  let t = text
+  while (t.length > 1 && doc.getTextWidth(t + "...") > maxW) t = t.slice(0, -1)
+  return t + "..."
 }
 
-function fmtDate(d: string | null | undefined): string {
-  if (!d) return "No especificado"
-  try {
-    return new Date(d + "T12:00:00").toLocaleDateString("es-MX", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    })
-  } catch {
-    return d
-  }
-}
+function drawHeader(doc: Doc, subtitle: string): void {
+  doc.setFillColor(...NAVY)
+  doc.rect(0, 0, PW, 17, "F")
+  doc.setFillColor(...BRAND)
+  doc.rect(0, 17, PW, 1.2, "F")
 
-function truncate(text: string, maxLen: number): string {
-  return text.length > maxLen ? text.slice(0, maxLen - 1) + "..." : text
-}
-
-// ── Cover page ─────────────────────────────────────────────────────────────
-
-async function drawCoverPage(
-  doc: InstanceType<typeof import("jspdf").default>,
-  activeCount: number,
-  inactiveCount: number,
-): Promise<void> {
-  const PW = 210
-  const PH = 297
-
-  // Top bar
-  doc.setFillColor(30, 41, 59)           // slate-800
-  doc.rect(0, 0, PW, 22, "F")
-
-  // Bottom bar
-  doc.setFillColor(30, 41, 59)
-  doc.rect(0, PH - 14, PW, 14, "F")
-
-  // Logo from public folder
-  try {
-    const logoBase64 = await imageUrlToBase64("/brand/rafsa-logo.png")
-    if (logoBase64) {
-      // Logo original: 1748 x 1241 → scale to ~90mm wide
-      const logoW = 90
-      const logoH = Math.round((1241 / 1748) * logoW)  // ~63.7mm
-      doc.addImage(logoBase64, "PNG", (PW - logoW) / 2, 32, logoW, logoH)
-    }
-  } catch {
-    // fallback: just print company name
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(28)
-    doc.setTextColor(30, 41, 59)
-    doc.text("RAFSA", PW / 2, 70, { align: "center" })
-  }
-
-  // Divider line
-  doc.setDrawColor(203, 213, 225)        // slate-300
-  doc.setLineWidth(0.5)
-  doc.line(25, 106, PW - 25, 106)
-
-  // Document title
   doc.setFont("helvetica", "bold")
-  doc.setFontSize(20)
-  doc.setTextColor(15, 23, 42)           // slate-950
-  doc.text("DIRECTORIO DE EMPLEADOS", PW / 2, 120, { align: "center" })
+  doc.setFontSize(10)
+  doc.setTextColor(255, 255, 255)
+  doc.text("RAFSA INDUSTRIAL COATINGS", ML, 8)
 
-  // Subtitle
   doc.setFont("helvetica", "normal")
-  doc.setFontSize(10.5)
-  doc.setTextColor(100, 116, 139)        // slate-500
-  doc.text("Registro de personal, roles y datos salariales", PW / 2, 130, { align: "center" })
+  doc.setFontSize(7.5)
+  doc.setTextColor(150, 185, 215)
+  doc.text(subtitle, ML, 13)
+}
 
-  // Generation date
-  const today = new Date()
-  const dateStr = today.toLocaleDateString("es-MX", {
+function drawFooter(doc: Doc, page: number, generatedAt: string): void {
+  doc.setDrawColor(...HAIR)
+  doc.setLineWidth(0.3)
+  doc.line(ML, BOTTOM + 2, PW - ML, BOTTOM + 2)
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(6.8)
+  doc.setTextColor(...MUTED)
+  doc.text(`Generado el ${generatedAt}  |  Uso interno y confidencial`, ML, BOTTOM + 6)
+  doc.text(`Página ${page}`, PW - ML, BOTTOM + 6, { align: "right" })
+}
+
+/** Cuadrito de estado: verde si está capturado, rojo si falta. */
+function statusMark(doc: Doc, x: number, y: number, ok: boolean): void {
+  const s = 2.6
+  if (ok) {
+    doc.setFillColor(...GREEN)
+    doc.roundedRect(x - s / 2, y - s / 2, s, s, 0.6, 0.6, "F")
+  } else {
+    doc.setFillColor(255, 235, 235)
+    doc.setDrawColor(...RED)
+    doc.setLineWidth(0.4)
+    doc.roundedRect(x - s / 2, y - s / 2, s, s, 0.6, 0.6, "FD")
+  }
+}
+
+function progressBar(
+  doc: Doc,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  pct: number,
+  color: [number, number, number],
+): void {
+  doc.setFillColor(...HAIR)
+  doc.roundedRect(x, y, w, h, h / 2, h / 2, "F")
+  const filled = Math.max(0, Math.min(100, pct)) / 100
+  if (filled > 0) {
+    doc.setFillColor(...color)
+    doc.roundedRect(x, y, Math.max(w * filled, h), h, h / 2, h / 2, "F")
+  }
+}
+
+function pctColor(pct: number): [number, number, number] {
+  if (pct >= 90) return GREEN
+  if (pct >= 60) return AMBER
+  return RED
+}
+
+// ── 1. Resumen ─────────────────────────────────────────────────────────────
+
+function drawSummary(doc: Doc, audits: EmployeeAudit[], generatedAt: string): void {
+  drawHeader(doc, "Reporte de captura de expedientes")
+
+
+
+  const activos = audits.filter((a) => a.isActive)
+  const inactivos = audits.filter((a) => !a.isActive)
+  const completos = activos.filter((a) => a.isComplete)
+  const incompletos = activos.filter((a) => !a.isComplete)
+
+  const okTotal = activos.reduce((s, a) => s + a.okCount, 0)
+  const campoTotal = activos.reduce((s, a) => s + a.total, 0)
+  const avance = campoTotal > 0 ? Math.round((okTotal / campoTotal) * 100) : 0
+
+  let y = TOP + 4
+
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(18)
+  doc.setTextColor(...NAVY)
+  doc.text("Reporte general de empleados", ML, y)
+  y += 6
+
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(9)
+  doc.setTextColor(...MUTED)
+  doc.text(
+    "Control de información faltante y verificación de lo ya capturado.",
+    ML,
+    y,
+  )
+  y += 10
+
+  // ── Tarjetas de conteo ───────────────────────────────────────────────────
+  const cards: { label: string; value: string; color: [number, number, number] }[] = [
+    { label: "EMPLEADOS ACTIVOS", value: String(activos.length), color: GREEN },
+    { label: "CON FALTANTES", value: String(incompletos.length), color: RED },
+    { label: "EXPEDIENTE COMPLETO", value: String(completos.length), color: BRAND },
+    { label: "INACTIVOS", value: String(inactivos.length), color: MUTED },
+  ]
+  const gap = 4
+  const cardW = (CW - gap * (cards.length - 1)) / cards.length
+  const cardH = 22
+
+  cards.forEach((c, i) => {
+    const x = ML + i * (cardW + gap)
+    doc.setFillColor(250, 252, 254)
+    doc.setDrawColor(...HAIR)
+    doc.setLineWidth(0.3)
+    doc.roundedRect(x, y, cardW, cardH, 2, 2, "FD")
+    doc.setFillColor(...c.color)
+    doc.rect(x, y + 3, 1.2, cardH - 6, "F")
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(6.2)
+    doc.setTextColor(...MUTED)
+    doc.text(c.label, x + cardW / 2, y + 7, { align: "center" })
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(17)
+    doc.setTextColor(...c.color)
+    doc.text(c.value, x + cardW / 2, y + 17, { align: "center" })
+  })
+  y += cardH + 10
+
+  // ── Avance global ────────────────────────────────────────────────────────
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(10)
+  doc.setTextColor(...NAVY)
+  doc.text("Avance de captura de los empleados activos", ML, y)
+  y += 5
+
+  progressBar(doc, ML, y, CW - 24, 5, avance, pctColor(avance))
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(10)
+  doc.setTextColor(...pctColor(avance))
+  doc.text(`${avance}%`, PW - ML, y + 4.2, { align: "right" })
+  y += 8
+
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(7.5)
+  doc.setTextColor(...MUTED)
+  doc.text(
+    `${okTotal} de ${campoTotal} puntos de información capturados entre los ${activos.length} empleados activos.`,
+    ML,
+    y,
+  )
+  y += 10
+
+  // ── Pendientes más frecuentes ────────────────────────────────────────────
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(10)
+  doc.setTextColor(...NAVY)
+  doc.text("Pendientes más frecuentes", ML, y)
+  y += 2
+  doc.setFont("helvetica", "normal")
+  doc.setFontSize(7.5)
+  doc.setTextColor(...MUTED)
+  doc.text("Por dónde conviene empezar: lo que le falta a más gente.", ML, y + 4)
+  y += 9
+
+  const ranking = missingRanking(audits).slice(0, 20)
+  const barX = ML + 96
+  const barW = CW - 96 - 16
+
+  if (ranking.length === 0) {
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(9)
+    doc.setTextColor(...GREEN)
+    doc.text("No hay pendientes: todos los empleados activos están completos.", ML, y)
+  } else {
+    ranking.forEach((r, i) => {
+      const rowY = y + i * 6.4
+      if (i % 2 === 0) {
+        doc.setFillColor(...ZEBRA)
+        doc.rect(ML - 1.5, rowY - 3.6, CW + 3, 6, "F")
+      }
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(7.8)
+      doc.setTextColor(...INK)
+      doc.text(fit(doc, r.label, 70, 7.8), ML, rowY)
+
+      doc.setFontSize(6.5)
+      doc.setTextColor(...MUTED)
+      doc.text(fit(doc, r.group, 22, 6.5), ML + 72, rowY)
+
+      const pct = activos.length > 0 ? (r.count / activos.length) * 100 : 0
+      progressBar(doc, barX, rowY - 2.6, barW, 3.2, pct, RED)
+
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(7.8)
+      doc.setTextColor(...RED)
+      doc.text(String(r.count), PW - ML, rowY, { align: "right" })
+    })
+  }
+}
+
+// ── 2. Matriz de captura ───────────────────────────────────────────────────
+
+type MatrixCol = { key: string; short: string }
+
+function drawMatrix(
+  doc: Doc,
+  audits: EmployeeAudit[],
+  cols: MatrixCol[],
+  title: string,
+  hint: string,
+  generatedAt: string,
+  pageRef: { n: number },
+): void {
+  const NAME_W = 70
+  const FALTA_W = 14
+  const colW = (CW - NAME_W - FALTA_W) / cols.length
+  const ROW_H = 5.4
+
+  let first = true
+  let y = 0
+
+  const startPage = () => {
+    doc.addPage()
+    pageRef.n += 1
+    drawHeader(doc, "Matriz de captura")
+    drawFooter(doc, pageRef.n, generatedAt)
+    y = TOP + 2
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(12)
+    doc.setTextColor(...NAVY)
+    doc.text(title + (first ? "" : " (continuación)"), ML, y)
+    y += 5
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(7)
+    doc.setTextColor(...MUTED)
+    doc.text(hint, ML, y)
+    y += 6
+
+    // Encabezado de columnas
+    doc.setFillColor(...NAVY)
+    doc.rect(ML, y, CW, 6, "F")
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(6.4)
+    doc.setTextColor(255, 255, 255)
+    doc.text("EMPLEADO", ML + 2, y + 4)
+    cols.forEach((c, i) => {
+      doc.text(c.short, ML + NAME_W + colW * i + colW / 2, y + 4, { align: "center" })
+    })
+    doc.text("FALTAN", PW - ML - FALTA_W / 2, y + 4, { align: "center" })
+    y += 6
+    first = false
+  }
+
+  startPage()
+
+  audits.forEach((a, idx) => {
+    if (y + ROW_H > BOTTOM - 4) startPage()
+
+    if (idx % 2 === 0) {
+      doc.setFillColor(...ZEBRA)
+      doc.rect(ML, y, CW, ROW_H, "F")
+    }
+
+    const faltan = cols.filter((c) => {
+      const it = itemByKey(a, c.key)
+      return it ? !it.ok : false
+    }).length
+
+    doc.setFont("helvetica", faltan > 0 ? "bold" : "normal")
+    doc.setFontSize(7)
+    doc.setTextColor(...(faltan > 0 ? INK : MUTED))
+    doc.text(fit(doc, a.full_name, NAME_W - 4, 7), ML + 2, y + 3.7)
+
+    cols.forEach((c, i) => {
+      const it = itemByKey(a, c.key)
+      if (!it) return
+      statusMark(doc, ML + NAME_W + colW * i + colW / 2, y + 2.7, it.ok)
+    })
+
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(7)
+    doc.setTextColor(...(faltan > 0 ? RED : GREEN))
+    doc.text(
+      faltan > 0 ? String(faltan) : "OK",
+      PW - ML - FALTA_W / 2,
+      y + 3.7,
+      { align: "center" },
+    )
+
+    doc.setDrawColor(...HAIR)
+    doc.setLineWidth(0.2)
+    doc.line(ML, y + ROW_H, PW - ML, y + ROW_H)
+
+    y += ROW_H
+  })
+
+  // Leyenda
+  y += 4
+  if (y + 8 < BOTTOM) {
+    statusMark(doc, ML + 1.5, y, true)
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(6.8)
+    doc.setTextColor(...MUTED)
+    doc.text("Capturado", ML + 5, y + 1)
+    statusMark(doc, ML + 30, y, false)
+    doc.text("Falta por capturar", ML + 33.5, y + 1)
+  }
+}
+
+// ── 3. Fichas de detalle ───────────────────────────────────────────────────
+
+function drawEmployeeCard(doc: Doc, a: EmployeeAudit, y: number, index: number): void {
+  const COL_W = (CW - 6) / 2
+  const LH = 3.7
+
+  // Encabezado de la ficha
+  doc.setFont("helvetica", "bold")
+  doc.setFontSize(9.5)
+  doc.setTextColor(...NAVY)
+  doc.text(`${index}. ${fit(doc, a.full_name, 110, 9.5)}`, ML, y)
+
+  if (!a.isActive) {
+    doc.setFillColor(...MUTED)
+    doc.roundedRect(PW - ML - 22, y - 3.4, 22, 4.6, 1.2, 1.2, "F")
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(6.4)
+    doc.setTextColor(255, 255, 255)
+    doc.text("INACTIVO", PW - ML - 11, y - 0.2, { align: "center" })
+  } else {
+    const col = a.isComplete ? GREEN : pctColor(a.percent)
+    progressBar(doc, PW - ML - 44, y - 2.6, 30, 3.2, a.percent, col)
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(7.4)
+    doc.setTextColor(...col)
+    doc.text(
+      a.isComplete ? "Completo" : `Faltan ${a.missingCount}`,
+      PW - ML,
+      y,
+      { align: "right" },
+    )
+  }
+
+  doc.setDrawColor(...HAIR)
+  doc.setLineWidth(0.3)
+  doc.line(ML, y + 1.8, PW - ML, y + 1.8)
+
+  // Los inactivos no se evalúan: sólo se deja constancia
+  if (!a.isActive) {
+    doc.setFont("helvetica", "italic")
+    doc.setFontSize(7.4)
+    doc.setTextColor(...MUTED)
+    doc.text(
+      "Empleado inactivo: no se evalúa la completitud de su expediente.",
+      ML,
+      y + 7,
+    )
+    return
+  }
+
+  // Dos columnas: izquierda identidad + laboral, derecha bancario + expediente
+  const columnas = [
+    { x: ML, groups: a.groups.filter((g) => g.key === "identidad" || g.key === "laboral") },
+    { x: ML + COL_W + 6, groups: a.groups.filter((g) => g.key === "bancario" || g.key === "expediente") },
+  ]
+
+  for (const col of columnas) {
+    let cy = y + 6
+    for (const g of col.groups) {
+      doc.setFont("helvetica", "bold")
+      doc.setFontSize(6.4)
+      doc.setTextColor(...BRAND)
+      doc.text(`${g.label.toUpperCase()}  ${g.okCount}/${g.total}`, col.x, cy)
+      cy += LH + 0.6
+
+      for (const it of g.items) {
+        statusMark(doc, col.x + 1.3, cy - 1, it.ok)
+
+        doc.setFont("helvetica", "normal")
+        doc.setFontSize(6.8)
+        doc.setTextColor(...MUTED)
+        const labelTxt = fit(doc, it.label, 36, 6.8)
+        doc.text(labelTxt, col.x + 4, cy)
+
+        doc.setFont("helvetica", it.ok ? "normal" : "bold")
+        doc.setTextColor(...(it.ok ? INK : RED))
+        doc.text(fit(doc, it.value, COL_W - 44, 6.8), col.x + 42, cy)
+
+        cy += LH
+      }
+      cy += 1.4
+    }
+  }
+}
+
+// ── Export principal ───────────────────────────────────────────────────────
+
+export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Promise<void> {
+  const { default: jsPDF } = await import("jspdf")
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
+
+  const generatedAt = new Date().toLocaleDateString("es-MX", {
     day: "2-digit",
     month: "long",
     year: "numeric",
   })
-  doc.setFontSize(9.5)
-  doc.setTextColor(148, 163, 184)        // slate-400
-  doc.text(`Generado el ${dateStr}`, PW / 2, 141, { align: "center" })
 
-  // Stats card background
-  const cardX = 30
-  const cardY = 155
-  const cardW = PW - 60
-  const cardH = 62
-  doc.setFillColor(248, 250, 252)        // slate-50
-  doc.roundedRect(cardX, cardY, cardW, cardH, 3, 3, "F")
-  doc.setDrawColor(226, 232, 240)        // slate-200
-  doc.setLineWidth(0.3)
-  doc.roundedRect(cardX, cardY, cardW, cardH, 3, 3, "S")
+  const audits = sortAudits(sources.map(buildEmployeeAudit))
+  const activos = audits.filter((a) => a.isActive)
 
-  // "RESUMEN" label
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(8)
-  doc.setTextColor(100, 116, 139)
-  doc.text("RESUMEN", cardX + cardW / 2, cardY + 9, { align: "center" })
+  const pageRef = { n: 1 }
 
-  // Vertical divider inside card
-  doc.setDrawColor(226, 232, 240)
-  doc.setLineWidth(0.3)
-  doc.line(PW / 2, cardY + 14, PW / 2, cardY + cardH - 8)
+  // 1. Resumen
+  drawSummary(doc, audits, generatedAt)
+  drawFooter(doc, pageRef.n, generatedAt)
 
-  // Active employees
-  const col1X = cardX + cardW / 4
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8)
-  doc.setTextColor(100, 116, 139)
-  doc.text("EMPLEADOS ACTIVOS", col1X, cardY + 21, { align: "center" })
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(30)
-  doc.setTextColor(34, 197, 94)          // green-500
-  doc.text(String(activeCount), col1X, cardY + 44, { align: "center" })
-
-  // Inactive employees
-  const col2X = cardX + (cardW * 3) / 4
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8)
-  doc.setTextColor(100, 116, 139)
-  doc.text("EMPLEADOS INACTIVOS", col2X, cardY + 21, { align: "center" })
-  doc.setFont("helvetica", "bold")
-  doc.setFontSize(30)
-  doc.setTextColor(239, 68, 68)          // red-500
-  doc.text(String(inactiveCount), col2X, cardY + 44, { align: "center" })
-
-  // Total line at bottom of card
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(8.5)
-  doc.setTextColor(100, 116, 139)
-  doc.text(
-    `Total: ${activeCount + inactiveCount} empleados registrados`,
-    PW / 2,
-    cardY + cardH - 3,
-    { align: "center" }
-  )
-
-  // Confidentiality note above bottom bar
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7.5)
-  doc.setTextColor(148, 163, 184)
-  doc.text("Documento de uso interno y confidencial", PW / 2, PH - 18, { align: "center" })
-
-  // White text in bottom bar
-  doc.setFont("helvetica", "normal")
-  doc.setFontSize(7.5)
-  doc.setTextColor(255, 255, 255)
-  doc.text("RAFSA  |  Recursos Humanos", PW / 2, PH - 5, { align: "center" })
-}
-
-// ── Main export ────────────────────────────────────────────────────────────
-
-export async function generateEmployeesPdf(
-  employees: EmployeePdfData[],
-  activeCount: number,
-  inactiveCount: number,
-): Promise<void> {
-  // Dynamic import so Next.js doesn't try to SSR jsPDF
-  const { default: jsPDF } = await import("jspdf")
-
-  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
-
-  // Layout constants
-  const PW = 210
-  const MT = 12        // margin top / bottom
-  const ML = 12        // margin left / right
-  const CW = PW - ML * 2   // content width = 186
-  const EPP = 3              // employees per page
-  const BH = (297 - MT * 2) / EPP  // block height ~91mm
-
-  const PHOTO_SIZE = 36
-  const PHOTO_X = ML
-  const INFO_X = ML + PHOTO_SIZE + 7   // 55
-  const INFO_W = CW - PHOTO_SIZE - 7   // 143
-
-  // ── Cover page (first page) ──────────────────────────────────────────────
-  await drawCoverPage(doc, activeCount, inactiveCount)
-
-  // ── Convert all photos to base64 in parallel ─────────────────────────────
-  const photos = await Promise.all(
-    employees.map((e) =>
-      e.signedPhotoUrl ? imageUrlToBase64(e.signedPhotoUrl) : Promise.resolve(null)
+  // 2. Matrices (sólo activos: los inactivos ya no se capturan)
+  if (activos.length > 0) {
+    drawMatrix(
+      doc,
+      activos,
+      MATRIX_DATOS,
+      "Matriz de datos del empleado",
+      "Foto / Nacimiento / RFC / NSS / Ingreso / Rol / Código de nómina / Sueldo / Hora extra / Banco / Cuenta / CLABE",
+      generatedAt,
+      pageRef,
     )
-  )
+    drawMatrix(
+      doc,
+      activos,
+      MATRIX_EXPEDIENTE,
+      "Matriz del expediente de documentos",
+      "CURP / INE / Constancia fiscal / Acta / Comprobante de domicilio / IMSS / Alta IMSS / DC-3",
+      generatedAt,
+      pageRef,
+    )
+  }
 
-  // ── Draw each employee (always starts on a new page after cover) ──────────
-  for (let i = 0; i < employees.length; i++) {
-    const emp = employees[i]
-    const blockIndex = i % EPP
+  // 3. Fichas de detalle
+  const CARD_H = 64
+  const perPage = Math.floor((BOTTOM - TOP) / CARD_H)
 
-    // New page: first employee gets a new page after cover, then every 3
-    if (blockIndex === 0) {
+  audits.forEach((a, i) => {
+    const slot = i % perPage
+    if (slot === 0) {
       doc.addPage()
+      pageRef.n += 1
+      drawHeader(doc, "Detalle por empleado")
+      drawFooter(doc, pageRef.n, generatedAt)
     }
+    drawEmployeeCard(doc, a, TOP + slot * CARD_H + 4, i + 1)
+  })
 
-    const yB = MT + blockIndex * BH   // top of this block
-
-    // ── Photo ────────────────────────────────────────────────────────────
-    const photoB64 = photos[i]
-    if (photoB64) {
-      try {
-        doc.addImage(photoB64, "JPEG", PHOTO_X, yB + 4, PHOTO_SIZE, PHOTO_SIZE)
-      } catch {
-        // If format is unexpected, draw placeholder
-        doc.setFillColor(220, 220, 220)
-        doc.rect(PHOTO_X, yB + 4, PHOTO_SIZE, PHOTO_SIZE, "F")
-      }
-    } else {
-      // Grey placeholder
-      doc.setFillColor(220, 220, 220)
-      doc.rect(PHOTO_X, yB + 4, PHOTO_SIZE, PHOTO_SIZE, "F")
-      doc.setFontSize(7.5)
-      doc.setTextColor(140, 140, 140)
-      doc.text("Sin foto", PHOTO_X + PHOTO_SIZE / 2, yB + 4 + PHOTO_SIZE / 2 + 1, { align: "center" })
-    }
-
-    // ── Name ─────────────────────────────────────────────────────────────
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(13)
-    doc.setTextColor(20, 20, 20)
-    doc.text(truncate(emp.full_name, 38), INFO_X, yB + 11)
-
-    // ── Status badge ─────────────────────────────────────────────────────
-    const isActive = (emp.status || "").toLowerCase() === "active"
-    const badgeLabel = isActive ? "Activo" : "Inactivo"
-    const badgeBg: [number, number, number] = isActive ? [34, 197, 94] : [239, 68, 68]
-    const badgeW = 22
-    doc.setFillColor(...badgeBg)
-    doc.roundedRect(INFO_X, yB + 14, badgeW, 5.5, 1.5, 1.5, "F")
-    doc.setFontSize(7.5)
-    doc.setFont("helvetica", "bold")
-    doc.setTextColor(255, 255, 255)
-    doc.text(badgeLabel, INFO_X + badgeW / 2, yB + 18.1, { align: "center" })
-
-    // ── Roles ─────────────────────────────────────────────────────────────
-    const rolesText =
-      emp.roles.length > 0
-        ? emp.roles.map((r) => r.name).join(", ")
-        : "Sin roles asignados"
-    doc.setFont("helvetica", "normal")
-    doc.setFontSize(9)
-    doc.setTextColor(80, 80, 80)
-    const roleLines = doc.splitTextToSize(truncate(rolesText, 90), INFO_W)
-    doc.text(roleLines.slice(0, 2), INFO_X, yB + 24)
-
-    // ── Dates ─────────────────────────────────────────────────────────────
-    const labelW = 27
-    doc.setFontSize(8.5)
-
-    doc.setFont("helvetica", "bold")
-    doc.setTextColor(100, 100, 100)
-    doc.text("Contratacion:", INFO_X, yB + 30)
-    doc.setFont("helvetica", "normal")
-    doc.setTextColor(30, 30, 30)
-    doc.text(fmtDate(emp.hire_date), INFO_X + labelW, yB + 30)
-
-    doc.setFont("helvetica", "bold")
-    doc.setTextColor(100, 100, 100)
-    doc.text("Tiempo:", INFO_X, yB + 36)
-    doc.setFont("helvetica", "normal")
-    doc.setTextColor(30, 30, 30)
-    doc.text(emp.tenure || "No especificado", INFO_X + labelW, yB + 36)
-
-    // ── Salary section ────────────────────────────────────────────────────
-    const salaryY = yB + 42
-
-    // Light background
-    doc.setFillColor(248, 250, 252)
-    doc.rect(ML, salaryY, CW, 37, "F")
-
-    // Subtle top border
-    doc.setDrawColor(226, 232, 240)
-    doc.setLineWidth(0.2)
-    doc.line(ML, salaryY, ML + CW, salaryY)
-
-    // Section title
-    doc.setFont("helvetica", "bold")
-    doc.setFontSize(7.5)
-    doc.setTextColor(100, 116, 139)
-    doc.text("SALARIOS", ML + 3, salaryY + 5.5)
-
-    // 4 fields: 2 on first row, 2 on second row
-    const s = emp.salary
-    const fields = [
-      { label: "Sueldo Real",    value: fmtMXN(s?.real_salary) },
-      { label: "Bonificacion",   value: fmtMXN(s?.bonus_amount) },
-      { label: "Hora Extra",     value: fmtMXN(s?.overtime_hour_cost) },
-      { label: "Viaticos",       value: fmtMXN(s?.viatics_amount) },
-    ]
-
-    const colW = CW / 2   // ~93mm per column
-    fields.forEach((field, idx) => {
-      const col = idx % 2
-      const row = Math.floor(idx / 2)
-      const fx = ML + col * colW + 3
-      const fy = salaryY + 10 + row * 14
-
-      doc.setFontSize(7.5)
-      doc.setFont("helvetica", "normal")
-      doc.setTextColor(120, 120, 120)
-      doc.text(field.label, fx, fy)
-
-      doc.setFontSize(10)
-      doc.setFont("helvetica", "bold")
-      doc.setTextColor(30, 30, 30)
-      doc.text(field.value, fx, fy + 5.5)
-    })
-
-    // ── Divider between employees ─────────────────────────────────────────
-    if (blockIndex < EPP - 1) {
-      doc.setDrawColor(203, 213, 225)
-      doc.setLineWidth(0.4)
-      doc.line(ML, yB + BH - 1.5, PW - ML, yB + BH - 1.5)
-    }
-  }
-
-  // Page numbers
-  const totalPages = doc.getNumberOfPages()
-  for (let p = 1; p <= totalPages; p++) {
-    doc.setPage(p)
-    doc.setFont("helvetica", "normal")
-    doc.setFontSize(7.5)
-    doc.setTextColor(160, 160, 160)
-    doc.text(
-      `Pagina ${p} de ${totalPages}`,
-      PW / 2,
-      297 - 5,
-      { align: "center" }
-    )
-  }
-
-  doc.save("empleados-rafsa.pdf")
+  const stamp = new Date().toISOString().slice(0, 10)
+  doc.save(`Reporte_Captura_Empleados_RAFSA_${stamp}.pdf`)
 }
