@@ -13,6 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import type { DateRange } from "react-day-picker"
 import { Plus, Trash2, UserPlus, Crown, FileDown, Loader2, CalendarDays, Check } from "lucide-react"
 import { generateTeamPdf, loadPhotoDataUrl, type ObraInfoPDF, type TeamMemberPDF } from "@/lib/teamPdf"
+import { useRoleOptions, roleLabelFrom } from "@/lib/roleCatalog"
 import { logActivity } from "@/lib/activityLog"
 
 type EmployeeRow = {
@@ -66,20 +67,8 @@ type Props = {
  * - role_on_site = 'director_obra' => Director de Obra (rol unico activo por obra)
  * - el resto corresponden a los codigos del catalogo employee_roles_catalog
  */
-const ROLE_ON_SITE_OPTIONS = [
-  { value: "director_obra", label: "Director de Obra" },
-  { value: "pintor_muros_tiltup", label: "Pintor de muros tilt-up" },
-  { value: "pintor_estructura", label: "Pintor de estructura" },
-  { value: "oficial_pastero", label: "Oficial Pastero" },
-  { value: "pintor_tablaroca", label: "Pintor de Tablaroca" },
-  { value: "ayudante_obra", label: "Ayudante de Obra" },
-]
-
-function normalizeRoleLabel(v: string | null) {
-  if (!v) return "-"
-  const found = ROLE_ON_SITE_OPTIONS.find((x) => x.value === v)
-  return found?.label ?? v
-}
+// Los roles ya no se escriben aquí: salen de employee_roles_catalog.
+// Ver lib/roleCatalog.ts
 
 function todayISO() {
   const d = new Date()
@@ -139,6 +128,17 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
   const [search, setSearch] = useState("")
   const [roleFilter, setRoleFilter] = useState<"all" | string>("all")
 
+  // Catálogo de roles (única fuente de verdad: employee_roles_catalog)
+  const { options: roleOptions, labelMap: roleLabelMap } = useRoleOptions()
+  const normalizeRoleLabel = (v: string | null) => roleLabelFrom(roleLabelMap, v, "-")
+
+  // Rol sugerido al agregar a alguien: el último del catálogo que no sea
+  // director (por convención, el puesto más general de la lista).
+  const defaultRoleCode = useMemo(() => {
+    const sinDirector = roleOptions.filter((r) => r.value !== "director_obra")
+    return sinDirector.length > 0 ? sinDirector[sinDirector.length - 1].value : ""
+  }, [roleOptions])
+
   // modal add
   const [addOpen, setAddOpen] = useState(false)
   const [savingAdd, setSavingAdd] = useState(false)
@@ -149,8 +149,15 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
 
   const [addForm, setAddForm] = useState({
     employee_id: "",
-    role_on_site: "ayudante_obra",
+    role_on_site: "",
   })
+
+  // El catálogo llega de forma asíncrona: en cuanto está, se completa el rol
+  // sugerido si todavía no hay uno elegido.
+  useEffect(() => {
+    if (!defaultRoleCode) return
+    setAddForm((prev) => (prev.role_on_site ? prev : { ...prev, role_on_site: defaultRoleCode }))
+  }, [defaultRoleCode])
 
   // Segundo slot de Director de Obra
   const [showSecondSlot, setShowSecondSlot] = useState(false)
@@ -292,7 +299,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
   async function handleOpenAdd() {
     setError(null)
     setDirectorMode(false)
-    setAddForm({ employee_id: "", role_on_site: "ayudante_obra" })
+    setAddForm({ employee_id: "", role_on_site: defaultRoleCode })
     setAddOpen(true)
     await fetchEmployees()
   }
@@ -485,7 +492,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
           photoDataUrl:  photoCache[m.employee_id] ?? null,
         }))
 
-      await generateTeamPdf(obraInfo, pdfMembers, new Date(), generatedBy)
+      await generateTeamPdf(obraInfo, pdfMembers, new Date(), generatedBy, roleLabelMap)
     } catch (err) {
       console.error("generateTeamPdf error:", err)
     } finally {
@@ -981,7 +988,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
               </SelectTrigger>
               <SelectContent className={selectContentCls}>
                 <SelectItem value="all">Todos</SelectItem>
-                {ROLE_ON_SITE_OPTIONS.map((r) => (
+                {roleOptions.map((r) => (
                   <SelectItem key={r.value} value={r.value}>
                     {r.label}
                   </SelectItem>
@@ -1308,7 +1315,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent className={selectContentCls}>
-                    {ROLE_ON_SITE_OPTIONS.filter((r) => r.value !== "director_obra").map((r) => (
+                    {roleOptions.filter((r) => r.value !== "director_obra").map((r) => (
                       <SelectItem key={r.value} value={r.value}>
                         {r.label}
                       </SelectItem>

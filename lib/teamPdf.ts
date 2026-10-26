@@ -39,18 +39,25 @@ export type ObraInfoPDF = {
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
-const ROLE_LABELS: Record<string, string> = {
-  director_obra:        "Director de Obra",
-  pintor_muros_tiltup:  "Pintor de muros tilt-up",
-  pintor_estructura:    "Pintor de estructura",
-  oficial_pastero:      "Oficial Pastero",
-  pintor_tablaroca:     "Pintor de Tablaroca",
-  ayudante_obra:        "Ayudante de Obra",
-}
+
+/**
+ * Diccionario de roles que usa este reporte.
+ *
+ * Ya no está escrito aquí: lo manda generateTeamPdf desde el catálogo de la
+ * base (employee_roles_catalog). Se guarda a nivel de módulo porque roleLabel
+ * se usa dentro de varias funciones de dibujo y pasarlo por parámetro a todas
+ * no aportaba nada. Se reasigna al inicio de cada generación.
+ */
+let roleLabels: Record<string, string> = {}
 
 function roleLabel(v: string | null): string {
   if (!v) return "Sin rol"
-  return ROLE_LABELS[v] ?? v
+  if (roleLabels[v]) return roleLabels[v]
+  // Rol desactivado del catálogo con asignaciones viejas: se formatea el código
+  return v
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ")
 }
 
 function calcAge(birthDate: string | null): string {
@@ -480,7 +487,11 @@ export async function generateTeamPdf(
   members: TeamMemberPDF[],
   date: Date = new Date(),
   generatedBy = "Sistema",
+  /** Códigos de rol → nombre, tomados del catálogo de la base. */
+  roleLabelMap: Record<string, string> = {},
 ): Promise<void> {
+  roleLabels = roleLabelMap
+
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" })
 
   // Logo
