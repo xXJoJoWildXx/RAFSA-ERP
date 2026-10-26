@@ -14,7 +14,7 @@ import {
 import {
   ClipboardList, Eye, Upload, CheckCircle2, XCircle, Loader2, Search,
   Trash2, FileText, Truck, Download, AlertTriangle, FileCheck2, PackageCheck, FileCode2,
-  Info, X,
+  Info, X, ChevronDown, Building2, HardHat,
 } from "lucide-react"
 import {
   InventoryProduct, InventoryOrder, OrderItem, OrderInvoice, CfdiData,
@@ -23,7 +23,8 @@ import {
 } from "@/lib/inventory"
 
 type OrderRow = InventoryOrder & { obra_name?: string | null; item_count?: number; invoice_count?: number }
-type Obra = { id: string; name: string; code: string | null }
+type Obra = { id: string; name: string; code: string | null; empresa_id: string | null }
+type Empresa = { id: string; name: string }
 type Draft = { product: InventoryProduct; quantity: string }
 
 export function InventoryOrders({ role, headerRight }: { role: "admin" | "almacen"; headerRight?: React.ReactNode }) {
@@ -31,6 +32,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
   const [orders, setOrders] = useState<OrderRow[]>([])
   const [products, setProducts] = useState<InventoryProduct[]>([])
   const [obras, setObras] = useState<Obra[]>([])
+  const [empresas, setEmpresas] = useState<Empresa[]>([])
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
@@ -38,6 +40,9 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
+  // La obra se elige en dos pasos: primero la empresa. Hay obras con el mismo
+  // nombre en empresas distintas y de un solo listado no se distinguían.
+  const [newEmpresa, setNewEmpresa] = useState("")
   const [newObra, setNewObra] = useState("")
   const [newNotes, setNewNotes] = useState("")
   const [drafts, setDrafts] = useState<Draft[]>([])
@@ -91,12 +96,41 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
   }, [])
 
   const loadRefs = useCallback(async () => {
-    const [{ data: prods }, { data: obs }] = await Promise.all([
-      supabase.from("inventory_products").select("*").eq("is_active", true).order("descripcion"),
-      supabase.from("obras").select("id, name, code").not("status", "eq", "closed").order("name"),
+    // Supabase corta cualquier consulta en 1000 filas. El catálogo ya pasa de
+    // ese número, así que hay que pedirlo por bloques: con un solo select los
+    // productos que quedaban fuera del corte nunca aparecían en el buscador.
+    const PAGE = 1000
+    const todos: InventoryProduct[] = []
+    for (let desde = 0; ; desde += PAGE) {
+      const { data, error } = await supabase
+        .from("inventory_products")
+        .select("*")
+        .eq("is_active", true)
+        .order("descripcion")
+        .order("codigo")
+        .range(desde, desde + PAGE - 1)
+
+      if (error) {
+        console.error("Error cargando productos:", error)
+        break
+      }
+      const bloque = (data ?? []) as InventoryProduct[]
+      todos.push(...bloque)
+      if (bloque.length < PAGE) break // último bloque
+    }
+
+    const [{ data: obs }, { data: emps }] = await Promise.all([
+      supabase
+        .from("obras")
+        .select("id, name, code, empresa_id")
+        .not("status", "eq", "closed")
+        .order("name"),
+      supabase.from("empresas").select("id, name").order("name"),
     ])
-    setProducts((prods ?? []) as InventoryProduct[])
+
+    setProducts(todos)
     setObras((obs ?? []) as Obra[])
+    setEmpresas((emps ?? []) as Empresa[])
   }, [])
 
   useEffect(() => { loadOrders(); loadRefs() }, [loadOrders, loadRefs])
@@ -114,7 +148,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   // ─── Create order ───
   function openCreate() {
-    setNewObra(""); setNewNotes(""); setDrafts([]); setProdSearch("")
+    setNewEmpresa(""); setNewObra(""); setNewNotes(""); setDrafts([]); setProdSearch("")
     setCreateOpen(true)
   }
   function addDraft(p: InventoryProduct) {
@@ -126,6 +160,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   async function createOrder() {
     if (drafts.length === 0) return
+    if (!newEmpresa) { notify("Selecciona la empresa.", "warning"); return }
     if (!newObra) { notify("Selecciona la obra destino.", "warning"); return }
     if (drafts.some((d) => !(Number(d.quantity) > 0))) { notify("Todas las cantidades deben ser mayores a 0.", "warning"); return }
     setBusy(true)
@@ -354,6 +389,18 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     notify(`Orden ${folio} cancelada.`, "info")
   }
 
+  // Sólo las obras de la empresa seleccionada
+  const obrasDeEmpresa = useMemo(
+    () => (newEmpresa ? obras.filter((o) => o.empresa_id === newEmpresa) : []),
+    [obras, newEmpresa],
+  )
+
+  // Las empresas que no tienen obras abiertas no sirven aquí
+  const empresasConObras = useMemo(
+    () => empresas.filter((e) => obras.some((o) => o.empresa_id === e.id)),
+    [empresas, obras],
+  )
+
   const prodResults = useMemo(() => {
     if (!prodSearch) return []
     const q = prodSearch.toLowerCase()
@@ -425,9 +472,17 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
       {/* Filters */}
       <div className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-4 flex items-center gap-2 flex-wrap">
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
-          <option value="all">Todos los estados</option><option value="pending">Pendiente</option><option value="in_progress">En proceso</option><option value="delivered">Entregada · factura pendiente</option><option value="completed">Completada</option><option value="cancelled">Cancelada</option>
-        </select>
+        <div className="group relative w-full sm:w-64">
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
+            <option value="all">Todos los estados</option>
+            <option value="pending">Pendiente</option>
+            <option value="in_progress">En proceso</option>
+            <option value="delivered">Entregada · factura pendiente</option>
+            <option value="completed">Completada</option>
+            <option value="cancelled">Cancelada</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 transition-colors group-hover:text-white" />
+        </div>
         <span className="ml-auto text-xs text-slate-500">{filtered.length} orden{filtered.length !== 1 ? "es" : ""}</span>
       </div>
 
@@ -484,12 +539,48 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 mt-2 max-h-[72vh] overflow-y-auto pr-1">
-            <Field label="Obra destino *">
-              <select value={newObra} onChange={(e) => setNewObra(e.target.value)} className={selectCls}>
-                <option value="">Selecciona una obra…</option>
-                {obras.map((o) => <option key={o.id} value={o.id}>{o.code ? `${o.code} · ` : ""}{o.name}</option>)}
-              </select>
-            </Field>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <SelectField
+                label="Empresa *"
+                icon={Building2}
+                value={newEmpresa}
+                onChange={(v) => {
+                  setNewEmpresa(v)
+                  setNewObra("") // la obra anterior ya no pertenece a esta empresa
+                }}
+              >
+                <option value="">Selecciona una empresa…</option>
+                {empresasConObras.map((e) => (
+                  <option key={e.id} value={e.id}>{e.name}</option>
+                ))}
+              </SelectField>
+
+              <SelectField
+                label="Obra destino *"
+                icon={HardHat}
+                value={newObra}
+                onChange={setNewObra}
+                disabled={!newEmpresa}
+                hint={
+                  newEmpresa && obrasDeEmpresa.length > 0
+                    ? `${obrasDeEmpresa.length} ${obrasDeEmpresa.length === 1 ? "obra abierta" : "obras abiertas"}`
+                    : undefined
+                }
+              >
+                <option value="">
+                  {!newEmpresa
+                    ? "Primero elige la empresa"
+                    : obrasDeEmpresa.length === 0
+                      ? "Esta empresa no tiene obras abiertas"
+                      : "Selecciona una obra…"}
+                </option>
+                {obrasDeEmpresa.map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.code ? `${o.code} · ` : ""}{o.name}
+                  </option>
+                ))}
+              </SelectField>
+            </div>
 
             {/* Product picker */}
             <div>
@@ -744,7 +835,67 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 }
 
 const inputCls = "bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
-const selectCls = "h-10 rounded-md border border-slate-600 bg-slate-700/60 px-3 text-sm text-slate-100 focus:border-[#0174bd] outline-none"
+const selectCls =
+  "h-10 w-full appearance-none rounded-xl border border-slate-600 bg-slate-700/60 " +
+  "pl-3 pr-9 text-sm text-slate-100 outline-none cursor-pointer transition-all " +
+  "hover:border-slate-400 hover:bg-slate-700/80 " +
+  "focus:border-[#0174bd]/70 focus:bg-slate-900/70 focus:shadow-[0_0_0_3px_rgba(1,116,189,0.12)] " +
+  "disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-slate-600 " +
+  "[&>option]:bg-slate-800 [&>option]:text-slate-100"
+
+/**
+ * Select con etiqueta, icono opcional y flecha propia.
+ *
+ * El <select> nativo dibuja su flecha con el estilo del sistema operativo y no
+ * se puede tematizar, así que se oculta con appearance-none y se pinta aquí.
+ */
+function SelectField({
+  label,
+  icon: Icon,
+  value,
+  onChange,
+  disabled,
+  children,
+  hint,
+}: {
+  label: string
+  icon?: typeof ChevronDown
+  value: string
+  onChange: (v: string) => void
+  disabled?: boolean
+  children: React.ReactNode
+  hint?: string
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <label className="text-xs font-medium text-slate-400 flex items-center gap-1.5">
+        {Icon && <Icon className="w-3.5 h-3.5 text-slate-500" />}
+        {label}
+      </label>
+
+      <div className="group relative">
+        <select
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          className={selectCls}
+        >
+          {children}
+        </select>
+
+        <ChevronDown
+          className={`
+            pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4
+            transition-colors
+            ${disabled ? "text-slate-600" : "text-slate-500 group-hover:text-white"}
+          `}
+        />
+      </div>
+
+      {hint && <p className="text-[11px] text-slate-500">{hint}</p>}
+    </div>
+  )
+}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
