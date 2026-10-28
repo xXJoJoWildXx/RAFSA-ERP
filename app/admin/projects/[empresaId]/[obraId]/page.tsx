@@ -39,6 +39,8 @@ import {
   CheckCircle,
   Check,
   ChevronDown,
+  Ticket,
+  X,
 } from "lucide-react"
 import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
@@ -417,6 +419,10 @@ export default function ProjectDetailPage() {
   const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
   const [bajadaLoading, setBajadaLoading] = useState(false)
   const [processingBajadaId, setProcessingBajadaId] = useState<string | null>(null)
+  // Aviso flotante de ticket ganado al descartar una bajada
+  const [bajadaToast, setBajadaToast] = useState<
+    { name: string; balance: number } | null
+  >(null)
   // Bajadas de ticket confirmadas (extraordinarias)
   const [ticketBajadas, setTicketBajadas] = useState<BajadaNotification[]>([])
 
@@ -1464,13 +1470,20 @@ export default function ProjectDetailPage() {
     if (!silent) setBajadaLoading(false)
   }
 
+  // El aviso de ticket se retira solo a los 5 segundos
+  useEffect(() => {
+    if (!bajadaToast) return
+    const t = setTimeout(() => setBajadaToast(null), 5000)
+    return () => clearTimeout(t)
+  }, [bajadaToast])
+
   async function handleConfirmBajada(notification: BajadaNotification) {
     setProcessingBajadaId(notification.id)
     try {
       const { data: authData } = await supabase.auth.getUser()
       const resolvedBy = authData?.user?.id ?? null
 
-      // Confirmar consume un ticket de bajada (el mismo cupo que la extemporánea).
+      // La bajada recurrente no requiere ni consume ticket.
       const res = await fetch("/api/foraneo/confirm-bajada", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -1485,10 +1498,6 @@ export default function ProjectDetailPage() {
       })
       const json = await res.json().catch(() => ({}))
 
-      if (res.status === 409 || json?.error === "no_tickets") {
-        alert("Ya no hay tickets de bajada disponibles en este bimestre.")
-        return
-      }
       if (!res.ok) {
         alert(json?.error || "No se pudo confirmar la bajada.")
         return
@@ -1507,16 +1516,45 @@ export default function ProjectDetailPage() {
 
   async function handleDismissBajada(notification: BajadaNotification) {
     setProcessingBajadaId(notification.id)
-    const { data: authData } = await supabase.auth.getUser()
-    const resolvedBy = authData?.user?.id ?? null
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const resolvedBy = authData?.user?.id ?? null
 
-    await supabase
-      .from("bajada_notifications")
-      .update({ status: "dismissed", resolved_at: new Date().toISOString(), resolved_by: resolvedBy })
-      .eq("id", notification.id)
+      // Descartar significa que el trabajador no tomará esta bajada: ese viaje
+      // se guarda como ticket para una fecha posterior.
+      const res = await fetch("/api/foraneo/dismiss-bajada", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notificationId: notification.id,
+          employeeId: notification.employee_id,
+          start: notification.bajada_date,
+          userId: resolvedBy,
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
 
-    setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
-    setProcessingBajadaId(null)
+      if (!res.ok) {
+        alert(json?.error || "No se pudo descartar la bajada.")
+        return
+      }
+
+      setBajadaNotifications((prev: BajadaNotification[]) =>
+        prev.filter((n: BajadaNotification) => n.id !== notification.id),
+      )
+
+      if (json?.granted) {
+        setBajadaToast({
+          name: notification.employee_name ?? "el trabajador",
+          balance: Number(json.balance) || 0,
+        })
+      }
+    } catch (e) {
+      console.error("dismissBajada error:", e)
+      alert("No se pudo descartar la bajada.")
+    } finally {
+      setProcessingBajadaId(null)
+    }
   }
 
   async function loadData() {
@@ -1805,7 +1843,7 @@ export default function ProjectDetailPage() {
     if (!error && data) {
       setObra(data as ObraRow)
       logActivity({
-        event_type: "obra.status_updated",
+        event_type: "obra.status_changed",
         entity_type: "obra",
         entity_id: obra.id,
         entity_label: obra.name,
@@ -2362,6 +2400,11 @@ export default function ProjectDetailPage() {
                   </Badge>
                 </CardHeader>
                 <CardContent className="space-y-3">
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Confirmar no consume tickets. Si se descarta, ese viaje se guarda
+                    como ticket para usarlo en una fecha posterior.
+                  </p>
+
                   {bajadaNotifications.map((n: BajadaNotification) => {
                     const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
                     const salidaLabel = new Date(n.bajada_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
@@ -2395,6 +2438,7 @@ export default function ProjectDetailPage() {
                             variant="outline"
                             disabled={isProcessing}
                             onClick={() => handleDismissBajada(n)}
+                            title="El trabajador no tomará esta bajada: se guarda como ticket para después"
                             className="bg-transparent border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 text-xs"
                           >
                             Descartar
@@ -2874,7 +2918,7 @@ export default function ProjectDetailPage() {
                       <div className={`rounded-lg border p-3 ${
                         garantiaFactura
                           ? "border-green-500/30 bg-green-500/5"
-                          : obra.garantia_status !== "none" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                          : "border-amber-500/30 bg-amber-500/5"
                       }`}>
                         <p className="text-xs font-semibold text-slate-400 uppercase mb-2">1. Factura del cliente</p>
                         {garantiaFactura ? (
@@ -3948,6 +3992,45 @@ export default function ProjectDetailPage() {
           </div>
         </DialogContent>
       </Dialog>
+    {/* ── Aviso flotante: ticket ganado al descartar una bajada ── */}
+    {bajadaToast && (
+      <div
+        className="fixed bottom-5 right-5 z-[100] max-w-[calc(100vw-2.5rem)]"
+        role="status"
+        aria-live="polite"
+      >
+        <div
+          className="
+            flex items-center gap-3 rounded-xl border border-amber-500/30
+            bg-slate-900/95 backdrop-blur px-4 py-3 shadow-2xl shadow-black/40
+            animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-4 duration-300
+          "
+        >
+          <div className="p-2 rounded-lg bg-amber-500/15 shrink-0">
+            <Ticket className="w-4 h-4 text-amber-400" />
+          </div>
+
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-300 leading-tight">
+              +1 ticket para {bajadaToast.name}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Bajada descartada · {bajadaToast.balance}{" "}
+              {bajadaToast.balance === 1 ? "ticket disponible" : "tickets disponibles"}
+            </p>
+          </div>
+
+          <button
+            onClick={() => setBajadaToast(null)}
+            aria-label="Cerrar aviso"
+            className="ml-1 shrink-0 text-slate-500 hover:text-slate-300 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+      </div>
+    )}
     </AdminLayout>
     </RoleGuard>
   )

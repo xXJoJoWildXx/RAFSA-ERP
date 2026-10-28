@@ -291,7 +291,7 @@ function SupplierForm({ mode, category, initial, onSave, onCancel }: SupplierFor
 
   const inputCls = "w-full bg-slate-900/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder:text-slate-600 outline-none focus:border-[#0174bd]/70 focus:ring-1 focus:ring-[#0174bd]/30 transition-all duration-150"
 
-  const set = (key: keyof FormData, val: string) =>
+  const set = (key: keyof SupplierFormData, val: string) =>
     setForm(f => ({ ...f, [key]: val }))
 
   return (

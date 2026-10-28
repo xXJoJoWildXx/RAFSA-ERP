@@ -279,7 +279,7 @@ export default function NominaPage() {
         fiscal: Number(run.total_fiscal) || 0,
         efectivo: Number(run.total_efectivo) || 0,
       },
-      counts: { total: lines.length, matched: 0, unmatched: 0, sin_nomina: 0, sin_fiscal: 0 },
+      counts: { total: lines.length, matched: 0, unmatched: 0, sin_asistencia: 0, sin_fiscal: 0 },
       lines,
     }
     if (format === "xlsx") await generatePayrollReportXlsx(asResult)

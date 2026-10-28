@@ -5,13 +5,14 @@ import { datesInRange } from "@/lib/foraneo/bajada"
 export const runtime = "nodejs"
 
 // ───────────────────────────────────────────────────────────────────────────
-//  Confirmar la bajada RECURRENTE (bimestral). Consume un ticket de bajada.
-//  - Si el empleado NO tiene tickets disponibles (p. ej. ya usó una bajada
-//    extemporánea de ese cupo) → 409 { error: "no_tickets" } y NO confirma.
-//  - Si hay ticket: lo consume, confirma la notificación y marca asistencia
-//    'bajada' (bajada_kind='recurrente') en todo el rango.
-//  Así, por cada cupo, se puede confirmar la recurrente O usar la extemporánea,
-//  nunca las dos.
+//  Confirmar la bajada RECURRENTE (bimestral).
+//  NO requiere ni consume ticket: la bajada normal es parte del ciclo del
+//  trabajador foráneo. Sólo confirma la notificación y marca la asistencia
+//  'bajada' (bajada_kind='recurrente') en todo el rango.
+//
+//  Los tickets viven aparte: se ganan al DESCARTAR una notificación
+//  (ver /api/foraneo/dismiss-bajada) y se gastan en una bajada extemporánea
+//  (ver /api/foraneo/use-ticket).
 // ───────────────────────────────────────────────────────────────────────────
 
 const supabase = createClient(
@@ -33,41 +34,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Faltan datos para confirmar la bajada." }, { status: 400 })
     }
 
-    // 1) Ticket disponible (si ya se gastó en una extemporánea, no hay)
-    const { data: tickets } = await supabase
-      .from("bajada_tickets")
-      .select("id")
-      .eq("employee_id", employeeId)
-      .eq("status", "available")
-      .order("earned_at", { ascending: true })
-      .limit(1)
-    const ticket = (tickets ?? [])[0] as { id: string } | undefined
-    if (!ticket) {
-      return NextResponse.json({ error: "no_tickets" }, { status: 409 })
-    }
-
-    // 2) Consumir el ticket (atado a esta confirmación recurrente)
-    await supabase
-      .from("bajada_tickets")
-      .update({
-        status: "used",
-        used_at: new Date().toISOString(),
-        used_by: userId,
-        used_start: start,
-        used_end: end,
-        used_obra_id: obraId,
-        used_notification_id: notificationId,
-        note: "recurrente",
-      })
-      .eq("id", ticket.id)
-
-    // 3) Confirmar la notificación
+    // 1) Confirmar la notificación
     await supabase
       .from("bajada_notifications")
       .update({ status: "confirmed", resolved_at: new Date().toISOString(), resolved_by: userId })
       .eq("id", notificationId)
 
-    // 4) Marcar asistencia 'bajada' (recurrente) en todo el rango
+    // 2) Marcar asistencia 'bajada' (recurrente) en todo el rango
     const dates = datesInRange(start, end as string)
     for (const dateStr of dates) {
       const { data: existing } = await supabase

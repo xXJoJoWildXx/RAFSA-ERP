@@ -72,7 +72,7 @@ export async function POST(req: Request) {
       account_number: l.account_number,
       interbank_clabe: l.interbank_clabe,
       match_status:
-        l.match_status === "matched" || l.match_status === "manual" ? l.match_status : "unmatched",
+        l.match_status === "matched" ? l.match_status : "unmatched",
       note:
         l.obra_names_erp && l.obra_names_erp.length
           ? `obras:${l.obra_names_erp.join(" | ")}`

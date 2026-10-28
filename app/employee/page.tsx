@@ -12,7 +12,7 @@ export default function EmployeeDashboard() {
 
   // Nombre a mostrar: si algún día agregas name, lo priorizas;
   // por ahora usamos el email.
-  const displayName = (user as any)?.name ?? user?.email ?? "User"
+  const displayName = user?.display_name ?? user?.email ?? "User"
 
   // Iniciales seguras
   const initials =

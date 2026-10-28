@@ -3,12 +3,15 @@ import { supabase } from "@/lib/supabaseClient"
 export type ActivityEventType =
   | "employee.created" | "employee.deleted" | "employee.status_changed"
   | "employee.updated" | "employee.salary_updated" | "employee.document_uploaded"
+  | "employee.viatics_updated"
   | "empresa.created" | "empresa.deleted" | "empresa.updated"
   | "obra.created" | "obra.deleted" | "obra.status_changed" | "obra.updated"
+  | "obra.completed"
   | "team.member_added" | "team.member_removed" | "team.director_assigned"
   | "billing.payment_registered" | "billing.payment_deleted"
   | "billing.cotizacion_registered" | "billing.cotizacion_updated" | "billing.cotizacion_deleted"
   | "billing.aditivo_added" | "billing.aditivo_updated" | "billing.aditivo_deleted"
+  | "billing.financials_registered" | "billing.financials_deleted"
   | "document.uploaded" | "document.deleted"
 
 export async function logActivity(params: {

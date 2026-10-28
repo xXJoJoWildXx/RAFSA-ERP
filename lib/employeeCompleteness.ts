@@ -188,6 +188,13 @@ export function buildEmployeeAudit(src: EmployeeAuditSource): EmployeeAudit {
     ...doc(src.workDocTypes.has("dc3")),
   })
 
+  expediente.push({
+    key: "medical_reports",
+    short: "Méd",
+    label: "Carpeta de reportes médicos",
+    ...doc(src.workDocTypes.has("medical_reports")),
+  })
+
   const groups: CheckGroup[] = [
     { key: "identidad", label: "Identidad y legal", items: identidad, okCount: 0, total: 0 },
     { key: "laboral", label: "Nómina y laboral", items: laboral, okCount: 0, total: 0 },
