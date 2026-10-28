@@ -650,6 +650,8 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     const updatePayload: Record<string, unknown> = { is_foraneo: newVal }
     if (!newVal) {
       updatePayload.next_bajada_date = null
+      updatePayload.bajada_anchor_start = null
+      updatePayload.bajada_anchor_end = null
       updatePayload.next_reingreso_date = null
       updatePayload.residence_location = null
     }
@@ -797,9 +799,18 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
           : m
       )
     )
+    // El rango ancla es la fuente de verdad de la recurrencia bimestral: el
+    // sync recalcula next_* a partir de él. Si aquí sólo se guardara next_*,
+    // el primer sync lo sobrescribiría y la fecha no llegaría al perfil del
+    // empleado. Por eso se fija también el ancla.
     const { error: updErr } = await supabase
       .from("employees")
-      .update({ next_bajada_date: salida, next_reingreso_date: reingreso })
+      .update({
+        next_bajada_date: salida,
+        next_reingreso_date: reingreso,
+        bajada_anchor_start: salida,
+        bajada_anchor_end: reingreso ?? salida,
+      })
       .eq("id", member.employee_id)
     if (updErr) {
       console.error("save bajada range error:", updErr)

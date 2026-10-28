@@ -30,7 +30,7 @@ export function EmployeeLayout({ children }: { children: React.ReactNode }) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Nombre a mostrar: si algún día agregas name en el contexto, se usará primero.
-  const displayName = (user as any)?.name ?? user?.email ?? "User"
+  const displayName = user?.display_name ?? user?.email ?? "User"
 
   // Iniciales seguras a partir del displayName
   const initials =

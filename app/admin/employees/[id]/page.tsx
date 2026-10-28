@@ -2787,6 +2787,11 @@ export default function EmployeeDetailPage() {
                           </button>
                         </div>
                       </div>
+                      <p className="text-[11px] text-slate-600 pl-7 leading-snug">
+                        Los tickets se ganan al descartar una bajada programada; la bajada
+                        normal no consume ninguno.
+                      </p>
+
                       {currentObra ? (
                         <p className="text-[11px] text-slate-500 pl-7">Obra actual: <span className="text-slate-300">{currentObra.name}</span></p>
                       ) : (

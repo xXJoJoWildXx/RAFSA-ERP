@@ -68,6 +68,7 @@ const MATRIX_EXPEDIENTE = [
   { key: "imss", short: "IMSS" },
   { key: "imss_alta", short: "Alta" },
   { key: "dc3", short: "DC-3" },
+  { key: "medical_reports", short: "Méd" },
 ]
 
 // ── Utilidades de dibujo ───────────────────────────────────────────────────
@@ -488,6 +489,100 @@ function drawEmployeeCard(doc: Doc, a: EmployeeAudit, y: number, index: number):
   }
 }
 
+// ── Listado compacto de inactivos ──────────────────────────────────────────
+//  No se evalúa su expediente, así que una ficha por cabeza desperdiciaba
+//  páginas enteras. Van como lista a tres columnas.
+
+function drawInactiveList(
+  doc: Doc,
+  inactivos: EmployeeAudit[],
+  generatedAt: string,
+  pageRef: { n: number },
+): void {
+  const COLS = 3
+  const GAP = 4
+  const colW = (CW - GAP * (COLS - 1)) / COLS
+  const ROW_H = 5.2
+
+  let y = 0
+  let filasPorPagina = 0
+  let primera = true
+
+  const nuevaPagina = () => {
+    doc.addPage()
+    pageRef.n += 1
+    drawHeader(doc, "Empleados inactivos")
+    drawFooter(doc, pageRef.n, generatedAt)
+
+    y = TOP + 2
+    doc.setFont("helvetica", "bold")
+    doc.setFontSize(12)
+    doc.setTextColor(...NAVY)
+    doc.text(
+      primera ? `Empleados inactivos (${inactivos.length})` : "Empleados inactivos (continuación)",
+      ML,
+      y,
+    )
+    y += 5
+
+    doc.setFont("helvetica", "normal")
+    doc.setFontSize(7)
+    doc.setTextColor(...MUTED)
+    doc.text(
+      "Se conservan en el padrón pero no se evalúa la completitud de su expediente.",
+      ML,
+      y,
+    )
+    y += 6
+
+    doc.setDrawColor(...HAIR)
+    doc.setLineWidth(0.3)
+    doc.line(ML, y, PW - ML, y)
+    y += 4
+
+    filasPorPagina = Math.max(1, Math.floor((BOTTOM - 4 - y) / ROW_H))
+    primera = false
+  }
+
+  nuevaPagina()
+
+  let i = 0
+  while (i < inactivos.length) {
+    const cabenAqui = filasPorPagina * COLS
+    const bloque = inactivos.slice(i, i + cabenAqui)
+    const yInicio = y
+
+    // Reparto parejo entre las tres columnas: si no se usa el alto completo,
+    // los nombres se distribuyen en vez de apilarse todos en la primera.
+    const filasEfectivas = Math.max(1, Math.ceil(bloque.length / COLS))
+
+    bloque.forEach((a, k) => {
+      // Se llena por columnas: así la lista se lee de arriba abajo
+      const col = Math.floor(k / filasEfectivas)
+      const fila = k % filasEfectivas
+      const x = ML + col * (colW + GAP)
+      const fy = yInicio + fila * ROW_H
+
+      if (fila % 2 === 0) {
+        doc.setFillColor(...ZEBRA)
+        doc.rect(x - 1, fy - 3.4, colW, ROW_H, "F")
+      }
+
+      doc.setFont("helvetica", "normal")
+      doc.setFontSize(6.6)
+      doc.setTextColor(...MUTED)
+      doc.text(String(i + k + 1).padStart(2, " "), x, fy)
+
+      doc.setFontSize(7.4)
+      doc.setTextColor(...INK)
+      doc.text(fit(doc, a.full_name, colW - 9, 7.4), x + 6, fy)
+    })
+
+    i += bloque.length
+    if (i < inactivos.length) nuevaPagina()
+  }
+}
+
 // ── Export principal ───────────────────────────────────────────────────────
 
 export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Promise<void> {
@@ -525,7 +620,7 @@ export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Prom
       activos,
       MATRIX_EXPEDIENTE,
       "Matriz del expediente de documentos",
-      "CURP / INE / Constancia fiscal / Acta / Comprobante de domicilio / IMSS / Alta IMSS / DC-3",
+      "CURP / INE / Constancia fiscal / Acta / Comprobante de domicilio / IMSS / Alta IMSS / DC-3 / Reportes médicos",
       generatedAt,
       pageRef,
     )
@@ -535,7 +630,8 @@ export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Prom
   const CARD_H = 64
   const perPage = Math.floor((BOTTOM - TOP) / CARD_H)
 
-  audits.forEach((a, i) => {
+  // Ficha detallada sólo para los activos: son los que hay que capturar.
+  activos.forEach((a, i) => {
     const slot = i % perPage
     if (slot === 0) {
       doc.addPage()
@@ -545,6 +641,12 @@ export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Prom
     }
     drawEmployeeCard(doc, a, TOP + slot * CARD_H + 4, i + 1)
   })
+
+  // Los inactivos cierran el documento como lista compacta
+  const inactivos = audits.filter((a) => !a.isActive)
+  if (inactivos.length > 0) {
+    drawInactiveList(doc, inactivos, generatedAt, pageRef)
+  }
 
   const stamp = new Date().toISOString().slice(0, 10)
   doc.save(`Reporte_Captura_Empleados_RAFSA_${stamp}.pdf`)
