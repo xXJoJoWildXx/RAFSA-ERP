@@ -8,13 +8,14 @@ import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { generatePickingListPdf } from "@/lib/pickingListPdf"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
 import {
   ClipboardList, Eye, Upload, CheckCircle2, XCircle, Loader2, Search,
   Trash2, FileText, Truck, Download, AlertTriangle, FileCheck2, PackageCheck, FileCode2,
-  Info, X, ChevronDown, Building2, HardHat,
+  Info, X, ChevronDown, Building2, HardHat, Printer,
 } from "lucide-react"
 import {
   InventoryProduct, InventoryOrder, OrderItem, OrderInvoice, CfdiData,
@@ -135,16 +136,26 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   useEffect(() => { loadOrders(); loadRefs() }, [loadOrders, loadRefs])
 
+  // Almacén sólo ve lo que todavía requiere trabajo suyo: las canceladas y las
+  // completadas son estados cerrados y sólo le estorban en la lista.
+  const HIDDEN_FOR_ALMACEN = ["cancelled", "completed"]
+  const visibleOrders = useMemo(
+    () => (role === "almacen" ? orders.filter((o) => !HIDDEN_FOR_ALMACEN.includes(o.status)) : orders),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [orders, role],
+  )
+
   const filtered = useMemo(() => {
-    let arr = [...orders]
+    let arr = [...visibleOrders]
     if (statusFilter !== "all") arr = arr.filter((o) => o.status === statusFilter)
     return arr
-  }, [orders, statusFilter])
+  }, [visibleOrders, statusFilter])
 
-  const pendingCount = orders.filter((o) => o.status === "pending" || o.status === "in_progress").length
-  const deliveredCount = orders.filter((o) => o.status === "delivered").length
-  const totalCount = orders.length
+  const pendingCount = visibleOrders.filter((o) => o.status === "pending" || o.status === "in_progress").length
+  const deliveredCount = visibleOrders.filter((o) => o.status === "delivered").length
+  const totalCount = visibleOrders.length
   const completedCount = orders.filter((o) => o.status === "completed").length
+  const porPrepararCount = visibleOrders.filter((o) => o.status === "pending").length
 
   // ─── Create order ───
   function openCreate() {
@@ -407,6 +418,81 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     return products.filter((p) => p.codigo.toLowerCase().includes(q) || p.descripcion.toLowerCase().includes(q)).slice(0, 8)
   }, [prodSearch, products])
 
+  // ─── Hoja de surtido para imprimir ───
+  const [printing, setPrinting] = useState(false)
+  // Folio en proceso cuando se imprime desde la fila de la tabla
+  const [printingRow, setPrintingRow] = useState<string | null>(null)
+
+  /** Imprime sin abrir el detalle: trae los artículos de esa orden al vuelo. */
+  async function handlePrintRow(o: OrderRow) {
+    setPrintingRow(o.id)
+    try {
+      const { data, error } = await supabase
+        .from("inventory_order_items")
+        .select("*")
+        .eq("order_id", o.id)
+
+      if (error) throw error
+      const items = (data ?? []) as OrderItem[]
+      if (items.length === 0) {
+        notify("Esta orden no tiene artículos que surtir.", "warning")
+        return
+      }
+
+      await generatePickingListPdf(
+        {
+          folio: o.folio,
+          type: o.type,
+          obra_name: o.obra_name,
+          supplier_name: o.supplier_name,
+          notes: o.notes,
+          created_at: o.created_at,
+        },
+        items.map((it) => ({
+          codigo: it.codigo,
+          descripcion: it.descripcion,
+          quantity: Number(it.quantity),
+          unit_price: Number(it.unit_price),
+          note: it.note,
+        })),
+      )
+    } catch (e) {
+      console.error("Error generando la hoja de surtido:", e)
+      notify("No se pudo generar la hoja de surtido.", "warning")
+    } finally {
+      setPrintingRow(null)
+    }
+  }
+
+  async function handlePrintPickingList() {
+    if (!detail) return
+    setPrinting(true)
+    try {
+      await generatePickingListPdf(
+        {
+          folio: detail.folio,
+          type: detail.type,
+          obra_name: detail.obra_name,
+          supplier_name: detail.supplier_name,
+          notes: detail.notes,
+          created_at: detail.created_at,
+        },
+        detailItems.map((it) => ({
+          codigo: it.codigo,
+          descripcion: it.descripcion,
+          quantity: Number(it.quantity),
+          unit_price: Number(it.unit_price), // sin IVA; el PDF lo suma
+          note: it.note,
+        })),
+      )
+    } catch (e) {
+      console.error("Error generando la hoja de surtido:", e)
+      notify("No se pudo generar la hoja de surtido.", "warning")
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   // Precio final de la orden: s/IVA y c/IVA (el CFDI se compara contra el total c/IVA).
   const orderTotalSinIva = useMemo(
     () => detailItems.reduce((s, it) => s + Number(it.quantity) * Number(it.unit_price), 0),
@@ -455,8 +541,10 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
         {[
           { label: "Pendientes", value: pendingCount, icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
           { label: "Entregadas · fact. pend.", value: deliveredCount, icon: AlertTriangle, color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
-          { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
-          { label: "Total", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
+          role === "almacen"
+            ? { label: "Por preparar", value: porPrepararCount, icon: PackageCheck, color: "#22c55e", bg: "rgba(34,197,94,0.12)" }
+            : { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
+          { label: role === "almacen" ? "Abiertas" : "Total", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
         ].map((kpi) => {
           const Icon = kpi.icon
           return (
@@ -478,8 +566,8 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
             <option value="pending">Pendiente</option>
             <option value="in_progress">En proceso</option>
             <option value="delivered">Entregada · factura pendiente</option>
-            <option value="completed">Completada</option>
-            <option value="cancelled">Cancelada</option>
+            {role !== "almacen" && <option value="completed">Completada</option>}
+            {role !== "almacen" && <option value="cancelled">Cancelada</option>}
           </select>
           <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 transition-colors group-hover:text-white" />
         </div>
@@ -499,7 +587,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                 <TableHead className="text-slate-400 font-semibold text-xs text-center">Facturas</TableHead>
                 <TableHead className="text-slate-400 font-semibold text-xs">Fecha</TableHead>
                 <TableHead className="text-slate-400 font-semibold text-xs">Estado</TableHead>
-                <TableHead className="text-slate-400 font-semibold text-xs text-right">Acción</TableHead>
+                <TableHead className="text-slate-400 font-semibold text-xs text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -519,7 +607,30 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                     <TableCell className="text-xs text-slate-400">{formatDate(o.created_at)}</TableCell>
                     <TableCell><Badge className={`text-[10px] border ${sb.cls}`}>{sb.label}</Badge></TableCell>
                     <TableCell className="text-right">
-                      <Button size="sm" variant="ghost" className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700" onClick={(e) => { e.stopPropagation(); openDetail(o) }}><Eye className="w-4 h-4" /></Button>
+                      <div className="flex items-center justify-end gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Ver detalle"
+                          className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700"
+                          onClick={(e) => { e.stopPropagation(); openDetail(o) }}
+                        >
+                          <Eye className="w-4 h-4" />
+                        </Button>
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          title="Descargar hoja de surtido"
+                          disabled={printingRow === o.id}
+                          className="cursor-pointer h-8 w-8 p-0 text-slate-400 hover:text-white hover:bg-slate-700"
+                          onClick={(e) => { e.stopPropagation(); handlePrintRow(o) }}
+                        >
+                          {printingRow === o.id
+                            ? <Loader2 className="w-4 h-4 animate-spin" />
+                            : <Printer className="w-4 h-4" />}
+                        </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                 )
@@ -633,8 +744,26 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       <Dialog open={!!detail} onOpenChange={(v) => { if (!v) setDetail(null) }}>
         <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100 p-0">
           <DialogHeader className="px-6 pt-6 pb-4 border-b border-slate-700">
-            <DialogTitle className="text-slate-100 flex items-center gap-2">
+            <DialogTitle className="text-slate-100 flex items-center gap-2 flex-wrap">
               <ClipboardList className="w-5 h-5 text-[#4da8e8]" /> Orden {detail?.folio}
+
+              {detailItems.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handlePrintPickingList}
+                  disabled={printing}
+                  title="Descargar la hoja para imprimir y surtir en el almacén"
+                  className="ml-auto mr-7 cursor-pointer border-slate-600 bg-transparent text-slate-300 hover:bg-slate-700 hover:text-white text-xs"
+                >
+                  {printing ? (
+                    <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                  ) : (
+                    <Printer className="w-3.5 h-3.5 mr-1.5" />
+                  )}
+                  Hoja de surtido
+                </Button>
+              )}
             </DialogTitle>
           </DialogHeader>
           {detail && (
@@ -674,7 +803,13 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
               <div>
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Facturas ({detailInvoices.length})</p>
                 <div className="space-y-2">
-                  {detailInvoices.length === 0 && <p className="text-xs text-slate-500">Aún no se sube factura.</p>}
+                  {detailInvoices.length === 0 && (
+                    <p className="text-xs text-slate-500">
+                      {role === "admin"
+                        ? "Aún no se sube factura. Aparecerá aquí cuando almacén la cargue."
+                        : "Aún no se sube factura."}
+                    </p>
+                  )}
                   {detailInvoices.map((inv) => {
                     const match = inv.is_cfdi ? invoiceMatchesOrder(inv.cfdi_total, orderTotalConIva) : false
                     return (
@@ -701,8 +836,8 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                   })}
                 </div>
 
-                {/* Upload form (both roles, while the order is open) */}
-                {openState && (
+                {/* Subir factura: sólo almacén. Admin ve las que almacén cargó. */}
+                {openState && role === "almacen" && (
                   <div className="mt-3 rounded-lg border border-slate-700/60 bg-slate-700/10 p-3 space-y-2">
                     <p className="text-xs font-semibold text-slate-300 flex items-center gap-1.5"><Upload className="w-3.5 h-3.5" /> Subir factura (CFDI XML)</p>
                     <Input type="file" accept=".xml,.pdf,.jpg,.jpeg,.png" onChange={(e) => onInvoiceFile(e.target.files?.[0] ?? null)} className={`${inputCls} file:text-slate-300 file:bg-slate-600 file:border-0 file:rounded file:px-2 file:mr-2 text-xs`} />
@@ -756,12 +891,12 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                 </div>
                 <div className="flex gap-2 flex-wrap justify-end">
                   <Button variant="outline" onClick={() => setDetail(null)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cerrar</Button>
-                  {canDeliver && (
+                  {canDeliver && role === "almacen" && (
                     <Button onClick={deliverOrder} disabled={busy} className="cursor-pointer bg-orange-600 hover:bg-orange-700 text-white">
                       {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<PackageCheck className="w-4 h-4 mr-1.5" /> Confirmar entrega
                     </Button>
                   )}
-                  {openState && (
+                  {openState && role === "almacen" && (
                     <Button onClick={completeOrder} disabled={busy || !canComplete} title={!canComplete ? "Requiere un CFDI que cuadre con el total de la orden" : ""} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white disabled:opacity-40">
                       {busy && <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />}<CheckCircle2 className="w-4 h-4 mr-1.5" /> Completar al 100%
                     </Button>
