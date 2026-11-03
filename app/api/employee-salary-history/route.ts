@@ -16,6 +16,7 @@ type SalaryHistoryPostBody = {
   bonus_amount?: number
   overtime_hour_cost?: number
   viatics_amount?: number
+  aguinaldo_amount?: number
   authUserId?: string | null
   change_reason?: string | null
 }
@@ -42,6 +43,7 @@ export async function GET(req: Request) {
         bonus_amount,
         overtime_hour_cost,
         viatics_amount,
+        aguinaldo_amount,
         valid_from,
         valid_to,
         changed_by,
@@ -76,6 +78,7 @@ export async function GET(req: Request) {
         bonus_amount: Number(row.bonus_amount ?? 0),
         overtime_hour_cost: Number(row.overtime_hour_cost ?? 0),
         viatics_amount: Number(row.viatics_amount ?? 0),
+        aguinaldo_amount: Number(row.aguinaldo_amount ?? 0),
         valid_from: row.valid_from,
         valid_to: row.valid_to,
         changed_by: row.changed_by,
@@ -112,6 +115,7 @@ export async function POST(req: Request) {
     const bonusAmount = Number(body.bonus_amount ?? 0)
     const overtimeHourCost = Number(body.overtime_hour_cost ?? 0)
     const viaticsAmount = Number(body.viatics_amount ?? 0)
+    const aguinaldoAmount = Number(body.aguinaldo_amount ?? 0)
     const changeReason = body.change_reason ?? null
 
     if (!employeeId) {
@@ -141,6 +145,7 @@ export async function POST(req: Request) {
         bonus_amount,
         overtime_hour_cost,
         viatics_amount,
+        aguinaldo_amount,
         emergency_contact,
         created_at
       `,
@@ -160,12 +165,14 @@ export async function POST(req: Request) {
     const currentBonusAmount = Number(employee.bonus_amount ?? 0)
     const currentOvertimeHourCost = Number(employee.overtime_hour_cost ?? 0)
     const currentViaticsAmount = Number(employee.viatics_amount ?? 0)
+    const currentAguinaldoAmount = Number(employee.aguinaldo_amount ?? 0)
 
     const nothingChanged =
       currentRealSalary === realSalary &&
       currentBonusAmount === bonusAmount &&
       currentOvertimeHourCost === overtimeHourCost &&
-      currentViaticsAmount === viaticsAmount
+      currentViaticsAmount === viaticsAmount &&
+      currentAguinaldoAmount === aguinaldoAmount
 
     if (nothingChanged) {
       return NextResponse.json({
@@ -200,6 +207,7 @@ export async function POST(req: Request) {
         bonus_amount: bonusAmount,
         overtime_hour_cost: overtimeHourCost,
         viatics_amount: viaticsAmount,
+        aguinaldo_amount: aguinaldoAmount,
         valid_from: nowIso,
         valid_to: null,
         changed_by: changedByAppUserId,
@@ -224,6 +232,7 @@ export async function POST(req: Request) {
         bonus_amount: bonusAmount,
         overtime_hour_cost: overtimeHourCost,
         viatics_amount: viaticsAmount,
+        aguinaldo_amount: aguinaldoAmount,
       })
       .eq("id", employeeId)
       .select(
@@ -242,6 +251,7 @@ export async function POST(req: Request) {
         bonus_amount,
         overtime_hour_cost,
         viatics_amount,
+        aguinaldo_amount,
         emergency_contact,
         created_at
       `,

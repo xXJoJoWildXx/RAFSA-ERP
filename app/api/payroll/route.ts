@@ -26,6 +26,7 @@ export async function POST(req: Request) {
     const { data: run, error: runErr } = await admin
       .from("payroll_runs")
       .insert({
+        kind: body.kind === "aguinaldo" ? "aguinaldo" : "nomina",
         week_start: body.week_start,
         week_end: body.week_end,
         period_label: body.period_label ?? null,
@@ -105,7 +106,7 @@ export async function GET() {
     const { data, error } = await admin
       .from("payroll_runs")
       .select(
-        "id, week_start, week_end, period_label, fiscal_total_neto, total_real, total_fiscal, total_efectivo, employee_count, status, source_file_name, created_at",
+        "id, kind, week_start, week_end, period_label, fiscal_total_neto, total_real, total_fiscal, total_efectivo, employee_count, status, source_file_name, created_at",
       )
       .order("week_start", { ascending: false })
       .order("created_at", { ascending: false })

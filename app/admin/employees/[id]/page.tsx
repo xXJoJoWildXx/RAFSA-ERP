@@ -85,6 +85,7 @@ type EmployeeRow = {
   bonus_amount: number | string
   overtime_hour_cost: number | string
   viatics_amount: number | string
+  aguinaldo_amount: number | string
   bank_name: string | null
   account_number: string | null
   interbank_clabe: string | null
@@ -156,6 +157,7 @@ type EmployeeDetail = {
   bonus_amount: number
   overtime_hour_cost: number
   viatics_amount: number
+  aguinaldo_amount: number
   bank_name: string | null
   account_number: string | null
   interbank_clabe: string | null
@@ -187,6 +189,7 @@ type EditEmployeeForm = {
   bonus_amount: string
   overtime_hour_cost: string
   viatics_amount: string
+  aguinaldo_amount: string
 }
 
 type BankingForm = {
@@ -204,6 +207,7 @@ type EmployeeSalaryHistoryRow = {
   bonus_amount: number
   overtime_hour_cost: number
   viatics_amount: number
+  aguinaldo_amount: number
   valid_from: string
   valid_to: string | null
   changed_by: string | null
@@ -445,6 +449,10 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     row.viatics_amount !== null && row.viatics_amount !== undefined
       ? Number(row.viatics_amount)
       : 0
+  const aguinaldo =
+    row.aguinaldo_amount !== null && row.aguinaldo_amount !== undefined
+      ? Number(row.aguinaldo_amount)
+      : 0
 
   return {
     id: row.id,
@@ -464,6 +472,7 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     bonus_amount: bonusAmount,
     overtime_hour_cost: overtime,
     viatics_amount: viatics,
+    aguinaldo_amount: aguinaldo,
     bank_name: row.bank_name ?? null,
     account_number: row.account_number ?? null,
     interbank_clabe: row.interbank_clabe ?? null,
@@ -570,6 +579,7 @@ async function updateEmployeeSalaryHistory(args: {
   bonus_amount: number
   overtime_hour_cost: number
   viatics_amount: number
+  aguinaldo_amount: number
   authUserId?: string | null
   change_reason?: string | null
 }) {
@@ -1030,7 +1040,9 @@ export default function EmployeeDetailPage() {
             real_salary,
             bonus_amount,
             overtime_hour_cost,
-            viatics_amount,
+            aguinaldo_amount,
+          viatics_amount,
+            aguinaldo_amount,
             bank_name,
             account_number,
             interbank_clabe,
@@ -1325,6 +1337,7 @@ export default function EmployeeDetailPage() {
       bonus_amount: employee.bonus_amount?.toString() ?? "0",
       overtime_hour_cost: employee.overtime_hour_cost?.toString() ?? "0",
       viatics_amount: employee.viatics_amount?.toString() ?? "0",
+      aguinaldo_amount: employee.aguinaldo_amount?.toString() ?? "0",
     })
   }
 
@@ -1552,6 +1565,7 @@ export default function EmployeeDetailPage() {
           real_salary,
           bonus_amount,
           overtime_hour_cost,
+          aguinaldo_amount,
           viatics_amount,
           bank_name,
           account_number,
@@ -1595,6 +1609,7 @@ export default function EmployeeDetailPage() {
         bonus_amount: Number(editForm.bonus_amount) || 0,
         overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
         viatics_amount: Number(editForm.viatics_amount) || 0,
+        aguinaldo_amount: Number(editForm.aguinaldo_amount) || 0,
         authUserId: currentAuthUserId,
         change_reason: null,
       })
@@ -2364,8 +2379,8 @@ export default function EmployeeDetailPage() {
                           <th className="py-3 pr-4 font-semibold text-slate-300">Bonificación</th>
                           <th className="py-3 pr-4 font-semibold text-slate-300">Hora extra</th>
                           <th className="py-3 pr-4 font-semibold text-slate-300">Viáticos</th>
-                          <th className="py-3 pr-4 font-semibold text-slate-300">Modificado por</th>
-                          <th className="py-3 pr-0 font-semibold text-slate-300">Motivo</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Aguinaldo</th>
+                          <th className="py-3 pr-0 font-semibold text-slate-300">Modificado por</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -2386,11 +2401,11 @@ export default function EmployeeDetailPage() {
                             <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.viatics_amount)}
                             </td>
-                            <td className="py-3 pr-4 text-slate-400">
-                              {row.changed_by_name || "No registrado"}
+                            <td className="py-3 pr-4 font-medium text-slate-100">
+                              {formatMoneyMXN(row.aguinaldo_amount)}
                             </td>
                             <td className="py-3 pr-0 text-slate-400">
-                              {row.change_reason || "Sin motivo"}
+                              {row.changed_by_name || "No registrado"}
                             </td>
                           </tr>
                         ))}
@@ -3084,6 +3099,22 @@ export default function EmployeeDetailPage() {
                                     }
                                   />
                                 </div>
+
+                                <div className="space-y-2">
+                                  <Label htmlFor="aguinaldo_amount" className={labelCls}>
+                                    Aguinaldo (MXN)
+                                  </Label>
+                                  <Input
+                                    id="aguinaldo_amount"
+                                    type="number"
+                                    step="0.01"
+                                    className={inputCls}
+                                    value={editForm.aguinaldo_amount}
+                                    onChange={(e) =>
+                                      handleEditChange("aguinaldo_amount", e.target.value)
+                                    }
+                                  />
+                                </div>
                               </div>
                             )}
 
@@ -3138,6 +3169,13 @@ export default function EmployeeDetailPage() {
                           <p className="text-slate-400">Viáticos</p>
                           <p className="font-medium text-slate-100 text-xl">
                             {formatMoneyMXN(employee.viatics_amount)}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-slate-400">Aguinaldo</p>
+                          <p className="font-medium text-slate-100 text-xl">
+                            {formatMoneyMXN(employee.aguinaldo_amount)}
                           </p>
                         </div>
                       </div>

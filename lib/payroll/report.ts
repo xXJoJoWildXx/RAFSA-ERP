@@ -17,6 +17,8 @@ function fmtDateDisplay(dateStr: string | null): string {
 }
 
 export function generatePayrollReportPdf(result: ReconResult): void {
+  const esAguinaldo = result.kind === "aguinaldo"
+  const tituloDoc = esAguinaldo ? "Dispersión de aguinaldo" : "Dispersión de nómina"
   const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "letter" })
   const pageW = doc.internal.pageSize.getWidth()
   const pageH = doc.internal.pageSize.getHeight()
@@ -53,11 +55,11 @@ export function generatePayrollReportPdf(result: ReconResult): void {
     doc.setTextColor(255, 255, 255)
     doc.setFont("helvetica", "bold")
     doc.setFontSize(13)
-    doc.text("RAFSA · Dispersión de nómina", margin, 11)
+    doc.text(`RAFSA · ${tituloDoc}`, margin, 11)
     doc.setFont("helvetica", "normal")
     doc.setFontSize(9)
     doc.text(
-      `Semana: ${fmtDateDisplay(result.week_start)} – ${fmtDateDisplay(result.week_end)}`,
+      `${esAguinaldo ? "Periodo" : "Semana"}: ${fmtDateDisplay(result.week_start)} – ${fmtDateDisplay(result.week_end)}`,
       pageW - margin,
       7,
       { align: "right" },
@@ -213,10 +215,13 @@ export function generatePayrollReportPdf(result: ReconResult): void {
     doc.setFont("helvetica", "normal")
     doc.setFontSize(7)
     doc.setTextColor(...muted)
-    doc.text("RAFSA ERP · Dispersión de nómina", margin, pageH - 5)
+    doc.text(`RAFSA ERP · ${tituloDoc}`, margin, pageH - 5)
     doc.text(`Pág ${p}/${pages}`, pageW - margin, pageH - 5, { align: "right" })
   }
 
-  const fname = `Dispersion_Nomina_${result.week_start}.pdf`
+  // El nombre dice de qué documento salió: la carpeta de descargas acumula
+  // archivos de ambos tipos y "Dispersion_Nomina" para todos se presta a confusión.
+  const tipo = esAguinaldo ? "Aguinaldo" : "Nomina"
+  const fname = `Dispersion_${tipo}_${result.week_start}.pdf`
   doc.save(fname)
 }

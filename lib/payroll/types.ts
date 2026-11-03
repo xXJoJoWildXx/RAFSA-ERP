@@ -23,7 +23,16 @@ export type ContpaqiParseResult = {
 }
 
 /** Estado de empate de cada renglón de la conciliación. */
-export type ReconStatus = "matched" | "unmatched" | "sin_asistencia" | "sin_fiscal"
+export type ReconStatus =
+  | "matched"
+  | "unmatched"
+  | "sin_asistencia"
+  | "sin_fiscal"
+  /** Aparece en el documento de aguinaldo pero no tiene aguinaldo capturado en el ERP */
+  | "sin_aguinaldo"
+
+/** Qué documento se está conciliando. */
+export type ReconKind = "nomina" | "aguinaldo"
 
 /** Un renglón de la conciliación (por empleado). */
 export type ReconLine = {
@@ -33,7 +42,7 @@ export type ReconLine = {
   employee_name_erp: string | null // nombre registrado en el ERP
   departamento_raw: string | null // "obra" como aparece en el reporte de nómina
   obra_names_erp: string[] // obra(s) registradas en el ERP esa semana
-  real_total: number | null // sueldo total real (de la nómina) ; null si no se ha generado
+  real_total: number | null // nómina: sueldo real de la semana · aguinaldo: employees.aguinaldo_amount
   fiscal_neto: number // NETO del documento ; 0 si no aparece en el documento
   efectivo: number // real_total - fiscal_neto
   bank_name: string | null
@@ -45,6 +54,8 @@ export type ReconLine = {
 
 /** Resultado completo de la conciliación (preview, antes de guardar). */
 export type ReconResult = {
+  /** "nomina" = semanal contra asistencia; "aguinaldo" = anual contra employees.aguinaldo_amount */
+  kind: ReconKind
   week_start: string
   week_end: string
   period_label: string | null
@@ -61,6 +72,7 @@ export type ReconResult = {
     unmatched: number
     sin_asistencia: number
     sin_fiscal: number
+    sin_aguinaldo: number
   }
   lines: ReconLine[]
 }

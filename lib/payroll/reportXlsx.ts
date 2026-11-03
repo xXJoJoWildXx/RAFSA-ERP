@@ -18,6 +18,7 @@ const STATUS_LABEL: Record<ReconStatus, string> = {
   unmatched: "Sin empatar",
   sin_asistencia: "Sin asistencia",
   sin_fiscal: "Sin fiscal",
+  sin_aguinaldo: "Sin aguinaldo",
 }
 
 function fmtDateDisplay(dateStr: string | null): string {
@@ -31,6 +32,7 @@ function accountOf(l: ReconLine): string {
 }
 
 export async function generatePayrollReportXlsx(result: ReconResult): Promise<void> {
+  const esAguinaldo = result.kind === "aguinaldo"
   const mod: any = await import("exceljs")
   const ExcelJS = mod.default ?? mod
   const wb = new ExcelJS.Workbook()
@@ -67,14 +69,14 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
   // Título
   ws.mergeCells("A1:F1")
   const title = ws.getCell("A1")
-  title.value = "RAFSA · Dispersión de nómina"
+  title.value = esAguinaldo ? "RAFSA · Dispersión de aguinaldo" : "RAFSA · Dispersión de nómina"
   title.font = { bold: true, size: 15, color: { argb: "FFFFFFFF" } }
   title.fill = { type: "pattern", pattern: "solid", fgColor: { argb: BRAND } }
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 }
   ws.getRow(1).height = 24
 
   ws.mergeCells("A2:F2")
-  ws.getCell("A2").value = `Semana: ${fmtDateDisplay(result.week_start)} – ${fmtDateDisplay(result.week_end)}`
+  ws.getCell("A2").value = `${esAguinaldo ? "Periodo" : "Semana"}: ${fmtDateDisplay(result.week_start)} – ${fmtDateDisplay(result.week_end)}`
   ws.getCell("A2").font = { size: 10, color: { argb: "FF475569" } }
 
   let r = 3
@@ -293,7 +295,8 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
-  a.download = `Dispersion_Nomina_${result.week_start}.xlsx`
+  const tipo = esAguinaldo ? "Aguinaldo" : "Nomina"
+  a.download = `Dispersion_${tipo}_${result.week_start}.xlsx`
   a.click()
   URL.revokeObjectURL(url)
 }

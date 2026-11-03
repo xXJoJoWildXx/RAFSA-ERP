@@ -825,8 +825,15 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                             est.number
                           )}
                         </TableCell>
-                        <TableCell className="text-sm text-slate-300 max-w-xs">{est.description}</TableCell>
-                        <TableCell className="text-sm text-slate-400">
+                        <TableCell className="text-sm text-slate-300 align-top">
+                          <div
+                            className="max-w-[20rem] whitespace-normal break-words"
+                            title={est.description || undefined}
+                          >
+                            {est.description}
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-400 align-top whitespace-nowrap">
                           {est.date_start && est.date_end
                             ? `${est.date_start} — ${est.date_end}`
                             : est.date_start || est.date_end || "—"}
