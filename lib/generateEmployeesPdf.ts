@@ -54,6 +54,7 @@ const MATRIX_DATOS = [
   { key: "payroll_code", short: "Cód" },
   { key: "real_salary", short: "Sdo" },
   { key: "overtime", short: "HEx" },
+  { key: "aguinaldo", short: "Agui" },
   { key: "bank_name", short: "Bco" },
   { key: "account_number", short: "Cta" },
   { key: "clabe", short: "CLB" },
@@ -611,7 +612,7 @@ export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Prom
       activos,
       MATRIX_DATOS,
       "Matriz de datos del empleado",
-      "Foto / Nacimiento / RFC / NSS / Ingreso / Rol / Código de nómina / Sueldo / Hora extra / Banco / Cuenta / CLABE",
+      "Foto / Nacimiento / RFC / NSS / Ingreso / Rol / Código de nómina / Sueldo / Hora extra / Aguinaldo / Banco / Cuenta / CLABE",
       generatedAt,
       pageRef,
     )

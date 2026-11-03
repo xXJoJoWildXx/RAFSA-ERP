@@ -62,7 +62,10 @@ const STATUS_META: Record<ReconLine["match_status"], { label: string; cls: strin
   sin_asistencia: { label: "Sin asistencia", cls: "bg-amber-500/15 text-amber-300 border border-amber-500/25" },
   unmatched: { label: "Sin empatar", cls: "bg-red-500/15 text-red-400 border border-red-500/25" },
   sin_fiscal: { label: "Sin fiscal", cls: "bg-sky-500/15 text-sky-300 border border-sky-500/25" },
+  sin_aguinaldo: { label: "Sin aguinaldo", cls: "bg-amber-500/15 text-amber-300 border border-amber-500/25" },
 }
+
+type ReconKindUI = "nomina" | "aguinaldo"
 
 type RunRow = {
   id: string
@@ -83,6 +86,9 @@ type EmpHit = { id: string; full_name: string; payroll_code: string | null }
 export default function NominaPage() {
   const periods = useMemo(() => listRecentPeriods(8), [])
   const [tab, setTab] = useState<"dispersion" | "asistencia">("dispersion")
+  // Qué documento se concilia. El aguinaldo no usa semana ni asistencia.
+  const [kind, setKind] = useState<ReconKindUI>("nomina")
+  const esAguinaldo = kind === "aguinaldo"
   const [week, setWeek] = useState(periods[0]?.weekStart ?? "")
   const [file, setFile] = useState<File | null>(null)
   const [processing, setProcessing] = useState(false)
@@ -122,16 +128,21 @@ export default function NominaPage() {
   }, [])
 
   async function runReconcile(opts: { file?: File; reusePath?: string }) {
-    if (!selectedPeriod) return
+    if (!esAguinaldo && !selectedPeriod) return
     setProcessing(true)
     setError(null)
     try {
       const fd = new FormData()
       if (opts.file) fd.append("file", opts.file)
       if (opts.reusePath) fd.append("source_object_path", opts.reusePath)
-      fd.append("week_start", selectedPeriod.weekStart)
-      fd.append("week_end", selectedPeriod.weekEnd)
-      const res = await fetch("/api/payroll/reconcile", { method: "POST", body: fd })
+      if (!esAguinaldo && selectedPeriod) {
+        fd.append("week_start", selectedPeriod.weekStart)
+        fd.append("week_end", selectedPeriod.weekEnd)
+      }
+      const endpoint = esAguinaldo
+        ? "/api/payroll/reconcile-aguinaldo"
+        : "/api/payroll/reconcile"
+      const res = await fetch(endpoint, { method: "POST", body: fd })
       const json = await res.json()
       if (!res.ok) {
         setError(json?.error || "No se pudo procesar el archivo.")
@@ -362,23 +373,55 @@ export default function NominaPage() {
           <div className="rounded-2xl border border-slate-700/60 bg-slate-800 p-5">
             <div className="flex flex-col lg:flex-row lg:items-end gap-4">
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-400">Semana (Jue – Mié)</label>
-                <Select value={week} onValueChange={setWeek}>
-                  <SelectTrigger className={`w-full lg:w-72 cursor-pointer ${inputCls}`}>
-                    <SelectValue placeholder="Selecciona la semana" />
+                <label className="text-xs font-medium text-slate-400">Tipo de documento</label>
+                <Select
+                  value={kind}
+                  onValueChange={(v) => {
+                    setKind(v as ReconKindUI)
+                    // El resultado anterior es de otro tipo: se descarta
+                    setResult(null)
+                    setSavedId(null)
+                    setError(null)
+                    setFile(null)
+                  }}
+                >
+                  <SelectTrigger className={`w-full lg:w-56 cursor-pointer ${inputCls}`}>
+                    <SelectValue placeholder="Selecciona el tipo" />
                   </SelectTrigger>
                   <SelectContent className="bg-slate-800 border-slate-700 text-slate-200">
-                    {periods.map((p) => (
-                      <SelectItem key={p.weekStart} value={p.weekStart} className="focus:bg-slate-700 focus:text-slate-100">
-                        {p.label}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="nomina" className="focus:bg-slate-700 focus:text-slate-100">
+                      Nómina semanal
+                    </SelectItem>
+                    <SelectItem value="aguinaldo" className="focus:bg-slate-700 focus:text-slate-100">
+                      Aguinaldo
+                    </SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
+              {/* La semana sólo aplica a la nómina: el aguinaldo es anual */}
+              {!esAguinaldo && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-slate-400">Semana (Jue – Mié)</label>
+                  <Select value={week} onValueChange={setWeek}>
+                    <SelectTrigger className={`w-full lg:w-72 cursor-pointer ${inputCls}`}>
+                      <SelectValue placeholder="Selecciona la semana" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-800 border-slate-700 text-slate-200">
+                      {periods.map((p) => (
+                        <SelectItem key={p.weekStart} value={p.weekStart} className="focus:bg-slate-700 focus:text-slate-100">
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               <div className="flex flex-col gap-1.5">
-                <label className="text-xs font-medium text-slate-400">Documento de nómina (.xlsx)</label>
+                <label className="text-xs font-medium text-slate-400">
+                  {esAguinaldo ? "Documento de aguinaldo (.xlsx)" : "Documento de nómina (.xlsx)"}
+                </label>
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -402,7 +445,7 @@ export default function NominaPage() {
 
               <Button
                 onClick={handleProcess}
-                disabled={!file || !selectedPeriod || processing}
+                disabled={!file || processing || (!esAguinaldo && !selectedPeriod)}
                 className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white font-semibold disabled:opacity-40"
               >
                 {processing ? (
@@ -425,7 +468,11 @@ export default function NominaPage() {
           {result && (
             <>
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-                <SummaryCard label="Sueldo real (semana)" value={fmtCurrency(result.totals.real)} tone="slate" />
+                <SummaryCard
+                  label={esAguinaldo ? "Aguinaldo real (ERP)" : "Sueldo real (semana)"}
+                  value={fmtCurrency(result.totals.real)}
+                  tone="slate"
+                />
                 <SummaryCard label="Depósito fiscal (NETO)" value={fmtCurrency(result.totals.fiscal)} tone="sky" />
                 <SummaryCard label="A pagar en efectivo" value={fmtCurrency(result.totals.efectivo)} tone="emerald" />
                 <SummaryCard label="Empleados en documento" value={String(result.counts.total - result.counts.sin_fiscal)} tone="blue" />
@@ -512,7 +559,9 @@ export default function NominaPage() {
                               <TableHead className="text-slate-400 text-xs">Código</TableHead>
                               <TableHead className="text-slate-400 text-xs">Empleado</TableHead>
                               <TableHead className="text-slate-400 text-xs">Depto (reporte)</TableHead>
-                              <TableHead className="text-slate-400 text-xs text-right">Sueldo real</TableHead>
+                              <TableHead className="text-slate-400 text-xs text-right">
+                                {esAguinaldo ? "Aguinaldo real" : "Sueldo real"}
+                              </TableHead>
                               <TableHead className="text-slate-400 text-xs text-right">Depósito (fiscal)</TableHead>
                               <TableHead className="text-slate-400 text-xs text-right">Efectivo</TableHead>
                               <TableHead className="text-slate-400 text-xs">Cuenta</TableHead>

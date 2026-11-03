@@ -25,6 +25,7 @@ export type EmployeeAuditSource = {
   payroll_code: string | null
   real_salary: number | string | null
   overtime_hour_cost: number | string | null
+  aguinaldo_amount: number | string | null
   bonus_amount: number | string | null
   viatics_amount: number | string | null
 
@@ -156,6 +157,7 @@ export function buildEmployeeAudit(src: EmployeeAuditSource): EmployeeAudit {
     { key: "payroll_code", short: "Cód", label: "Código de nómina", ...text(src.payroll_code) },
     { key: "real_salary", short: "Sdo", label: "Sueldo real", ...money(src.real_salary) },
     { key: "overtime", short: "H.Ex", label: "Costo de hora extra", ...money(src.overtime_hour_cost) },
+    { key: "aguinaldo", short: "Agui", label: "Aguinaldo", ...money(src.aguinaldo_amount) },
   ]
 
   // La residencia sólo se exige a los foráneos

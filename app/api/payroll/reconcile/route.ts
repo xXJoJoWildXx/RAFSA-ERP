@@ -266,6 +266,7 @@ export async function POST(req: Request) {
       unmatched: lines.filter((l) => l.match_status === "unmatched").length,
       sin_asistencia: lines.filter((l) => l.match_status === "sin_asistencia").length,
       sin_fiscal: lines.filter((l) => l.match_status === "sin_fiscal").length,
+      sin_aguinaldo: 0,
     }
 
     // Orden: por obra ERP / departamento, luego por nombre
@@ -279,6 +280,7 @@ export async function POST(req: Request) {
     })
 
     const result: ReconResult = {
+      kind: "nomina",
       week_start: weekStart,
       week_end: weekEnd,
       period_label: parsed.periodLabel,
