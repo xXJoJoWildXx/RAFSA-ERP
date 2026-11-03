@@ -69,6 +69,7 @@ type ReconKindUI = "nomina" | "aguinaldo"
 
 type RunRow = {
   id: string
+  kind?: string | null
   week_start: string
   week_end: string
   period_label: string | null
@@ -276,6 +277,7 @@ export default function NominaPage() {
       flags: [],
     }))
     const asResult: ReconResult = {
+      kind: run.kind === "aguinaldo" ? "aguinaldo" : "nomina",
       week_start: run.week_start,
       week_end: run.week_end,
       period_label: run.period_label,
@@ -290,7 +292,7 @@ export default function NominaPage() {
         fiscal: Number(run.total_fiscal) || 0,
         efectivo: Number(run.total_efectivo) || 0,
       },
-      counts: { total: lines.length, matched: 0, unmatched: 0, sin_asistencia: 0, sin_fiscal: 0 },
+      counts: { total: lines.length, matched: 0, unmatched: 0, sin_asistencia: 0, sin_fiscal: 0, sin_aguinaldo: 0 },
       lines,
     }
     if (format === "xlsx") await generatePayrollReportXlsx(asResult)
