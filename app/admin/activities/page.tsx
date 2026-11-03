@@ -194,10 +194,20 @@ export default function ActivitiesPage() {
                             {formatEventType(act.event_type)}
                           </span>
                         </td>
-                        <td className="px-5 py-4 text-slate-300 max-w-xs truncate">
-                          {act.entity_label ?? (
-                            <span className="text-slate-600 italic">Sin descripción</span>
-                          )}
+                        <td className="px-5 py-4 text-slate-300">
+                          <div className="max-w-md">
+                            <p className="truncate" title={act.entity_label ?? undefined}>
+                              {act.entity_label ?? (
+                                <span className="text-slate-600 italic">Sin descripción</span>
+                              )}
+                            </p>
+                            {/* La obra se guarda en metadata desde el tab de Equipo */}
+                            {act.metadata?.obra_name && (
+                              <p className="text-[11px] text-slate-500 truncate mt-0.5">
+                                Obra: {String(act.metadata.obra_name)}
+                              </p>
+                            )}
+                          </div>
                         </td>
                         <td className="px-5 py-4 text-slate-400 hidden md:table-cell">
                           {act.actor_email ?? (

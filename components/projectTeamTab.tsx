@@ -105,6 +105,14 @@ const selectContentCls = "bg-slate-800 border-slate-700 text-slate-200"
 const btnOutlineCls = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200"
 
 export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamChange }: Props) {
+  // Etiqueta de la obra para el registro de actividades
+  const obraNombre = obraInfo?.name ?? null
+  const obraCodigo = obraInfo?.code ?? null
+  const obraLabel = obraNombre
+    ? obraCodigo
+      ? `${obraCodigo} · ${obraNombre}`
+      : obraNombre
+    : null
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -408,8 +416,15 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
       logActivity({
         event_type: evType,
         entity_type: "team",
-        entity_label: addedEmp?.full_name ?? addForm.employee_id,
-        metadata: { obra_id: obraId, role_on_site: addForm.role_on_site },
+        entity_label: obraLabel
+          ? `${addedEmp?.full_name ?? addForm.employee_id} → ${obraLabel}`
+          : (addedEmp?.full_name ?? addForm.employee_id),
+        metadata: {
+          obra_id: obraId,
+          obra_name: obraLabel,
+          employee_name: addedEmp?.full_name ?? null,
+          role_on_site: addForm.role_on_site,
+        },
       })
       setAddOpen(false)
       setSavingAdd(false)
@@ -435,8 +450,13 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
     logActivity({
       event_type: "team.member_removed",
       entity_type: "team",
-      entity_label: member.full_name,
-      metadata: { obra_id: obraId, role_on_site: member.role_on_site },
+      entity_label: obraLabel ? `${member.full_name} ← ${obraLabel}` : member.full_name,
+      metadata: {
+        obra_id: obraId,
+        obra_name: obraLabel,
+        employee_name: member.full_name,
+        role_on_site: member.role_on_site,
+      },
     })
     await fetchMembers()
     onTeamChange?.()
@@ -614,8 +634,17 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
       logActivity({
         event_type: "team.member_added",
         entity_type: "team",
-        entity_label: transferInfo.employeeName,
-        metadata: { obra_id: obraId, from_obra: transferInfo.fromObraName, role_on_site: addForm.role_on_site, transferred: true },
+        entity_label: obraLabel
+          ? `${transferInfo.employeeName} · ${transferInfo.fromObraName} → ${obraLabel}`
+          : transferInfo.employeeName,
+        metadata: {
+          obra_id: obraId,
+          obra_name: obraLabel,
+          employee_name: transferInfo.employeeName,
+          from_obra: transferInfo.fromObraName,
+          role_on_site: addForm.role_on_site,
+          transferred: true,
+        },
       })
       setTransferConfirmOpen(false)
       setTransferInfo(null)

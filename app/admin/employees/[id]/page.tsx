@@ -1583,6 +1583,25 @@ export default function EmployeeDetailPage() {
       }
 
       const updatedRow = data as EmployeeRow
+
+      // Cambio de estatus: se compara contra el valor que tenía antes de guardar
+      const estatusAnterior = (employee?.statusRaw || "").toLowerCase()
+      const estatusNuevo = (updatedRow.status || "").toLowerCase()
+      if (estatusAnterior && estatusNuevo && estatusAnterior !== estatusNuevo) {
+        const legible = (v: string) => (v === "active" ? "Activo" : "Inactivo")
+        await logActivity({
+          event_type: "employee.status_changed",
+          entity_type: "employee",
+          entity_id: id,
+          entity_label: `${updatedRow.full_name}: ${legible(estatusAnterior)} → ${legible(estatusNuevo)}`,
+          metadata: {
+            employee_name: updatedRow.full_name,
+            from_status: estatusAnterior,
+            to_status: estatusNuevo,
+          },
+        })
+      }
+
       setEmployee((prev) => {
         const next = mapRowToDetail(updatedRow)
         next.roles = prev?.roles || []
@@ -1622,6 +1641,26 @@ export default function EmployeeDetailPage() {
           // La API de salarios no devuelve user_id; conservamos el vínculo de cuenta
           next.user_id = updatedRow.user_id ?? prev?.user_id ?? null
           return next
+        })
+      }
+
+      // Sólo se registra si realmente cambió algo: la API devuelve updated=false
+      // cuando los montos venían iguales, y una actividad por cada "Guardar"
+      // sin cambios sólo ensucia el historial.
+      if (result?.updated !== false) {
+        await logActivity({
+          event_type: "employee.salary_updated",
+          entity_type: "employee",
+          entity_id: id,
+          entity_label: employee?.name ?? "Empleado",
+          metadata: {
+            employee_name: employee?.name ?? null,
+            real_salary: Number(editForm.real_salary) || 0,
+            bonus_amount: Number(editForm.bonus_amount) || 0,
+            overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
+            viatics_amount: Number(editForm.viatics_amount) || 0,
+            aguinaldo_amount: Number(editForm.aguinaldo_amount) || 0,
+          },
         })
       }
 
