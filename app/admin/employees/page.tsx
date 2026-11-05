@@ -31,6 +31,7 @@ import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { generateEmployeesPdf } from "@/lib/generateEmployeesPdf"
 import type { EmployeeAuditSource } from "@/lib/employeeCompleteness"
+import { formatTenure, normalizeName } from "@/lib/employeeTenure"
 
 // ----- Tipos que reflejan la DB real -----
 
@@ -42,6 +43,8 @@ type EmployeeRow = {
   hire_date: string | null
   birth_date: string | null
   photo_url: string | null
+  tenure_accumulated_days?: number | null
+  tenure_started_on?: string | null
 }
 
 type RoleCatalogRow = {
@@ -74,6 +77,8 @@ type Employee = {
   status: "Activo" | "De permiso" | "Inactivo"
   projects: number
   joinDate: string
+  /** Antigüedad real: sólo cuenta el tiempo que estuvo contratado. */
+  tenure: string
   birth_date: string | null
   avatar: string
   photo_url: string | null
@@ -183,29 +188,6 @@ function calculateAge(birthDate: string | null): number | null {
   return age
 }
 
-function calculateTenure(hireDate: string | null): string {
-  if (!hireDate) return "No especificado"
-  const parts = hireDate.split("T")[0]?.split("-")
-  if (!parts || parts.length !== 3) return "No especificado"
-  const [year, month, day] = parts.map(Number)
-  const hire = new Date(year, month - 1, day)
-  if (Number.isNaN(hire.getTime())) return "No especificado"
-  const today = new Date()
-  let years = today.getFullYear() - hire.getFullYear()
-  let months = today.getMonth() - hire.getMonth()
-  let days = today.getDate() - hire.getDate()
-  if (days < 0) {
-    months--
-    days += new Date(today.getFullYear(), today.getMonth(), 0).getDate()
-  }
-  if (months < 0) { years--; months += 12 }
-  const segs: string[] = []
-  if (years > 0) segs.push(`${years} ${years === 1 ? "año" : "años"}`)
-  if (months > 0) segs.push(`${months} ${months === 1 ? "mes" : "meses"}`)
-  if (days > 0 || segs.length === 0) segs.push(`${days} ${days === 1 ? "día" : "días"}`)
-  return segs.join(", ")
-}
-
 function mapEmployeeRowToEmployee(
   row: EmployeeRow,
   roles: Employee["roles"] = [],
@@ -229,6 +211,7 @@ function mapEmployeeRowToEmployee(
     status: uiStatus,
     projects,
     joinDate: row.hire_date ?? "",
+    tenure: formatTenure(row),
     birth_date: row.birth_date ?? null,
     avatar: makeAvatarInitials(row.full_name),
     photo_url: row.photo_url ?? null,
@@ -408,7 +391,9 @@ export default function AdminEmployeesPage() {
             status,
             hire_date,
             birth_date,
-            photo_url
+            photo_url,
+            tenure_accumulated_days,
+            tenure_started_on
           `,
           )
 
@@ -608,7 +593,54 @@ export default function AdminEmployeesPage() {
       return
     }
 
+    // ── No se permiten dos empleados con el mismo nombre ──
+    // Se compara normalizado (sin acentos, sin dobles espacios, sin importar
+    // mayúsculas) y contra TODOS, activos e inactivos: un trabajador que
+    // volvió se reactiva, no se vuelve a crear.
+    const nombre = newEmployee.full_name.trim()
+    const nombreNorm = normalizeName(nombre)
+
+    // 1) Contra lo que ya está en pantalla: atrapa acentos y espacios de sobra
+    const repetidoLocal = employees.find((e) => normalizeName(e.name) === nombreNorm)
+    if (repetidoLocal) {
+      alert(
+        `Ya existe un empleado con ese nombre: "${repetidoLocal.name}" (${repetidoLocal.status}).\n\n` +
+          "Si es la misma persona que regresó, búscala en la lista y márcala como Activa en vez de crearla de nuevo.",
+      )
+      return
+    }
+
+    // 2) Contra la base, por si hay alguien que la pantalla no tenga cargado
     setCreating(true)
+    try {
+      const { data: existentes, error: dupErr } = await supabase
+        .from("employees")
+        .select("id, full_name, status")
+        .ilike("full_name", nombre)
+        .limit(1)
+      if (dupErr) {
+        console.error("Error validando nombre duplicado:", stringifyAnyError(dupErr))
+        alert("No se pudo verificar si el empleado ya existe. Intenta de nuevo.")
+        setCreating(false)
+        return
+      }
+      if (existentes && existentes.length > 0) {
+        const ya = existentes[0]
+        alert(
+          `Ya existe un empleado con ese nombre: "${ya.full_name}" (${
+            ya.status === "active" ? "Activo" : "Inactivo"
+          }).\n\n` +
+            "Si es la misma persona que regresó, búscala en la lista y márcala como Activa en vez de crearla de nuevo.",
+        )
+        setCreating(false)
+        return
+      }
+    } catch (e) {
+      console.error("Error validando nombre duplicado:", e)
+      alert("No se pudo verificar si el empleado ya existe. Intenta de nuevo.")
+      setCreating(false)
+      return
+    }
 
     const payload = {
       full_name: newEmployee.full_name.trim(),
@@ -1303,7 +1335,7 @@ export default function AdminEmployeesPage() {
                             {/* Tiempo */}
                             <div className="flex items-center gap-2 text-sm text-slate-400">
                               <Clock className="w-4 h-4 flex-shrink-0 text-slate-500" />
-                              <span className="truncate">{calculateTenure(employee.joinDate)}</span>
+                              <span className="truncate">{employee.tenure}</span>
                             </div>
                           </div>
 

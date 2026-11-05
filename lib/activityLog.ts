@@ -12,6 +12,9 @@ export type ActivityEventType =
   | "billing.cotizacion_registered" | "billing.cotizacion_updated" | "billing.cotizacion_deleted"
   | "billing.aditivo_added" | "billing.aditivo_updated" | "billing.aditivo_deleted"
   | "billing.financials_registered" | "billing.financials_deleted"
+  | "inventory.order_created" | "inventory.order_deleted"
+  | "inventory.order_delivered" | "inventory.order_completed"
+  | "inventory.invoice_uploaded"
   | "document.uploaded" | "document.deleted"
 
 export async function logActivity(params: {
@@ -64,6 +67,11 @@ export function formatEventType(event_type: string): string {
     "billing.aditivo_added":         "Aditivo agregado",
     "billing.aditivo_updated":       "Aditivo actualizado",
     "billing.aditivo_deleted":       "Aditivo eliminado",
+    "inventory.order_created":       "Orden creada",
+    "inventory.order_deleted":       "Orden eliminada",
+    "inventory.order_delivered":     "Orden entregada",
+    "inventory.order_completed":     "Orden completada",
+    "inventory.invoice_uploaded":    "Factura de orden subida",
     "document.uploaded":             "Documento subido",
     "document.deleted":              "Documento eliminado",
   }
@@ -78,6 +86,7 @@ export function entityBadgeClass(entity_type: string): string {
     empresa:  "bg-purple-500/15 text-purple-400",
     team:     "bg-amber-500/15 text-amber-400",
     billing:  "bg-emerald-500/15 text-emerald-400",
+    inventory: "bg-cyan-500/15 text-cyan-400",
     document: "bg-slate-600/40 text-slate-400",
   }
   return m[t] ?? "bg-slate-600/40 text-slate-400"

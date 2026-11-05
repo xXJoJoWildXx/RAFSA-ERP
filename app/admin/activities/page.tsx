@@ -48,7 +48,9 @@ export default function ActivitiesPage() {
         .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1)
 
       if (entityFilter !== "all") {
-        query = query.eq("entity_type", entityFilter)
+        // Prefijo, no igualdad: hay entidades con subtipo ("inventory.order",
+        // "inventory.order_invoice") que con eq() quedaban fuera del filtro.
+        query = query.like("entity_type", `${entityFilter}%`)
       }
 
       const { data, count, error } = await query
@@ -151,6 +153,7 @@ export default function ActivitiesPage() {
                 <SelectItem value="empresa">Empresas</SelectItem>
                 <SelectItem value="team">Equipo</SelectItem>
                 <SelectItem value="billing">Facturación</SelectItem>
+                <SelectItem value="inventory">Órdenes de almacén</SelectItem>
                 <SelectItem value="document">Documentos</SelectItem>
               </SelectContent>
             </Select>

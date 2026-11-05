@@ -174,6 +174,14 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
   }
   const draftTotal = drafts.reduce((s, d) => s + (Number(d.quantity) || 0) * Number(d.product.current_price), 0)
 
+  /** Etiqueta de la bitácora: el folio y a qué obra va (o iba). Sin el
+   *  destino, un folio suelto no dice nada en el feed de actividad. */
+  function etiquetaOrden(folio: string, destino?: string | null, tipo?: string) {
+    const lugar = destino?.trim()
+    if (!lugar) return folio
+    return tipo === "purchase" ? `${folio} · ${lugar}` : `${folio} → ${lugar}`
+  }
+
   async function createOrder() {
     if (drafts.length === 0) return
     if (!newEmpresa) { notify("Selecciona la empresa.", "warning"); return }
@@ -207,7 +215,14 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
         unit_price: Number(d.product.current_price),
       }))
       await supabase.from("inventory_order_items").insert(itemRows)
-      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: order.id, entity_label: order.folio, metadata: { type: "dispatch", items: drafts.length } })
+      const obraDestino = obras.find((o) => o.id === newObra)?.name ?? null
+      await logActivity({
+        event_type: "inventory.order_created",
+        entity_type: "inventory.order",
+        entity_id: order.id,
+        entity_label: etiquetaOrden(order.folio, obraDestino, "dispatch"),
+        metadata: { folio: order.folio, obra_id: newObra, obra_name: obraDestino, type: "dispatch", items: drafts.length },
+      })
       setCreateOpen(false)
       await loadOrders()
       notify("Orden creada correctamente.", "success")
@@ -307,7 +322,13 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       if (detail.status === "pending") {
         await supabase.from("inventory_orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", detail.id)
       }
-      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order_invoice", entity_id: detail.id, entity_label: detail.folio, metadata: { is_cfdi: isCfdi, cfdi_total: cfdi?.total ?? null, matches } })
+      await logActivity({
+        event_type: "inventory.invoice_uploaded",
+        entity_type: "inventory.order_invoice",
+        entity_id: detail.id,
+        entity_label: etiquetaOrden(detail.folio, detail.obra_name, detail.type),
+        metadata: { folio: detail.folio, obra_name: detail.obra_name ?? null, is_cfdi: isCfdi, cfdi_total: cfdi?.total ?? null, matches },
+      })
       await openDetail({ ...detail, status: detail.status === "pending" ? "in_progress" : detail.status })
       await loadOrders()
       setInvNumber(""); setInvAmount(""); setInvFile(null); setCfdi(null)
@@ -345,7 +366,13 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
         .update({ status: "delivered", delivered_at: new Date().toISOString(), delivered_by: user?.id ?? null, updated_at: new Date().toISOString() })
         .eq("id", detail.id)
       if (error) throw error
-      await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "delivered", type: detail.type } })
+      await logActivity({
+        event_type: "inventory.order_delivered",
+        entity_type: "inventory.order",
+        entity_id: detail.id,
+        entity_label: etiquetaOrden(detail.folio, detail.obra_name, detail.type),
+        metadata: { folio: detail.folio, obra_name: detail.obra_name ?? null, action: "delivered", type: detail.type },
+      })
       setDetail(null)
       await loadOrders()
       notify(`Entrega confirmada. ${detail.folio} quedó como "entregada · factura pendiente".`, "success")
@@ -376,7 +403,13 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       if (!detail.delivered_at) { patch.delivered_at = new Date().toISOString(); patch.delivered_by = user?.id ?? null }
       const { error } = await supabase.from("inventory_orders").update(patch).eq("id", detail.id)
       if (error) throw error
-      await logActivity({ event_type: "billing.payment_registered" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "completed", type: detail.type } })
+      await logActivity({
+        event_type: "inventory.order_completed",
+        entity_type: "inventory.order",
+        entity_id: detail.id,
+        entity_label: etiquetaOrden(detail.folio, detail.obra_name, detail.type),
+        metadata: { folio: detail.folio, obra_name: detail.obra_name ?? null, action: "completed", type: detail.type },
+      })
       setDetail(null)
       await loadOrders()
       notify(`${detail.folio} completada al 100%.`, "success")
@@ -401,6 +434,8 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     setBusy(true)
     const folio = detail.folio
     const orderId = detail.id
+    const obraDestino = detail.obra_name ?? null
+    const tipoOrden = detail.type
     try {
       const { data: sessionData } = await supabase.auth.getSession()
       const token = sessionData?.session?.access_token
@@ -412,11 +447,11 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
       if (!res.ok) throw new Error(json?.error || "No se pudo eliminar la orden.")
 
       await logActivity({
-        event_type: "document.deleted" as any,
+        event_type: "inventory.order_deleted",
         entity_type: "inventory.order",
         entity_id: orderId,
-        entity_label: folio,
-        metadata: { action: "deleted" },
+        entity_label: etiquetaOrden(folio, obraDestino, tipoOrden),
+        metadata: { folio, obra_name: obraDestino, type: tipoOrden, action: "deleted" },
       })
       setDetail(null)
       await loadOrders()
