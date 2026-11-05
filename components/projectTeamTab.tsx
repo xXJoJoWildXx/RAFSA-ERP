@@ -277,7 +277,7 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
         position_title,
         status,
         employee_roles(
-          employee_roles_catalog(code)
+          employee_roles_catalog(code, attendance_exempt)
         )
       `)
       .eq("status", "active")
@@ -290,7 +290,14 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
       return
     }
 
-    const mapped: EmployeeRow[] = (data || []).map((emp: any) => ({
+    // El personal exento de asistencia (Administración) no se asigna a obras:
+    // cobra sueldo fijo y no pasa por la nómina de obra.
+    const esExento = (emp: any) =>
+      (emp.employee_roles || []).some(
+        (er: any) => er.employee_roles_catalog?.attendance_exempt === true,
+      )
+
+    const mapped: EmployeeRow[] = (data || []).filter((emp: any) => !esExento(emp)).map((emp: any) => ({
       id: emp.id,
       full_name: emp.full_name,
       position_title: emp.position_title ?? null,

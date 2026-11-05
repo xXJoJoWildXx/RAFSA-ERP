@@ -2,7 +2,11 @@
 // Concilia el documento fiscal (CONTPAQi) contra el sueldo real de la semana.
 // El sueldo real se calcula DIRECTAMENTE de obra_attendance + sueldos del empleado
 // (misma fórmula que nominasTab), de forma INDEPENDIENTE a si ya se generó o no la
-// nómina de la obra. Sube el archivo al bucket, parsea, empata por código y calcula
+// nómina de la obra.
+// EXCEPCIÓN: los empleados con un rol exento de asistencia (Administración) no pasan
+// por obra_attendance. A ellos se les paga el sueldo real completo + las horas extra
+// capturadas en admin_overtime, sin descuento por faltas, y siempre aparecen en la
+// dispersión (como "Sin fiscal" si no vienen en el documento de la contadora). Sube el archivo al bucket, parsea, empata por código y calcula
 // el efectivo. Devuelve un PREVIEW (no guarda nada todavía).
 
 import { NextResponse } from "next/server"
@@ -89,7 +93,7 @@ export async function POST(req: Request) {
     const { data: empData, error: empErr } = await admin
       .from("employees")
       .select(
-        "id, full_name, payroll_code, bank_name, account_number, interbank_clabe, real_salary, bonus_amount, viatics_amount, overtime_hour_cost",
+        "id, full_name, payroll_code, status, bank_name, account_number, interbank_clabe, real_salary, bonus_amount, viatics_amount, overtime_hour_cost",
       )
     if (empErr)
       return NextResponse.json(
@@ -102,6 +106,34 @@ export async function POST(req: Request) {
       empById.set(e.id, e)
       const key = normalizeCode(e.payroll_code)
       if (key) empByCode.set(key, e)
+    }
+
+    // ── 3b) Empleados exentos de asistencia (Administración) ──
+    const exemptIds = new Set<string>()
+    const exemptRoleName = new Map<string, string>()
+    {
+      const { data: exRoles } = await admin
+        .from("employee_roles")
+        .select("employee_id, employee_roles_catalog!inner(name, attendance_exempt)")
+        .eq("employee_roles_catalog.attendance_exempt", true)
+      for (const r of (exRoles || []) as any[]) {
+        if (!r.employee_id) continue
+        exemptIds.add(r.employee_id)
+        const nombre = r.employee_roles_catalog?.name
+        if (nombre && !exemptRoleName.has(r.employee_id)) exemptRoleName.set(r.employee_id, nombre)
+      }
+    }
+
+    // Horas extra capturadas manualmente para el personal exento (una fila por semana)
+    const exemptOtHours = new Map<string, number>()
+    if (exemptIds.size) {
+      const { data: otData } = await admin
+        .from("admin_overtime")
+        .select("employee_id, hours")
+        .eq("week_start", weekStart)
+      for (const r of (otData || []) as any[]) {
+        exemptOtHours.set(r.employee_id, Number(r.hours) || 0)
+      }
     }
 
     // ── 4) Sueldo real de la semana desde ASISTENCIA (independiente de la nómina) ──
@@ -131,10 +163,21 @@ export async function POST(req: Request) {
 
     // Calcula el total real de un empleado con la MISMA fórmula de nominasTab
     function computeReal(empId: string): RealInfo | null {
-      const recs = attByEmp.get(empId)
-      if (!recs || recs.length === 0) return null // sin asistencia registrada → no calculable
       const emp = empById.get(empId)
       if (!emp) return null
+
+      // Personal exento (Administración): sueldo completo + horas extra capturadas.
+      // No se le descuentan faltas ni se le revisa asistencia.
+      if (exemptIds.has(empId)) {
+        const realSalary = Number(emp.real_salary) || 0
+        const otCost = Number(emp.overtime_hour_cost) || 0
+        const hours = exemptOtHours.get(empId) || 0
+        const total = round2(realSalary + round2(hours * otCost))
+        return { total, obras: new Set<string>(), daysAbsent: 0 }
+      }
+
+      const recs = attByEmp.get(empId)
+      if (!recs || recs.length === 0) return null // sin asistencia registrada → no calculable
 
       const realSalary = Number(emp.real_salary) || 0
       const bonus = Number(emp.bonus_amount) || 0
@@ -226,6 +269,33 @@ export async function POST(req: Request) {
           flags: ["unmatched"],
         })
       }
+    }
+
+    // Personal exento activo (Administración): siempre debe aparecer en la dispersión,
+    // aunque no tenga asistencia ni venga en el documento de la contadora.
+    for (const empId of exemptIds) {
+      if (consumedEmp.has(empId)) continue
+      const emp = empById.get(empId)
+      if (!emp || emp.status !== "active") continue
+      const real = realOf(empId)
+      if (!real) continue
+      consumedEmp.add(empId)
+      lines.push({
+        codigo: emp.payroll_code ?? null,
+        employee_id: empId,
+        employee_name_raw: null,
+        employee_name_erp: emp.full_name ?? "(empleado)",
+        departamento_raw: exemptRoleName.get(empId) ?? "Administración",
+        obra_names_erp: [],
+        real_total: real.total,
+        fiscal_neto: 0,
+        efectivo: real.total,
+        bank_name: emp.bank_name ?? null,
+        account_number: emp.account_number ?? null,
+        interbank_clabe: emp.interbank_clabe ?? null,
+        match_status: "sin_fiscal",
+        flags: ["sin_fiscal"],
+      })
     }
 
     // Empleados con asistencia esta semana pero que NO aparecen en el documento fiscal

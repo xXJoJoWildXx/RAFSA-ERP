@@ -78,6 +78,9 @@ interface Props {
   onPaymentRegistered?: () => void
   /** Cambia (se incrementa) para forzar recarga cuando el padre modifica aditivas */
   reloadSignal?: number
+  /** Se llama cada vez que cambian las facturas, para que el padre sepa qué
+   *  aditivas ya tienen su factura con archivo subido (y quedan cerradas). */
+  onFacturasChanged?: (aditivosFacturados: string[]) => void
 }
 
 /* ─── Helpers ─── */
@@ -89,13 +92,25 @@ function toLocalDateStr(d: Date): string {
   return `${y}-${m}-${day}`
 }
 
+/** Fecha legible (dd/mm/aaaa) a partir de un date o timestamptz de Postgres. */
+function fmtDateDisplay(value: string | null | undefined): string {
+  if (!value) return "—"
+  // Un 'date' puro (2026-11-04) se parte a mano: new Date() lo leería como UTC
+  // y en México lo correría un día hacia atrás.
+  const soloFecha = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (soloFecha) return `${soloFecha[3]}/${soloFecha[2]}/${soloFecha[1]}`
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return "—"
+  return d.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" })
+}
+
 function fmtCurrency(value: number, currency: string = "MXN"): string {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency, minimumFractionDigits: 2 }).format(value)
 }
 
 /* ─── Component ─── */
 
-export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentRegistered, reloadSignal }: Props) {
+export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentRegistered, reloadSignal, onFacturasChanged }: Props) {
   // Data
   const [estimaciones, setEstimaciones] = useState<Estimacion[]>([])
   const [aditivos, setAditivos] = useState<Aditivo[]>([])
@@ -127,7 +142,14 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   // Payment dialog
   const [payDialogOpen, setPayDialogOpen] = useState(false)
   const [payTargetFac, setPayTargetFac] = useState<Factura | null>(null)
-  const [payForm, setPayForm] = useState({ amount: "", note: "", method: "transfer", bank_ref: "" })
+  // paid_on = el día en que de verdad se hizo el pago (puede ser anterior al registro)
+  const [payForm, setPayForm] = useState({
+    amount: "",
+    note: "",
+    method: "transfer",
+    bank_ref: "",
+    paid_on: toLocalDateStr(new Date()),
+  })
   const [savingPay, setSavingPay] = useState(false)
 
   // File preview
@@ -183,6 +205,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     setAnticipoPct(Number(obraData?.anticipo_pct ?? 0))
 
     // Load attachments for facturas
+    const facAttMap: Record<string, FacturaAttachment> = {}
     if (loadedFac.length > 0) {
       const facIds = loadedFac.map((f: Factura) => f.id)
       const { data: attData } = await supabase
@@ -191,9 +214,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
         .eq("ref_table", "obra_facturas")
         .in("ref_id", facIds)
 
-      const attMap: Record<string, FacturaAttachment> = {}
-      ;(attData || []).forEach((a: any) => { attMap[a.ref_id] = a })
-      setAttachments(attMap)
+      ;(attData || []).forEach((a: any) => { facAttMap[a.ref_id] = a })
+      setAttachments(facAttMap)
     }
 
     // Load attachments for estimaciones
@@ -209,6 +231,19 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
       ;(estAttData || []).forEach((a: any) => { estAttMap[a.ref_id] = a })
       setEstAttachments(estAttMap)
     }
+
+    // Qué aditivas ya tienen su factura CON ARCHIVO subido: el padre las cierra
+    // a edición. Mientras la factura no tenga archivo, la aditiva sigue abierta.
+    onFacturasChanged?.(
+      Array.from(
+        new Set(
+          loadedFac
+            .filter((f: Factura) => !!f.aditivo_id && !!facAttMap[f.id])
+            .map((f: Factura) => f.aditivo_id)
+            .filter((x): x is string => !!x),
+        ),
+      ),
+    )
 
     setLoading(false)
   }
@@ -522,12 +557,29 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   function openPayDialog(fac: Factura) {
     setPayTargetFac(fac)
     // El monto personalizado NO se auto-rellena; el usuario lo captura.
-    setPayForm({ amount: "", note: "", method: "transfer", bank_ref: "" })
+    setPayForm({
+      amount: "",
+      note: "",
+      method: "transfer",
+      bank_ref: "",
+      paid_on: toLocalDateStr(new Date()),
+    })
     setPayDialogOpen(true)
   }
 
   async function handleRegisterPayment(fullPayment: boolean) {
     if (!payTargetFac) return
+
+    // La fecha del pago es obligatoria y no puede ser futura
+    if (!payForm.paid_on) {
+      alert("Captura la fecha en que se hizo el pago.")
+      return
+    }
+    if (payForm.paid_on > toLocalDateStr(new Date())) {
+      alert("La fecha del pago no puede ser posterior a hoy.")
+      return
+    }
+
     setSavingPay(true)
 
     const remaining = Number(payTargetFac.amount) - Number(payTargetFac.amount_paid)
@@ -556,7 +608,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     const { error: payError } = await supabase.from("obra_state_accounts").insert({
       obra_id: obraId,
       concept,
-      date: toLocalDateStr(new Date()),
+      // date = fecha real del pago; created_at guarda cuándo se capturó
+      date: payForm.paid_on,
       amount: payAmount,
       method: payForm.method,
       bank_ref: payForm.bank_ref.trim() || null,
@@ -568,9 +621,25 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
 
     if (payError) { console.error("payment error:", payError); setSavingPay(false); return }
 
-    // Update factura amount_paid and status
-    const newAmountPaid = Number(payTargetFac.amount_paid) + payAmount
-    const newStatus = newAmountPaid >= Number(payTargetFac.amount) ? "paid" : "partial"
+    // El pagado se DERIVA de los pagos que existen, no se incrementa a ciegas:
+    // así un pago borrado deja de contar y dos capturas simultáneas no se pisan.
+    const { data: pagosReales } = await supabase
+      .from("obra_state_accounts")
+      .select("amount, concept")
+      .eq("factura_id", payTargetFac.id)
+
+    const newAmountPaid =
+      Math.round(
+        ((pagosReales || []) as any[])
+          .filter((p) => p.concept === "deposit" || p.concept === "advance")
+          .reduce((sum, p) => sum + (Number(p.amount) || 0), 0) * 100,
+      ) / 100
+    const newStatus =
+      newAmountPaid <= 0
+        ? "pending"
+        : newAmountPaid >= Number(payTargetFac.amount)
+          ? "paid"
+          : "partial"
 
     await supabase
       .from("obra_facturas")
@@ -806,6 +875,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                     <TableHead className="text-slate-400">Descripción</TableHead>
                     <TableHead className="text-slate-400">Periodo</TableHead>
                     <TableHead className="text-slate-400">Estado</TableHead>
+                    <TableHead className="text-slate-400">Creada</TableHead>
                     <TableHead className="text-right text-slate-400">Monto</TableHead>
                     <TableHead className="text-right text-slate-400">Acciones</TableHead>
                   </TableRow>
@@ -849,6 +919,9 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                               Pendiente
                             </Badge>
                           )}
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-400 align-top whitespace-nowrap">
+                          {fmtDateDisplay(est.created_at)}
                         </TableCell>
                         <TableCell className="text-right font-medium text-slate-200">
                           {fmtCurrency(Number(est.amount), currency)}
@@ -907,7 +980,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                   })}
                   {/* Total row */}
                   <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
-                    <TableCell colSpan={4} className="text-slate-300">Total estimaciones</TableCell>
+                    <TableCell colSpan={5} className="text-slate-300">Total estimaciones</TableCell>
                     <TableCell className="text-right font-bold text-slate-100">
                       {fmtCurrency(estimaciones.reduce((s: number, e: Estimacion) => s + Number(e.amount), 0), currency)}
                     </TableCell>
@@ -1272,7 +1345,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
             const parsedPay = parseFloat((payForm.amount || "").replace(/[^0-9.]/g, ""))
             const payHasValue = payForm.amount.trim() !== "" && !isNaN(parsedPay) && parsedPay > 0
             const payExceeds = payHasValue && parsedPay > remaining
-            const payValid = payHasValue && !payExceeds
+            const fechaValida = !!payForm.paid_on && payForm.paid_on <= toLocalDateStr(new Date())
+            const payValid = payHasValue && !payExceeds && fechaValida
             return (
               <div className="space-y-4 mt-2">
                 {/* Summary */}
@@ -1293,11 +1367,26 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                   </div>
                 </div>
 
+                {/* Fecha real del pago: aplica tanto al pago completo como al parcial */}
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-xs font-medium text-slate-400">Fecha del pago *</label>
+                  <Input
+                    type="date"
+                    value={payForm.paid_on}
+                    max={toLocalDateStr(new Date())}
+                    onChange={(e) => setPayForm((f) => ({ ...f, paid_on: e.target.value }))}
+                    className="cursor-pointer bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:invert"
+                  />
+                  <p className="text-[11px] text-slate-500">
+                    El día en que realmente se hizo el pago. El registro queda con la fecha de hoy.
+                  </p>
+                </div>
+
                 {/* Quick full payment */}
                 <Button
                   className="cursor-pointer w-full bg-green-600 hover:bg-green-700 text-white"
                   onClick={() => handleRegisterPayment(true)}
-                  disabled={savingPay}
+                  disabled={savingPay || !fechaValida}
                 >
                   {savingPay ? <Loader2 className="w-4 h-4 mr-1 animate-spin" /> : <CheckCircle2 className="w-4 h-4 mr-1" />}
                   Registrar pago completo ({fmtCurrency(remaining, currency)})

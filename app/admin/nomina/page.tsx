@@ -44,12 +44,14 @@ import {
   Trash2,
   BadgeCheck,
   ClipboardCheck,
+  Clock,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { listRecentPeriods, fmtDateDisplay } from "@/lib/payroll/weeks"
 import { generatePayrollReportPdf } from "@/lib/payroll/report"
 import { generatePayrollReportXlsx } from "@/lib/payroll/reportXlsx"
 import { AdminAttendance } from "@/components/adminAttendance"
+import { AdminOvertimeCard } from "@/components/adminOvertimeCard"
 import type { ReconLine, ReconResult } from "@/lib/payroll/types"
 
 function fmtCurrency(n: number | null | undefined): string {
@@ -86,7 +88,9 @@ type EmpHit = { id: string; full_name: string; payroll_code: string | null }
 
 export default function NominaPage() {
   const periods = useMemo(() => listRecentPeriods(8), [])
-  const [tab, setTab] = useState<"dispersion" | "asistencia">("dispersion")
+  const [tab, setTab] = useState<"dispersion" | "asistencia" | "administracion">(
+    "dispersion",
+  )
   // Qué documento se concilia. El aguinaldo no usa semana ni asistencia.
   const [kind, setKind] = useState<ReconKindUI>("nomina")
   const esAguinaldo = kind === "aguinaldo"
@@ -339,20 +343,27 @@ export default function NominaPage() {
                 <p className="text-slate-400 text-sm mt-0.5">
                   {tab === "dispersion"
                     ? "Concilia la nómina fiscal contra el sueldo real de la semana y obtén cuánto va en efectivo."
-                    : "Toma la asistencia de cualquier trabajador de cualquier obra."}
+                    : tab === "asistencia"
+                      ? "Toma la asistencia de cualquier trabajador de cualquier obra."
+                      : "Captura las horas extra del personal de oficina, que no pasa por la toma de asistencia."}
                 </p>
               </div>
             </div>
           </div>
 
           {/* Pestañas */}
-          <div className="relative inline-grid grid-cols-2 p-1 rounded-xl bg-slate-800 border border-slate-700/60">
+          <div className="relative inline-grid grid-cols-3 p-1 rounded-xl bg-slate-800 border border-slate-700/60">
             {/* Rectángulo azul deslizante */}
             <span
               className="absolute top-1 bottom-1 left-1 rounded-lg bg-[#0174bd] shadow-[0_2px_8px_rgba(1,116,189,0.4)] transition-transform duration-300 ease-out"
               style={{
-                width: "calc(50% - 4px)",
-                transform: tab === "asistencia" ? "translateX(100%)" : "translateX(0)",
+                width: "calc((100% - 8px) / 3)",
+                transform:
+                  tab === "asistencia"
+                    ? "translateX(100%)"
+                    : tab === "administracion"
+                      ? "translateX(200%)"
+                      : "translateX(0)",
               }}
             />
             <TabBtn active={tab === "dispersion"} onClick={() => setTab("dispersion")} icon={<FileSpreadsheet className="w-4 h-4" />}>
@@ -361,11 +372,18 @@ export default function NominaPage() {
             <TabBtn active={tab === "asistencia"} onClick={() => setTab("asistencia")} icon={<ClipboardCheck className="w-4 h-4" />}>
               Tomar asistencia
             </TabBtn>
+            <TabBtn active={tab === "administracion"} onClick={() => setTab("administracion")} icon={<Clock className="w-4 h-4" />}>
+              Administración
+            </TabBtn>
           </div>
 
           {/* Se mantiene montado (solo oculto) para no perder lo capturado al cambiar de pestaña */}
           <div className={tab === "asistencia" ? "" : "hidden"}>
             <AdminAttendance />
+          </div>
+
+          <div className={tab === "administracion" ? "" : "hidden"}>
+            <AdminOvertimeCard variant="panel" />
           </div>
 
           {tab === "dispersion" && (
