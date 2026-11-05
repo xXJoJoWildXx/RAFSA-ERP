@@ -64,6 +64,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import type { DateRange } from "react-day-picker"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
+import { formatTenure, tenurePaused } from "@/lib/employeeTenure"
 import { upcomingOccurrences, mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 // -------------------- Tipos reales de la DB --------------------
@@ -76,6 +77,8 @@ type EmployeeRow = {
   phone: string | null
   status: string
   hire_date: string | null
+  tenure_accumulated_days?: number | null
+  tenure_started_on?: string | null
   photo_url: string | null
   imss_number: string | null
   rfc: string | null
@@ -147,6 +150,10 @@ type EmployeeDetail = {
   statusUi: "Activo" | "Inactivo" | "De permiso"
   statusRaw: string
   joinDate: string | null
+  /** Antigüedad real, ya descontando el tiempo que estuvo de baja. */
+  tenure: string
+  /** true si la antigüedad está detenida porque está inactivo. */
+  tenurePaused: boolean
 
   avatar: string
   imss_number: string | null
@@ -408,29 +415,6 @@ function calculateAge(birthDate: string | null) {
   return age >= 0 ? age : null
 }
 
-function calculateTenure(hireDate: string | null): string {
-  if (!hireDate) return "No especificado"
-  const parts = hireDate.split("T")[0]?.split("-")
-  if (!parts || parts.length !== 3) return "No especificado"
-  const [year, month, day] = parts.map(Number)
-  const hire = new Date(year, month - 1, day)
-  if (Number.isNaN(hire.getTime())) return "No especificado"
-  const today = new Date()
-  let years = today.getFullYear() - hire.getFullYear()
-  let months = today.getMonth() - hire.getMonth()
-  let days = today.getDate() - hire.getDate()
-  if (days < 0) {
-    months--
-    days += new Date(today.getFullYear(), today.getMonth(), 0).getDate()
-  }
-  if (months < 0) { years--; months += 12 }
-  const segs: string[] = []
-  if (years > 0) segs.push(`${years} ${years === 1 ? "año" : "años"}`)
-  if (months > 0) segs.push(`${months} ${months === 1 ? "mes" : "meses"}`)
-  if (days > 0 || segs.length === 0) segs.push(`${days} ${days === 1 ? "día" : "días"}`)
-  return segs.join(", ")
-}
-
 function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
   const statusUi = mapDbStatusToUi(row.status)
   const realSalary =
@@ -463,6 +447,8 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     statusUi,
     statusRaw: row.status,
     joinDate: row.hire_date ?? null,
+    tenure: formatTenure(row),
+    tenurePaused: tenurePaused(row),
     avatar: makeAvatarInitials(row.full_name),
     imss_number: row.imss_number,
     rfc: row.rfc,
@@ -1031,6 +1017,8 @@ export default function EmployeeDetailPage() {
             phone,
             status,
             hire_date,
+            tenure_accumulated_days,
+            tenure_started_on,
 
             photo_url,
             imss_number,
@@ -1557,6 +1545,8 @@ export default function EmployeeDetailPage() {
           phone,
           status,
           hire_date,
+          tenure_accumulated_days,
+          tenure_started_on,
           photo_url,
           imss_number,
           rfc,
@@ -2698,7 +2688,15 @@ export default function EmployeeDetailPage() {
                   <div className="flex items-center gap-3 text-sm">
                     <Clock className="w-4 h-4 text-slate-500 flex-shrink-0" />
                     <span className="text-slate-400">
-                      Tiempo contratado: {calculateTenure(employee.joinDate)}
+                      Tiempo contratado: {employee.tenure}
+                      {employee.tenurePaused && (
+                        <span
+                          className="ml-1.5 text-amber-400/90"
+                          title="El empleado está inactivo: su antigüedad no está corriendo. Se reanuda al marcarlo Activo."
+                        >
+                          · en pausa
+                        </span>
+                      )}
                     </span>
                   </div>
 
