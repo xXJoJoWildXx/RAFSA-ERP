@@ -18,6 +18,7 @@ import {
   Edit,
   CheckCircle2,
   XCircle,
+  Lock,
   Upload,
   FileText,
   FileCheck2,
@@ -103,6 +104,9 @@ type ObraStateAccountRow = {
   date: string
   bank_ref: string | null
   invoice_number: string | null
+  factura_id: string | null
+  /** Marca de qué card salió el movimiento cuando no cuelga de una factura ('garantia'). */
+  source: string | null
   note: string | null
 }
 
@@ -366,6 +370,9 @@ export default function ProjectDetailPage() {
   const [billingItems, setBillingItems] = useState<BillingItem[]>([])
   // Señal para refrescar EstimacionesFacturasCards cuando cambian las aditivas
   const [estFacReload, setEstFacReload] = useState(0)
+  // Aditivas cuya factura ya tiene el archivo subido: quedan cerradas a edición.
+  // Lo reporta EstimacionesFacturasCards, que es quien carga facturas y adjuntos.
+  const [aditivosFacturados, setAditivosFacturados] = useState<Set<string>>(new Set())
   const [billingDialogOpen, setBillingDialogOpen] = useState(false)
   const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
   const [billingForm, setBillingForm] = useState({
@@ -1184,6 +1191,81 @@ export default function ProjectDetailPage() {
     setManagerName(foundManagerName)
   }
 
+  /**
+   * Recalcula amount_paid y status de unas facturas a partir de los pagos que
+   * REALMENTE existen en obra_state_accounts.
+   *
+   * El monto pagado no se decrementa: se vuelve a sumar desde cero. Así, si se
+   * borra un pago (parcial o completo), la factura deja de estar "Pagada" en vez
+   * de quedarse con un saldo que ya no existe.
+   */
+  async function recomputeFacturasPagadas(facturaIds: (string | null)[]) {
+    const ids = Array.from(new Set(facturaIds.filter((x): x is string => !!x)))
+    if (ids.length === 0) return
+
+    const [{ data: facs }, { data: pagos }] = await Promise.all([
+      supabase.from("obra_facturas").select("id, amount").in("id", ids),
+      supabase
+        .from("obra_state_accounts")
+        .select("factura_id, amount, concept")
+        .in("factura_id", ids),
+    ])
+
+    const pagadoPorFactura = new Map<string, number>()
+    for (const pago of (pagos || []) as any[]) {
+      if (!pago.factura_id) continue
+      if (pago.concept !== "deposit" && pago.concept !== "advance") continue
+      pagadoPorFactura.set(
+        pago.factura_id,
+        (pagadoPorFactura.get(pago.factura_id) || 0) + (Number(pago.amount) || 0),
+      )
+    }
+
+    await Promise.all(
+      ((facs || []) as any[]).map((f) => {
+        const pagado = Math.round((pagadoPorFactura.get(f.id) || 0) * 100) / 100
+        const total = Number(f.amount) || 0
+        const status = pagado <= 0 ? "pending" : pagado >= total ? "paid" : "partial"
+        return supabase
+          .from("obra_facturas")
+          .update({ amount_paid: pagado, status, updated_at: new Date().toISOString() })
+          .eq("id", f.id)
+      }),
+    )
+  }
+
+  /**
+   * El fondo de garantía no cuelga de una factura, así que su estado se deriva
+   * de si existe o no un cobro marcado con source='garantia'. Si se borró el
+   * último, la garantía regresa a "Facturado" (si la factura sigue subida) o a
+   * "Esperando factura".
+   */
+  async function revertGarantiaSiNoQuedanCobros(targetObraId: string) {
+    const { data: cobros } = await supabase
+      .from("obra_state_accounts")
+      .select("id")
+      .eq("obra_id", targetObraId)
+      .eq("source", "garantia")
+      .limit(1)
+    if ((cobros || []).length > 0) return // todavía queda un cobro registrado
+
+    const { data: facturaAtt } = await supabase
+      .from("attachments")
+      .select("id")
+      .eq("ref_table", "obra_garantia_factura")
+      .eq("ref_id", targetObraId)
+      .limit(1)
+
+    await supabase
+      .from("obras")
+      .update({ garantia_status: (facturaAtt || []).length > 0 ? "invoiced" : "pending" })
+      .eq("id", targetObraId)
+      .eq("garantia_status", "paid") // no degradar un estado que no estaba cobrado
+
+    // La obra pudo haberse cerrado al subir el comprobante de la garantía;
+    // eso NO se revierte solo, porque no hay registro del estado anterior.
+  }
+
   // Re-fetcha state accounts (pagos) para refrescar después de un pago desde facturas
   async function refreshStateAccounts() {
     if (!obra) return
@@ -1318,6 +1400,9 @@ export default function ProjectDetailPage() {
       bank_ref: garantiaPayForm.bank_ref.trim() || null,
       note: garantiaPayForm.note.trim() || `Cobro fondo de garantía`,
       uploaded_by: userId,
+      // Sin esta marca el movimiento no se puede distinguir de cualquier otro
+      // depósito, y borrarlo dejaría la garantía como "Cobrada" para siempre.
+      source: "garantia",
     })
 
     // Update obra status to paid
@@ -1630,7 +1715,7 @@ export default function ProjectDetailPage() {
           supabase.from("contracts").select("id, obra_id, contract_amount, currency").eq("obra_id", obraId),
           supabase
             .from("obra_state_accounts")
-            .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, note")
+            .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, factura_id, source, note")
             .eq("obra_id", obraId),
           supabase
             .from("site_reports")
@@ -1890,6 +1975,30 @@ export default function ProjectDetailPage() {
         return
       }
     }
+    // Revalidar contra la DB: la factura pudo haberse subido en otra pestaña.
+    // Cierra el ARCHIVO subido, no el simple registro de la factura.
+    if (editingBillingItem && editingBillingItem.type === "aditivo") {
+      const { data: facRows } = await supabase
+        .from("obra_facturas")
+        .select("id")
+        .eq("aditivo_id", editingBillingItem.id)
+      const facIds = (facRows || []).map((f: any) => f.id)
+      if (facIds.length > 0) {
+        const { data: attRows } = await supabase
+          .from("attachments")
+          .select("id")
+          .eq("ref_table", "obra_facturas")
+          .in("ref_id", facIds)
+          .limit(1)
+        if (attRows && attRows.length > 0) {
+          setBillingError(
+            "Esta aditiva ya tiene su factura subida y quedó cerrada. Elimina primero su factura.",
+          )
+          return
+        }
+      }
+    }
+
     setSavingBilling(true)
     setBillingError(null)
     const { data: authData } = await supabase.auth.getUser()
@@ -1998,6 +2107,11 @@ export default function ProjectDetailPage() {
   }
 
   function openEditBillingItem(item: BillingItem) {
+    // Aditiva con factura ya subida: cerrada, cambiarle el monto la descuadraría
+    if (item.type === "aditivo" && aditivosFacturados.has(item.id)) {
+      alert("Esta aditiva ya tiene su factura subida y no se puede editar. Elimina primero su factura.")
+      return
+    }
     setEditingBillingItem(item)
     setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date, with_iva: item.with_iva })
     setBillingError(null)
@@ -2676,6 +2790,7 @@ export default function ProjectDetailPage() {
               currency={budgetCurrency}
               onPaymentRegistered={refreshStateAccounts}
               reloadSignal={estFacReload}
+              onFacturasChanged={(ids) => setAditivosFacturados(new Set(ids))}
             />
 
             {/* CARD 5 — Pagos y Movimientos */}
@@ -2814,7 +2929,9 @@ export default function ProjectDetailPage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {aditivos.map((item) => (
+                        {aditivos.map((item) => {
+                          const facturada = aditivosFacturados.has(item.id)
+                          return (
                           <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
                             <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
                             <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
@@ -2826,15 +2943,26 @@ export default function ProjectDetailPage() {
                             </TableCell>
                             <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
                             <TableCell className="text-right">
-                              <div className="flex justify-end gap-1">
-                                <Button size="sm" variant="ghost" className="cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-all duration-150" onClick={() => openEditBillingItem(item)}>Editar</Button>
-                                <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(item)}>
-                                  <Trash2 className="w-4 h-4" />
-                                </Button>
-                              </div>
+                              {facturada ? (
+                                <span
+                                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-600/30 text-slate-400 border border-slate-600/50"
+                                  title="Esta aditiva ya tiene su factura subida. Para modificarla, elimina primero su factura."
+                                >
+                                  <Lock className="w-3 h-3" />
+                                  Facturada
+                                </span>
+                              ) : (
+                                <div className="flex justify-end gap-1">
+                                  <Button size="sm" variant="ghost" className="cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-all duration-150" onClick={() => openEditBillingItem(item)}>Editar</Button>
+                                  <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(item)}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              )}
                             </TableCell>
                           </TableRow>
-                        ))}
+                          )
+                        })}
                         <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
                           <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
                           <TableCell className="text-right font-bold text-slate-100">
@@ -3488,6 +3616,12 @@ export default function ProjectDetailPage() {
                   if (!ok) return
                   setDeletingPayments(true)
                   const ids = Array.from(selectedPaymentIds)
+                  // Qué facturas toca este borrado: hay que saberlo ANTES de borrar
+                  const movimientosBorrados = stateAccounts.filter((a) =>
+                    selectedPaymentIds.has(a.id),
+                  )
+                  const facturasAfectadas = movimientosBorrados.map((a) => a.factura_id ?? null)
+                  const tocaGarantia = movimientosBorrados.some((a) => a.source === "garantia")
                   const { error } = await supabase
                     .from("obra_state_accounts")
                     .delete()
@@ -3507,9 +3641,14 @@ export default function ProjectDetailPage() {
                       ids.forEach((id) => delete next[id])
                       return next
                     })
+                    // Sin esto la factura se queda "Pagada" por pagos que ya no existen
+                    await recomputeFacturasPagadas(facturasAfectadas)
+                    if (tocaGarantia && obra) await revertGarantiaSiNoQuedanCobros(obra.id)
                     setSelectedPaymentIds(new Set())
                     setEditPaymentsOpen(false)
                     await loadData()
+                    // Refresca el card de Estimaciones/Facturas con el nuevo saldo
+                    setEstFacReload((n) => n + 1)
                   }
                   setDeletingPayments(false)
                 }}

@@ -43,6 +43,19 @@ interface Props {
   onApplied?: () => void
 }
 
+/** Tasa de IVA vigente en México. Los importes del ERP se manejan CON IVA
+ *  (obra_billing_items.with_iva = true), así que un contrato cotizado en base
+ *  se tiene que escalar antes de capturarlo. */
+const IVA_RATE = 0.16
+
+const round2 = (n: number) => Math.round(n * 100) / 100
+
+/** Escala un importe base a importe con IVA. */
+function conIva(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return null
+  return round2(Number(value) * (1 + IVA_RATE))
+}
+
 function fmtCurrency(value: number, currency = "MXN") {
   if (!Number.isFinite(value)) return "-"
   return new Intl.NumberFormat("es-MX", { style: "currency", currency, minimumFractionDigits: 2 }).format(value)
@@ -97,6 +110,10 @@ export function ContractTermsReviewModal({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  /** ¿El contrato ya traía el IVA incluido? Lo detecta la IA, pero queda
+   *  corregible: si se equivoca, todos los montos salen mal por un 16%. */
+  const [ivaIncluido, setIvaIncluido] = useState(true)
+
   // PDF preview
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
 
@@ -125,9 +142,25 @@ export function ContractTermsReviewModal({
 
   const isEmpty = (v: string | null | undefined) => !v || String(v).trim() === ""
 
+  /** Los montos que se van a capturar: los del contrato tal cual si ya traía
+   *  IVA, o escalados al 16% si venía en base. El ERP guarda todo con IVA. */
+  function montosACapturar(ext: ContractTermsExtraction, incluyeIva: boolean) {
+    const ajusta = (v: number | null | undefined) =>
+      incluyeIva ? (v ?? null) : conIva(v)
+    return {
+      monto_total: ajusta(ext.monto_total),
+      anticipo_amount: ajusta(ext.anticipo?.monto),
+      saldo_amount: ajusta(ext.saldo?.monto),
+      garantia_amount: ajusta(ext.garantia?.monto),
+    }
+  }
+
   // Init form from extraction
   useEffect(() => {
     if (!extraction) return
+    const incluyeIva = extraction.iva_incluido !== false
+    setIvaIncluido(incluyeIva)
+    const m = montosACapturar(extraction, incluyeIva)
     setForm({
       cliente: extraction.cliente ?? "",
       ubicacion: extraction.ubicacion ?? "",
@@ -135,17 +168,31 @@ export function ContractTermsReviewModal({
       nombre: extraction.nombre_obra ?? "",
       fecha_inicio: extraction.fecha_inicio ?? "",
       fecha_termino: extraction.fecha_termino ?? "",
-      monto_total: numOrEmpty(extraction.monto_total),
+      monto_total: numOrEmpty(m.monto_total),
       anticipo_pct: numOrEmpty(extraction.anticipo?.porcentaje),
-      anticipo_amount: numOrEmpty(extraction.anticipo?.monto),
+      anticipo_amount: numOrEmpty(m.anticipo_amount),
       saldo_pct: numOrEmpty(extraction.saldo?.porcentaje),
-      saldo_amount: numOrEmpty(extraction.saldo?.monto),
+      saldo_amount: numOrEmpty(m.saldo_amount),
       garantia_pct: numOrEmpty(extraction.garantia?.porcentaje),
-      garantia_amount: numOrEmpty(extraction.garantia?.monto),
+      garantia_amount: numOrEmpty(m.garantia_amount),
     })
     setError(null)
     setCotizacionChoice("replace")
   }, [extraction])
+
+  /** Corregir la detección de la IA: recalcula los montos desde el contrato. */
+  function cambiarIvaIncluido(incluyeIva: boolean) {
+    setIvaIncluido(incluyeIva)
+    if (!extraction) return
+    const m = montosACapturar(extraction, incluyeIva)
+    setForm((f) => ({
+      ...f,
+      monto_total: numOrEmpty(m.monto_total),
+      anticipo_amount: numOrEmpty(m.anticipo_amount),
+      saldo_amount: numOrEmpty(m.saldo_amount),
+      garantia_amount: numOrEmpty(m.garantia_amount),
+    }))
+  }
 
   // Load PDF preview + existing state when opened
   useEffect(() => {
@@ -250,13 +297,16 @@ export function ContractTermsReviewModal({
       rows.push({ label, captured: cap, detected: det, congruent, kind })
     }
 
+    // Lo "detectado" se compara ya escalado a IVA, igual que lo capturado
+    const det = montosACapturar(extraction, ivaIncluido)
+
     // Monto total del contrato
-    const mtCap = existingObra.contract_total_amount, mtDet = extraction.monto_total
+    const mtCap = existingObra.contract_total_amount, mtDet = det.monto_total
     if (pos(mtCap) || pos(mtDet)) push("Monto total del contrato", mtCap, mtDet, "money")
 
     // Anticipo — si aplica (en cualquiera de los lados), muestra % y monto
     const anCapPct = existingObra.anticipo_pct, anCapAmt = existingObra.anticipo_amount
-    const anDetPct = extraction.anticipo?.porcentaje ?? null, anDetAmt = extraction.anticipo?.monto ?? null
+    const anDetPct = extraction.anticipo?.porcentaje ?? null, anDetAmt = det.anticipo_amount
     if (pos(anCapPct) || pos(anCapAmt) || pos(anDetPct) || pos(anDetAmt)) {
       push("Anticipo (%)", anCapPct, anDetPct, "pct")
       push("Anticipo (monto)", anCapAmt, anDetAmt, "money")
@@ -264,7 +314,7 @@ export function ContractTermsReviewModal({
 
     // Fondo de garantía — si aplica (en cualquiera de los lados), muestra % y monto
     const gaCapPct = existingObra.garantia_pct, gaCapAmt = existingObra.garantia_amount
-    const gaDetPct = extraction.garantia?.porcentaje ?? null, gaDetAmt = extraction.garantia?.monto ?? null
+    const gaDetPct = extraction.garantia?.porcentaje ?? null, gaDetAmt = det.garantia_amount
     if (pos(gaCapPct) || pos(gaCapAmt) || pos(gaDetPct) || pos(gaDetAmt)) {
       push("Fondo de garantía (%)", gaCapPct, gaDetPct, "pct")
       push("Fondo de garantía (monto)", gaCapAmt, gaDetAmt, "money")
@@ -272,7 +322,8 @@ export function ContractTermsReviewModal({
 
     if (rows.length === 0) return null
     return { rows, allCongruent: rows.every((r) => r.congruent) }
-  }, [extraction, existingObra])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [extraction, existingObra, ivaIncluido])
 
   const fmtVal = (v: number | null, kind: "money" | "pct") =>
     v === null ? "—" : kind === "pct" ? `${v}%` : fmtCurrency(v, currency)
@@ -344,7 +395,9 @@ export function ContractTermsReviewModal({
         const { error: insErr } = await supabase.from("obra_billing_items").insert({
           obra_id: obraId,
           type: "cotizacion",
-          description: "Monto del contrato (extraído por IA)",
+          description: ivaIncluido
+            ? "Monto del contrato (extraído por IA)"
+            : "Monto del contrato (extraído por IA, + IVA 16%)",
           amount: montoTotalNum,
           date: new Date().toISOString().slice(0, 10),
           created_by: userId,
@@ -455,6 +508,85 @@ export function ContractTermsReviewModal({
               </div>
             )}
 
+            {/* ═══ Aviso de IVA: lo primero que debe ver el admin ═══ */}
+            {extraction && (
+              <div
+                className={`rounded-lg border p-3 space-y-2.5 ${
+                  ivaIncluido
+                    ? "border-emerald-500/30 bg-emerald-500/10"
+                    : "border-amber-500/40 bg-amber-500/10"
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  {ivaIncluido ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                  )}
+                  <div className="text-xs">
+                    <p className={`font-semibold ${ivaIncluido ? "text-emerald-300" : "text-amber-300"}`}>
+                      {ivaIncluido
+                        ? "El contrato YA incluye IVA"
+                        : "El contrato NO incluye IVA — se le agregó el 16%"}
+                    </p>
+                    <p className="text-slate-400 mt-0.5">
+                      {ivaIncluido
+                        ? "Los montos se capturan tal como vienen en el contrato."
+                        : "El contrato está cotizado en base. Como el Estado de Cuenta maneja todos los importes con IVA, los montos de abajo ya traen el 16% aplicado."}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Base → con IVA, sólo cuando hubo que escalar */}
+                {!ivaIncluido && (
+                  <div className="rounded-md border border-amber-500/20 bg-slate-900/40 overflow-hidden">
+                    <table className="w-full text-[11px]">
+                      <thead>
+                        <tr className="text-slate-500 border-b border-slate-700/60">
+                          <th className="text-left font-medium px-2.5 py-1.5">Concepto</th>
+                          <th className="text-right font-medium px-2.5 py-1.5">Base (contrato)</th>
+                          <th className="text-right font-medium px-2.5 py-1.5">Con IVA 16%</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {[
+                          { label: "Monto total", base: extraction.monto_total },
+                          { label: "Anticipo", base: extraction.anticipo?.monto ?? null },
+                          { label: "Saldo", base: extraction.saldo?.monto ?? null },
+                          { label: "Fondo de garantía", base: extraction.garantia?.monto ?? null },
+                        ]
+                          .filter((r) => (r.base ?? 0) > 0)
+                          .map((r) => (
+                            <tr key={r.label} className="border-b border-slate-700/40 last:border-0">
+                              <td className="px-2.5 py-1.5 text-slate-300">{r.label}</td>
+                              <td className="px-2.5 py-1.5 text-right text-slate-500 tabular-nums">
+                                {fmtCurrency(Number(r.base), currency)}
+                              </td>
+                              <td className="px-2.5 py-1.5 text-right font-semibold text-amber-300 tabular-nums">
+                                {fmtCurrency(Number(conIva(r.base)), currency)}
+                              </td>
+                            </tr>
+                          ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {/* Corrección manual: si la IA se equivocó, todo se desfasa 16% */}
+                <div className="flex items-center justify-between gap-2 pt-0.5">
+                  <span className="text-[11px] text-slate-500">¿La detección es incorrecta?</span>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => cambiarIvaIncluido(!ivaIncluido)}
+                    className="cursor-pointer h-7 text-[11px] bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+                  >
+                    {ivaIncluido ? "El contrato NO incluía IVA" : "El contrato SÍ incluía IVA"}
+                  </Button>
+                </div>
+              </div>
+            )}
+
             {/* Comparación con datos capturados previamente */}
             {financialComparison && (
               <div className={`rounded-lg border p-3 space-y-2 ${
@@ -555,7 +687,12 @@ export function ContractTermsReviewModal({
                 placeholder="0.00"
                 className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
               />
-              <p className="text-[11px] text-slate-500">Base sin IVA. Alimenta la Cotización. Los montos se consolidan por votación (dígitos/letras/cálculo) y quedan editables.</p>
+              <p className="text-[11px] text-slate-500">
+                {ivaIncluido
+                  ? "Monto con IVA, tal como viene en el contrato. Alimenta la Cotización."
+                  : "Monto con el 16% ya aplicado sobre la base del contrato. Alimenta la Cotización."}
+                {" "}Los montos se consolidan por votación (dígitos/letras/cálculo) y quedan editables.
+              </p>
               <SinConsenso show={extraction?.monto_total_source === "sin_consenso"} />
             </div>
 

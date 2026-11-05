@@ -136,11 +136,16 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
 
   useEffect(() => { loadOrders(); loadRefs() }, [loadOrders, loadRefs])
 
-  // Almacén sólo ve lo que todavía requiere trabajo suyo: las canceladas y las
-  // completadas son estados cerrados y sólo le estorban en la lista.
+  // Las canceladas no se muestran a NADIE: cancelar ahora elimina la orden, así
+  // que sólo pueden quedar canceladas viejas, de antes de ese cambio.
+  // Almacén además no ve las completadas: es un estado cerrado que sólo le
+  // estorba, porque ya no requiere trabajo suyo.
   const HIDDEN_FOR_ALMACEN = ["cancelled", "completed"]
   const visibleOrders = useMemo(
-    () => (role === "almacen" ? orders.filter((o) => !HIDDEN_FOR_ALMACEN.includes(o.status)) : orders),
+    () =>
+      role === "almacen"
+        ? orders.filter((o) => !HIDDEN_FOR_ALMACEN.includes(o.status))
+        : orders.filter((o) => o.status !== "cancelled"),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [orders, role],
   )
@@ -380,24 +385,47 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
     } finally { setBusy(false) }
   }
 
+  // Cancelar = eliminar. No deja la orden en un estado 'cancelled' que sólo
+  // estorba en la lista: borra la orden, sus partidas y sus facturas (archivos
+  // incluidos). Va por API porque los archivos viven en un bucket privado.
   async function cancelOrder() {
     if (!detail) return
     const ok = await askConfirm({
       title: `Cancelar orden · ${detail.folio}`,
-      message: "La orden se marcará como cancelada. Esta acción no se puede deshacer.",
-      confirmLabel: "Cancelar orden",
+      message:
+        "La orden se eliminará por completo, junto con sus partidas y las facturas que tenga subidas. Esta acción no se puede deshacer.",
+      confirmLabel: "Eliminar orden",
       tone: "danger",
     })
     if (!ok) return
     setBusy(true)
     const folio = detail.folio
-    await supabase.from("inventory_orders").update({
-      status: "cancelled", cancelled_at: new Date().toISOString(), cancelled_by: user?.id ?? null, updated_at: new Date().toISOString(),
-    }).eq("id", detail.id)
-    await logActivity({ event_type: "document.deleted" as any, entity_type: "inventory.order", entity_id: detail.id, entity_label: detail.folio, metadata: { action: "cancelled" } })
-    setDetail(null); setBusy(false)
-    await loadOrders()
-    notify(`Orden ${folio} cancelada.`, "info")
+    const orderId = detail.id
+    try {
+      const { data: sessionData } = await supabase.auth.getSession()
+      const token = sessionData?.session?.access_token
+      const res = await fetch(`/api/inventory-orders/${orderId}`, {
+        method: "DELETE",
+        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      })
+      const json = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(json?.error || "No se pudo eliminar la orden.")
+
+      await logActivity({
+        event_type: "document.deleted" as any,
+        entity_type: "inventory.order",
+        entity_id: orderId,
+        entity_label: folio,
+        metadata: { action: "deleted" },
+      })
+      setDetail(null)
+      await loadOrders()
+      notify(`Orden ${folio} eliminada.`, "info")
+    } catch (e: any) {
+      notify(e?.message || "No se pudo eliminar la orden.", "error")
+    } finally {
+      setBusy(false)
+    }
   }
 
   // Sólo las obras de la empresa seleccionada
@@ -567,7 +595,6 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
             <option value="in_progress">En proceso</option>
             <option value="delivered">Entregada · factura pendiente</option>
             {role !== "almacen" && <option value="completed">Completada</option>}
-            {role !== "almacen" && <option value="cancelled">Cancelada</option>}
           </select>
           <ChevronDown className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 transition-colors group-hover:text-white" />
         </div>

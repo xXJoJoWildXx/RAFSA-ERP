@@ -14,12 +14,15 @@ export type RoleOption = {
   value: string // code
   label: string // name
   sort_order: number
+  /** true = rol exento de asistencia (Administración y similares):
+   *  cobra sueldo completo y no se asigna a obras. */
+  attendance_exempt: boolean
 }
 
 export async function fetchRoleOptions(): Promise<RoleOption[]> {
   const { data, error } = await supabase
     .from("employee_roles_catalog")
-    .select("id, code, name, sort_order")
+    .select("id, code, name, sort_order, attendance_exempt")
     .eq("is_active", true)
     .order("sort_order", { ascending: true })
     .order("name", { ascending: true })
@@ -31,6 +34,7 @@ export async function fetchRoleOptions(): Promise<RoleOption[]> {
     value: r.code,
     label: r.name,
     sort_order: r.sort_order ?? 100,
+    attendance_exempt: !!r.attendance_exempt,
   }))
 }
 

@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-import { createContext, useContext, useState, useEffect } from "react"
+import { createContext, useContext, useState, useEffect, useRef } from "react"
 import { useRouter } from "next/navigation"
 import { supabase } from "@/lib/supabaseClient"
 
@@ -28,8 +28,28 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true)
   const router = useRouter()
 
-  const loadUser = async () => {
-    setIsLoading(true)
+  // El id de la sesión viva, legible desde el callback de onAuthStateChange
+  // (que se registra una sola vez y no vería el estado actualizado).
+  const userIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    userIdRef.current = user?.id ?? null
+  }, [user])
+
+  /**
+   * Carga (o revalida) el usuario y su rol.
+   *
+   * `silent` existe por un motivo concreto: Supabase emite eventos de sesión
+   * cada vez que la pestaña vuelve a estar visible (recupera y refresca el
+   * token). Si esa revalidación prendiera `isLoading`, RoleGuard mostraría la
+   * pantalla de carga y DESMONTARÍA toda la página — cerrando los popups y
+   * tirando lo que el usuario llevaba capturado. En modo silencioso se
+   * revalida igual (sigue cerrando la sesión de una cuenta desactivada), pero
+   * sin tocar `isLoading`.
+   */
+  const loadUser = async (opts?: { silent?: boolean }) => {
+    const silent = opts?.silent === true
+    if (!silent) setIsLoading(true)
+    const done = () => { if (!silent) setIsLoading(false) }
 
     // 1) obtener usuario de Supabase Auth
     const {
@@ -38,7 +58,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     if (!authUser) {
       setUser(null)
-      setIsLoading(false)
+      done()
       return
     }
 
@@ -52,7 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (error || !profile) {
       // sin rol asignado
       setUser(null)
-      setIsLoading(false)
+      done()
       return
     }
 
@@ -61,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (profile.is_active === false) {
       await supabase.auth.signOut()
       setUser(null)
-      setIsLoading(false)
+      done()
       return
     }
 
@@ -72,20 +92,46 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       display_name: profile.display_name,
     }
 
-    setUser(mappedUser)
-    setIsLoading(false)
+    // Sólo publicar un objeto nuevo si de verdad cambió algo: así una
+    // revalidación idéntica no cambia el valor del contexto y no dispara
+    // re-renders ni efectos en toda la app.
+    setUser((prev) =>
+      prev &&
+      prev.id === mappedUser.id &&
+      prev.email === mappedUser.email &&
+      prev.role === mappedUser.role &&
+      prev.display_name === mappedUser.display_name
+        ? prev
+        : mappedUser,
+    )
+    done()
   }
 
   useEffect(() => {
     // cargar sesión al inicio
     loadUser()
 
-    // opcional: escuchar cambios de sesión (login/logout)
+    // Cambios de sesión. OJO con el tipo de evento: varios de estos se emiten
+    // solos al volver a la pestaña, y tratarlos como un login nuevo hace que
+    // la app se "refresque" y pierda lo que hubiera en pantalla.
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, _session) => {
-      // cuando cambie la sesión, recargamos el user/role
-      loadUser()
+    } = supabase.auth.onAuthStateChange((event, session) => {
+      if (event === "SIGNED_OUT") {
+        setUser(null)
+        setIsLoading(false)
+        return
+      }
+
+      // Revalidación de una sesión que ya teníamos → silenciosa.
+      // Sólo un login de verdad (no había usuario) muestra la carga.
+      const esRevalidacion =
+        event === "TOKEN_REFRESHED" ||
+        event === "USER_UPDATED" ||
+        event === "INITIAL_SESSION" ||
+        (event === "SIGNED_IN" && !!session?.user && session.user.id === userIdRef.current)
+
+      loadUser({ silent: esRevalidacion })
     })
 
     return () => {
