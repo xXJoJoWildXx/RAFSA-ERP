@@ -164,7 +164,7 @@ export default function LoginPage() {
       const role = profile.role as UserRole
 
       if (role === "admin")        router.push("/admin")
-      else if (role === "user")    router.push("/employee")
+      else if (role === "user")    router.push("/user")
       else if (role === "worker")  router.push("/worker")
       else if (role === "almacen") router.push("/almacen")
       else                         router.push("/")

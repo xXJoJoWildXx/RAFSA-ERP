@@ -31,7 +31,9 @@ import {
 import Link from "next/link"
 import Image from "next/image"
 import { usePathname } from "next/navigation"
-import { useState, useEffect, useCallback } from "react"
+import { useBasePath } from "@/lib/appScope"
+import { can, type Capability } from "@/lib/permissions"
+import { useState, useEffect, useCallback, useMemo } from "react"
 import { cn } from "@/lib/utils"
 import { supabase } from "@/lib/supabaseClient"
 import { formatEventType, timeAgo } from "@/lib/activityLog"
@@ -46,15 +48,24 @@ type NavItem = {
   badgeKey: "obras" | "empleados" | null
 }
 
-const navigation: NavItem[] = [
-  { name: "Dashboard", href: "/admin", icon: LayoutDashboard, badgeKey: null },
-  { name: "Obras", href: "/admin/projects", icon: Building2, badgeKey: "obras" },
-  { name: "Empleados", href: "/admin/employees", icon: Users, badgeKey: "empleados" },
-  { name: "Nómina", href: "/admin/nomina", icon: Wallet, badgeKey: null },
-  { name: "Proveedores", href: "/admin/proveedores", icon: Truck, badgeKey: null },
-  { name: "Inventario", href: "/admin/inventario", icon: Package, badgeKey: null },
-  { name: "Actividades", href: "/admin/activities", icon: Activity, badgeKey: null },
+/** Secciones del panel. `cap` es la capacidad que hay que tener para verla;
+ *  null = la ve cualquiera que entre al panel. El href se arma con el
+ *  prefijo del panel, para que /admin y /user naveguen cada uno en el suyo. */
+const SECCIONES: { name: string; path: string; icon: typeof LayoutDashboard; badgeKey: NavItem["badgeKey"]; cap: Capability | null }[] = [
+  { name: "Dashboard",    path: "",              icon: LayoutDashboard, badgeKey: null,        cap: null },
+  { name: "Obras",        path: "/projects",     icon: Building2,       badgeKey: "obras",     cap: "projects.view" },
+  { name: "Empleados",    path: "/employees",    icon: Users,           badgeKey: "empleados", cap: "employees.view" },
+  { name: "Nómina",       path: "/nomina",       icon: Wallet,          badgeKey: null,        cap: "nomina.view" },
+  { name: "Proveedores",  path: "/proveedores",  icon: Truck,           badgeKey: null,        cap: "suppliers.view" },
+  { name: "Inventario",   path: "/inventario",   icon: Package,         badgeKey: null,        cap: "inventory.view" },
+  { name: "Actividades",  path: "/activities",   icon: Activity,        badgeKey: null,        cap: "activities.view" },
 ]
+
+function buildNavigation(basePath: string, role: string | null | undefined): NavItem[] {
+  return SECCIONES
+    .filter((s) => s.cap === null || can(role, s.cap))
+    .map((s) => ({ name: s.name, href: `${basePath}${s.path}`, icon: s.icon, badgeKey: s.badgeKey }))
+}
 
 /* ───────────────────────────────────────────
    Animated Grid Background (matches Login)
@@ -113,6 +124,11 @@ function PulseDot({ color = "#0174bd" }: { color?: string }) {
 export function AdminLayout({ children }: { children: React.ReactNode }) {
   const { user, logout } = useAuth()
   const pathname = usePathname()
+  const basePath = useBasePath()
+  const navigation = useMemo(
+    () => buildNavigation(basePath, user?.role),
+    [basePath, user?.role],
+  )
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
@@ -139,9 +155,15 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
           .select("id", { count: "exact", head: true })
           .gte("created_at", since24h),
       ])
+      // Un error de RLS aquí no truena: devuelve 0 filas. Sin este aviso, la
+      // campanita se queda vacía y no hay forma de saber por qué.
+      if (activitiesRes.error) console.error("[actividades] lectura:", activitiesRes.error.message)
+      if (countRes.error) console.error("[actividades] conteo:", countRes.error.message)
       setRecentActivities(activitiesRes.data ?? [])
       setRecentCount(countRes.count ?? 0)
-    } catch {}
+    } catch (e) {
+      console.error("[actividades] error inesperado:", e)
+    }
   }, [])
 
   // Fetch live counts from Supabase
@@ -206,11 +228,14 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   const userMetadata = (user as any)?.user_metadata
   const displayName = userMetadata?.display_name || user?.email || "Usuario"
 
+  /** Distintivo corto junto al título, para saber en qué panel se está. */
+  const panelBadge = user?.role === "user" ? "User" : user?.role === "almacen" ? "Almacén" : "Admin"
+
   const roleLabel =
     user?.role === "admin"
       ? "Administrador"
       : user?.role === "user"
-        ? "Usuario de oficina"
+        ? "Usuario"
         : user?.role === "worker"
           ? "Trabajador de obra"
           : ""
@@ -418,7 +443,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
         <div className="relative flex flex-col h-full z-10">
           {/* ── Logo ── */}
           <div className="flex items-center justify-between h-[88px] px-6 border-b border-white/[0.06]">
-            <Link href="/admin" className="flex items-center gap-3 group logo-float">
+            <Link href={basePath} className="flex items-center gap-3 group logo-float">
               <div className="relative w-[150px] h-[45px] flex-shrink-0">
                 <Image
                   src="/brand/icon-rafsa.png"
@@ -619,7 +644,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                 {navigation.find((n) => n.href === pathname)?.name || "RAFSA ERP"}
               </h2>
               <span className="hidden lg:block text-[10px] font-medium text-[#4da8e8] bg-[#0174bd]/15 border border-[#0174bd]/20 px-2 py-0.5 rounded-full">
-                Admin
+                {panelBadge}
               </span>
             </div>
 
@@ -702,7 +727,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
                     )}
                   </div>
                   <div className="px-4 py-2.5 border-t border-slate-700">
-                    <Link href="/admin/activities" className="block text-xs font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors text-center">
+                    <Link href={`${basePath}/activities`} className="block text-xs font-semibold text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors text-center">
                       Ver todas las actividades →
                     </Link>
                   </div>

@@ -19,7 +19,7 @@ export default function Home() {
         } else if (user.role === "almacen") {
           router.push("/almacen")
         } else {
-          router.push("/employee")
+          router.push("/user")
         }
       } else {
         router.push("/login")

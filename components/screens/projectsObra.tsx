@@ -1,0 +1,4243 @@
+"use client"
+
+import type { AppRole as UserRoleScreen } from "@/lib/permissions"
+import { useBasePath } from "@/lib/appScope"
+import { can } from "@/lib/permissions"
+import { useAuth } from "@/lib/auth-context"
+
+import { useParams, useRouter } from "next/navigation"
+import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
+import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
+import { Progress } from "@/components/ui/progress"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import {
+  MapPin,
+  DollarSign,
+  Users,
+  Clock,
+  ArrowLeft,
+  Edit,
+  CheckCircle2,
+  XCircle,
+  Lock,
+  Upload,
+  FileText,
+  FileCheck2,
+  Eye,
+  Download,
+  Trash2,
+  Link2,
+  Loader2,
+  ShieldCheck,
+  FileWarning,
+  Plus,
+  LayoutDashboard,
+  FolderOpen,
+  CreditCard,
+  Activity,
+  AlertTriangle,
+  Bell,
+  CalendarDays,
+  CheckCircle,
+  Check,
+  ChevronDown,
+  Ticket,
+  X,
+} from "lucide-react"
+import Link from "next/link"
+import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { ProjectDocumentsTab } from "@/components/projectDocumentsTab"
+import { ProjectTeamTab } from "@/components/projectTeamTab"
+import { NominasTab } from "@/components/nominasTab"
+import { EstimacionesFacturasCards } from "@/components/estimacionesFacturasCards"
+
+// ---------- Tipos DB basicos ----------
+
+type DbObraStatus = "planned" | "in_progress" | "paused" | "closed"
+
+type ObraRow = {
+  id: string
+  code: string | null
+  name: string
+  client_name: string | null
+  location_text: string | null
+  status: DbObraStatus
+  start_date_planned: string | null
+  start_date_actual: string | null
+  end_date_planned: string | null
+  end_date_actual: string | null
+  notes: string | null
+  iva_included: boolean
+  garantia_amount: number | null
+  garantia_status: "none" | "pending" | "invoiced" | "paid"
+  garantia_pct: number | null
+  contract_total_amount: number | null
+  anticipo_pct: number | null
+  anticipo_amount: number | null
+  anticipo_status: "none" | "pending" | "invoiced" | "paid"
+  anticipo_amount_paid: number | null
+  anticipo_invoice_number: string | null
+  anticipo_date: string | null
+  saldo_pct: number | null
+  saldo_amount: number | null
+}
+
+type ContractRow = {
+  id: string
+  obra_id: string
+  contract_amount: string | number | null
+  currency: string
+}
+
+type ObraStateAccountRow = {
+  id: string
+  obra_id: string
+  amount: string | number
+  concept: "deposit" | "advance" | "retention" | "return"
+  method: "transfer" | "cash" | "check" | "other" | null
+  date: string
+  bank_ref: string | null
+  invoice_number: string | null
+  factura_id: string | null
+  /** Marca de qué card salió el movimiento cuando no cuelga de una factura ('garantia'). */
+  source: string | null
+  note: string | null
+  /** Cuándo se CAPTURÓ el movimiento (distinto de `date`, que es cuándo se pagó).
+   *  Es lo que decide si todavía se puede borrar. */
+  created_at?: string | null
+}
+
+type AttachmentRow = {
+  id: string
+  ref_table: string
+  ref_id: string
+  file_url: string
+  file_name: string | null
+  mime_type: string | null
+  size_bytes: number | null
+  uploaded_by: string | null
+  uploaded_at: string
+}
+
+type BillingItem = {
+  id: string
+  obra_id: string
+  type: "cotizacion" | "aditivo"
+  description: string | null
+  amount: number
+  date: string
+  created_at: string
+  with_iva: boolean
+}
+
+type BajadaNotification = {
+  id: string
+  obra_id: string
+  assignment_id: string
+  employee_id: string
+  bajada_date: string
+  reingreso_date: string | null
+  status: "pending" | "confirmed" | "dismissed"
+  employee_name?: string
+}
+
+const EVIDENCE_BUCKET = "state-account-evidence"
+
+type SiteReportRow = {
+  id: string
+  obra_id: string
+  report_date: string
+  progress_percent: string | number | null
+}
+
+type ObraAssignmentRow = {
+  id: string
+  obra_id: string
+  employee_id: string
+  role_on_site: string | null
+  assigned_to: string | null
+  employees: { full_name: string } | { full_name: string }[] | null
+}
+
+// ---------- Documentos (conectado a obra_documents + storage) ----------
+
+type DocStatus = "missing" | "uploaded" | "processing" | "approved" | "rejected"
+
+// DB enum: public.obra_document_type ('contract','quote','other')
+type DocType = "contract" | "quote" | "other"
+
+// DB enum: public.ai_status ('pending','processing','done','error','disabled')
+type AiStatus = "pending" | "processing" | "done" | "error" | "disabled"
+
+type UiObraDocument = {
+  id: string
+  obra_id: string
+  doc_type: DocType
+  title: string
+  file_name: string
+  mime_type: string
+  size_bytes: number
+  version: number
+  status: DocStatus
+  created_at: string
+  notes?: string | null
+
+  bucket: string
+  object_path: string
+  is_current: boolean
+  ai_status: AiStatus
+  uploaded_at: string
+}
+
+
+const DOCS_BUCKET = "obra-docs"
+
+// ---------- Helpers de mapping / formatos ----------
+
+function mapDbStatusToBadge(status: DbObraStatus) {
+  switch (status) {
+    case "planned":
+      return { label: "Planeada", className: "bg-yellow-500/15 text-yellow-300 border border-yellow-500/20" }
+    case "in_progress":
+      return { label: "En progreso", className: "bg-blue-500/15 text-blue-300 border border-blue-500/20" }
+    case "paused":
+      return { label: "En pausa", className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" }
+    case "closed":
+      return { label: "Completada", className: "bg-green-500/15 text-green-300 border border-green-500/20" }
+    default:
+      return { label: status, className: "bg-slate-500/15 text-slate-300 border border-slate-500/20" }
+  }
+}
+
+function formatCurrency(value: number, currency: string = "MXN"): string {
+  if (!Number.isFinite(value)) return "-"
+  return new Intl.NumberFormat("es-MX", {
+    style: "currency",
+    currency,
+    maximumFractionDigits: 2,
+  }).format(value)
+}
+
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "-"
+  const units = ["B", "KB", "MB", "GB"]
+  let i = 0
+  let v = bytes
+  while (v >= 1024 && i < units.length - 1) {
+    v /= 1024
+    i++
+  }
+  return `${v.toFixed(i === 0 ? 0 : 1)} ${units[i]}`
+}
+
+function statusBadge(status: DocStatus) {
+  switch (status) {
+    case "missing":
+      return { label: "Pendiente", className: "bg-slate-100 text-slate-700" }
+    case "uploaded":
+      return { label: "Subido", className: "bg-blue-100 text-blue-700" }
+    case "processing":
+      return { label: "Procesando", className: "bg-yellow-100 text-yellow-700" }
+    case "approved":
+      return { label: "Aprobado", className: "bg-green-100 text-green-700" }
+    case "rejected":
+      return { label: "Rechazado", className: "bg-red-100 text-red-700" }
+    default:
+      return { label: status, className: "bg-slate-100 text-slate-700" }
+  }
+}
+
+function docTypeLabel(t: DocType) {
+  if (t === "contract") return "Contrato"
+  if (t === "quote") return "Cotizacion"
+  return "Anexo" // other
+}
+
+function docTypeIcon(t: DocType) {
+  if (t === "contract") return <FileCheck2 className="w-5 h-5 text-blue-600" />
+  if (t === "quote") return <FileText className="w-5 h-5 text-purple-600" />
+  return <FileText className="w-5 h-5 text-slate-700" />
+}
+
+function docStatusIcon(status: DocStatus) {
+  if (status === "approved") return <ShieldCheck className="w-4 h-4 text-green-600" />
+  if (status === "processing") return <Loader2 className="w-4 h-4 text-yellow-600 animate-spin" />
+  if (status === "rejected") return <FileWarning className="w-4 h-4 text-red-600" />
+  return null
+}
+
+function isAllowedDoc(file: File) {
+  // UI only: PDF, images, excel/word, zip
+  const allowed = [
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/msword",
+    "application/zip",
+    "application/x-zip-compressed",
+  ]
+  return allowed.includes(file.type) || file.name.toLowerCase().endsWith(".pdf")
+}
+
+// ---------- Pagina de detalle ----------
+
+/** Return YYYY-MM-DD in local timezone (avoids UTC shift at night) */
+function toLocalDateStr(d: Date): string {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+/**
+ * ¿Este movimiento se registró dentro del mes que corre?
+ *
+ * Se mira created_at (cuándo se CAPTURÓ), no `date` (cuándo se pagó): un pago
+ * de septiembre capturado hoy sigue siendo del cierre de este mes, y uno
+ * capturado en octubre ya no se toca aunque su fecha de pago sea reciente.
+ */
+function esDelMesCorriente(createdAt: string | null | undefined): boolean {
+  if (!createdAt) return false // sin fecha de registro no se arriesga: bloqueado
+  const d = new Date(createdAt)
+  if (Number.isNaN(d.getTime())) return false
+  const hoy = new Date()
+  return d.getFullYear() === hoy.getFullYear() && d.getMonth() === hoy.getMonth()
+}
+
+export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
+  const basePath = useBasePath()
+  const params = useParams()
+  const router = useRouter()
+  const { user: authUser } = useAuth()
+  // Sin esta capacidad sólo se borra lo registrado este mes (cierre de mes).
+  const puedeBorrarCualquierMes = can(authUser?.role, "payments.delete.anyMonth")
+  const movimientoEditable = (m: { created_at?: string | null }) =>
+    puedeBorrarCualquierMes || esDelMesCorriente(m.created_at)
+
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+  const [obra, setObra] = useState<ObraRow | null>(null)
+  const [progress, setProgress] = useState<number>(0)
+  const [budgetTotal, setBudgetTotal] = useState<number>(0)
+  const [budgetCurrency, setBudgetCurrency] = useState<string>("MXN")
+  const [spentTotal, setSpentTotal] = useState<number>(0)
+  const [ivaIncluded, setIvaIncluded] = useState<boolean>(true)
+
+  // Team info
+  const [teamSize, setTeamSize] = useState<number>(0)
+  const [managerName, setManagerName] = useState<string | null>(null)
+
+  // Editar obra
+  const [editOpen, setEditOpen] = useState(false)
+  const [savingEdit, setSavingEdit] = useState(false)
+  const [statusPopoverOpen, setStatusPopoverOpen] = useState(false)
+  const [savingStatus, setSavingStatus] = useState(false)
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+  const [editForm, setEditForm] = useState({
+    name: "",
+    client_name: "",
+    location_text: "",
+    status: "planned" as DbObraStatus,
+    start_date_planned: "",
+    end_date_planned: "",
+    notes: "",
+  })
+  const [activeTab, setActiveTab] = useState("overview")
+
+  // Sliding tab indicator
+  const tabNavRef = useRef<HTMLDivElement>(null)
+  const [indicatorStyle, setIndicatorStyle] = useState({ left: 0, width: 0, ready: false })
+
+  // Estado de cuenta
+  const [stateAccounts, setStateAccounts] = useState<ObraStateAccountRow[]>([])
+  const [newPaymentOpen, setNewPaymentOpen] = useState(false)
+  const [newPaymentSaving, setNewPaymentSaving] = useState(false)
+  const [editPaymentsOpen, setEditPaymentsOpen] = useState(false)
+  const [selectedPaymentIds, setSelectedPaymentIds] = useState<Set<string>>(new Set())
+  const [deletingPayments, setDeletingPayments] = useState(false)
+
+  // Evidencias (attachments de obra_state_accounts)
+  const [evidenceMap, setEvidenceMap] = useState<Record<string, AttachmentRow>>({})
+  const [uploadingEvidenceId, setUploadingEvidenceId] = useState<string | null>(null)
+  const [pendingEvidenceAccountId, setPendingEvidenceAccountId] = useState<string | null>(null)
+  const [replacingEvidence, setReplacingEvidence] = useState<AttachmentRow | null>(null)
+  const evidenceInputRef = useRef<HTMLInputElement | null>(null)
+
+  // Modal de visualizacion de evidencia
+  const [evidenceViewOpen, setEvidenceViewOpen] = useState(false)
+  const [viewingEvidence, setViewingEvidence] = useState<AttachmentRow | null>(null)
+  const [viewingSignedUrl, setViewingSignedUrl] = useState<string | null>(null)
+  const [viewingLoading, setViewingLoading] = useState(false)
+  const [deletingEvidence, setDeletingEvidence] = useState(false)
+  const [newPaymentForm, setNewPaymentForm] = useState({
+    concept: "deposit" as ObraStateAccountRow["concept"],
+    amount: "",
+    method: "transfer" as ObraStateAccountRow["method"],
+    date: toLocalDateStr(new Date()),
+    bank_ref: "",
+    invoice_number: "",
+    note: "",
+  })
+
+  // Cotizacion y Aditivas
+  const [billingItems, setBillingItems] = useState<BillingItem[]>([])
+  // Señal para refrescar EstimacionesFacturasCards cuando cambian las aditivas
+  const [estFacReload, setEstFacReload] = useState(0)
+  // Aditivas cuya factura ya tiene el archivo subido: quedan cerradas a edición.
+  // Lo reporta EstimacionesFacturasCards, que es quien carga facturas y adjuntos.
+  const [aditivosFacturados, setAditivosFacturados] = useState<Set<string>>(new Set())
+  const [billingDialogOpen, setBillingDialogOpen] = useState(false)
+  const [editingBillingItem, setEditingBillingItem] = useState<BillingItem | null>(null)
+  const [billingForm, setBillingForm] = useState({
+    type: "aditivo" as "cotizacion" | "aditivo",
+    description: "",
+    amount: "",
+    date: toLocalDateStr(new Date()),
+    with_iva: true,
+  })
+  const [savingBilling, setSavingBilling] = useState(false)
+  const [billingError, setBillingError] = useState<string | null>(null)
+
+  // Datos financieros (captura manual antes del contrato)
+  const [finDialogOpen, setFinDialogOpen] = useState(false)
+  const [finForm, setFinForm] = useState({
+    monto_total: "",
+    anticipo_pct: "",
+    anticipo_amount: "",
+    garantia_pct: "",
+    garantia_amount: "",
+    with_iva: true,
+  })
+  const [savingFin, setSavingFin] = useState(false)
+  const [finError, setFinError] = useState<string | null>(null)
+  // Borrado de datos financieros (doble confirmación)
+  const [finDeleteOpen, setFinDeleteOpen] = useState(false)
+  const [finDeleteAck, setFinDeleteAck] = useState(false)
+  const [deletingFin, setDeletingFin] = useState(false)
+
+  // Fondo de garantía
+  const [garantiaDialogOpen, setGarantiaDialogOpen] = useState(false)
+  const [garantiaAmount, setGarantiaAmount] = useState("")
+  const [savingGarantia, setSavingGarantia] = useState(false)
+  const [garantiaFactura, setGarantiaFactura] = useState<AttachmentRow | null>(null)
+  const [garantiaPago, setGarantiaPago] = useState<AttachmentRow | null>(null)
+  const [uploadingGarantiaFile, setUploadingGarantiaFile] = useState<"factura" | "pago" | null>(null)
+  const garantiaFileRef = useRef<HTMLInputElement | null>(null)
+  // Objetivo del selector de archivos de garantía (no bloquea la UI si se cancela el explorador)
+  const garantiaUploadTargetRef = useRef<"factura" | "pago" | null>(null)
+  const [garantiaPayDialogOpen, setGarantiaPayDialogOpen] = useState(false)
+  const [garantiaPayForm, setGarantiaPayForm] = useState({ amount: "", note: "", method: "transfer", bank_ref: "" })
+  const [savingGarantiaPay, setSavingGarantiaPay] = useState(false)
+  const [garantiaPreviewUrl, setGarantiaPreviewUrl] = useState<string | null>(null)
+  const [garantiaPreviewName, setGarantiaPreviewName] = useState("")
+
+  // Anticipo
+  // (El anticipo ahora es una estimación-anticipo dentro de EstimacionesFacturasCards;
+  //  ya no hay card ni estado standalone aquí.)
+
+  // Bajada notifications
+  const [bajadaNotifications, setBajadaNotifications] = useState<BajadaNotification[]>([])
+  const [bajadaLoading, setBajadaLoading] = useState(false)
+  const [processingBajadaId, setProcessingBajadaId] = useState<string | null>(null)
+  // Aviso flotante de ticket ganado al descartar una bajada
+  const [bajadaToast, setBajadaToast] = useState<
+    { name: string; balance: number } | null
+  >(null)
+  // Bajadas de ticket confirmadas (extraordinarias)
+  const [ticketBajadas, setTicketBajadas] = useState<BajadaNotification[]>([])
+
+  // ------------------ Documentos: UI + Modal (Opcion B) ------------------
+
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
+
+  const [docs, setDocs] = useState<UiObraDocument[]>([])
+  const [docsLoading, setDocsLoading] = useState(false)
+  const [docsError, setDocsError] = useState<string | null>(null)
+  const [isAdmin, setIsAdmin] = useState(false)
+
+  const [docSearch, setDocSearch] = useState("")
+  const [docTypeFilter, setDocTypeFilter] = useState<"all" | DocType>("all")
+  const [docStatusFilter, setDocStatusFilter] = useState<"all" | Exclude<DocStatus, "missing">>("all")
+
+  const [uploadOpen, setUploadOpen] = useState(false)
+  const [uploadSaving, setUploadSaving] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
+  const [uploadForm, setUploadForm] = useState<{
+    doc_type: DocType
+    title: string
+    version: string
+    notes: string
+  }>({
+    doc_type: "contract",
+    title: "",
+    version: "1",
+    notes: "",
+  })
+
+  function openUploadModal(prefillType?: DocType) {
+    setUploadError(null)
+    setSelectedFile(null)
+    setUploadForm((f) => ({
+      doc_type: prefillType ?? f.doc_type,
+      title: "",
+      version: "1",
+      notes: "",
+    }))
+    setUploadOpen(true)
+  }
+
+  function onPickFile() {
+    fileInputRef.current?.click()
+  }
+
+  function setFile(file: File | null) {
+    if (!file) {
+      setSelectedFile(null)
+      return
+    }
+    if (!isAllowedDoc(file)) {
+      setUploadError("Tipo de archivo no permitido. Sube PDF/Excel/Word/imagen/zip.")
+      setSelectedFile(null)
+      return
+    }
+    if (file.size > 25 * 1024 * 1024) {
+      setUploadError("El archivo excede el tamano maximo (25MB).")
+      setSelectedFile(null)
+      return
+    }
+
+    setUploadError(null)
+    setSelectedFile(file)
+
+    // autollenar titulo si esta vacio
+    setUploadForm((f) => ({
+      ...f,
+      title: f.title?.trim() ? f.title : file.name.replace(/\.[^/.]+$/, ""),
+    }))
+  }
+
+  function handleDrop(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+    const file = e.dataTransfer.files?.[0]
+    setFile(file ?? null)
+  }
+
+  function handleDragOver(e: DragEvent<HTMLDivElement>) {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  function mapAiToDocStatus(ai: AiStatus): Exclude<DocStatus, "missing"> {
+    if (ai === "processing") return "processing"
+    if (ai === "done") return "approved"
+    if (ai === "error") return "rejected"
+    return "uploaded" // pending/disabled
+  }
+
+  async function loadIsAdmin() {
+    const { data: authData } = await supabase.auth.getUser()
+    const uid = authData?.user?.id
+    if (!uid) {
+      setIsAdmin(false)
+      return
+    }
+
+    const { data, error } = await supabase.from("app_users").select("role").eq("id", uid).single()
+    if (error) {
+      console.error("loadIsAdmin error:", error)
+      setIsAdmin(false)
+      return
+    }
+
+    setIsAdmin(String(data?.role || "").toLowerCase() === "admin")
+  }
+
+  async function fetchDocuments(obraId: string) {
+    setDocsLoading(true)
+    setDocsError(null)
+
+    const { data, error } = await supabase
+      .from("obra_documents")
+      .select(
+        `
+        id, obra_id, doc_type, title,
+        bucket, object_path,
+        file_name, mime_type, size_bytes,
+        version, is_current,
+        ai_status,
+        uploaded_at,
+        created_at
+      `,
+      )
+      .eq("obra_id", obraId)
+      .order("uploaded_at", { ascending: false })
+
+    if (error) {
+      console.error("fetchDocuments error:", error)
+      setDocsError("No se pudieron cargar los documentos.")
+      setDocs([])
+      setDocsLoading(false)
+      return
+    }
+
+    const uiDocs: UiObraDocument[] = (data || []).map((d: any) => ({
+      id: d.id,
+      obra_id: d.obra_id,
+      doc_type: d.doc_type as DocType,
+      title: d.title || d.file_name || "Documento",
+      file_name: d.file_name || "archivo",
+      mime_type: d.mime_type || "application/octet-stream",
+      size_bytes: Number(d.size_bytes || 0),
+      version: Number(d.version || 1),
+      status: mapAiToDocStatus(d.ai_status as AiStatus),
+      created_at: d.created_at,
+      notes: null,
+
+      bucket: d.bucket || DOCS_BUCKET,
+      object_path: d.object_path,
+      is_current: Boolean(d.is_current),
+      ai_status: d.ai_status as AiStatus,
+      uploaded_at: d.uploaded_at,
+    }))
+
+    setDocs(uiDocs)
+    setDocsLoading(false)
+  }
+
+  async function getSignedUrl(bucket: string, objectPath: string, expiresInSeconds = 180) {
+    const { data, error } = await supabase.storage.from(bucket).createSignedUrl(objectPath, expiresInSeconds)
+    if (error || !data?.signedUrl) {
+      console.error("createSignedUrl error:", error)
+      throw new Error("No se pudo generar el link del archivo.")
+    }
+    return data.signedUrl
+  }
+
+  async function handlePreview(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      window.open(url, "_blank", "noopener,noreferrer")
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "No se pudo abrir el archivo.")
+    }
+  }
+
+  async function handleDownload(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      const a = document.createElement("a")
+      a.href = url
+      a.download = doc.file_name || "documento"
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+    } catch {
+      alert("No se pudo descargar el archivo.")
+    }
+  }
+
+  async function handleCopyLink(doc: UiObraDocument) {
+    try {
+      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      await navigator.clipboard.writeText(url)
+      alert("Link copiado (temporal).")
+    } catch {
+      alert("No se pudo copiar el link.")
+    }
+  }
+
+  async function handleDeleteDoc(doc: UiObraDocument) {
+    if (!isAdmin) {
+      alert("Solo un admin puede eliminar documentos.")
+      return
+    }
+
+    const ok = window.confirm("Eliminar este documento? Se borrara tambien del Storage.")
+    if (!ok) return
+
+    const { error: storageError } = await supabase.storage.from(doc.bucket).remove([doc.object_path])
+    if (storageError) {
+      console.error("storage remove error:", storageError)
+      alert("No se pudo borrar el archivo del bucket.")
+      return
+    }
+
+    const { error: rowError } = await supabase.from("obra_documents").delete().eq("id", doc.id)
+    if (rowError) {
+      console.error("row delete error:", rowError)
+      alert("Se borro el archivo, pero no se pudo borrar el registro en DB.")
+    }
+
+    if (obra) await fetchDocuments(obra.id)
+  }
+
+  async function handleUploadDocument() {
+    if (!obra) return
+    setUploadError(null)
+
+    if (!selectedFile) {
+      setUploadError("Selecciona un archivo antes de continuar.")
+      return
+    }
+
+    const v = Number(uploadForm.version)
+    if (!Number.isFinite(v) || v <= 0) {
+      setUploadError("La version debe ser un numero valido mayor a 0.")
+      return
+    }
+
+    if (!uploadForm.title.trim()) {
+      setUploadError("El titulo es obligatorio.")
+      return
+    }
+
+    setUploadSaving(true)
+
+    try {
+      const { data: authData, error: authErr } = await supabase.auth.getUser()
+      if (authErr || !authData?.user) {
+        setUploadError("Sesion invalida. Vuelve a iniciar sesion.")
+        setUploadSaving(false)
+        return
+      }
+
+      const safeName = selectedFile.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+
+      const uuid = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : String(Date.now())
+      const folder = uploadForm.doc_type === "contract" ? "contracts" : uploadForm.doc_type === "quote" ? "quotes" : "other"
+      const objectPath = `obras/${obra.id}/${folder}/${uuid}_${safeName}`
+
+      // Versionado "current" solo para contract/quote (conservador)
+      if (uploadForm.doc_type !== "other") {
+        const { error: updErr } = await supabase
+          .from("obra_documents")
+          .update({ is_current: false })
+          .eq("obra_id", obra.id)
+          .eq("doc_type", uploadForm.doc_type)
+          .eq("is_current", true)
+
+        if (updErr) {
+          console.error("update is_current error:", updErr)
+          setUploadError("No se pudo preparar versionado (is_current).")
+          setUploadSaving(false)
+          return
+        }
+      }
+
+      // 1) upload a Storage
+      const { error: upErr } = await supabase.storage.from(DOCS_BUCKET).upload(objectPath, selectedFile, {
+        contentType: selectedFile.type || "application/octet-stream",
+        upsert: false,
+      })
+
+      if (upErr) {
+        console.error("upload error:", upErr)
+        setUploadError("No se pudo subir el archivo (Storage). Revisa policies.")
+        setUploadSaving(false)
+        return
+      }
+
+      // 2) insert en obra_documents
+      const payload = {
+        obra_id: obra.id,
+        doc_type: uploadForm.doc_type, // contract | quote | other
+        title: uploadForm.title.trim(),
+        bucket: DOCS_BUCKET,
+        object_path: objectPath,
+        file_name: selectedFile.name,
+        mime_type: selectedFile.type || null,
+        size_bytes: selectedFile.size,
+        uploaded_by: authData.user.id,
+        version: v,
+        is_current: uploadForm.doc_type === "other" ? false : true,
+        ai_status: "pending" as AiStatus,
+        ai_model: null,
+        ai_extracted_json: null,
+        ai_error: null,
+      }
+
+      const { error: insErr } = await supabase.from("obra_documents").insert(payload)
+
+      if (insErr) {
+        console.error("insert obra_documents error:", insErr)
+        await supabase.storage.from(DOCS_BUCKET).remove([objectPath]) // rollback
+        setUploadError("No se pudo registrar el documento (DB).")
+        setUploadSaving(false)
+        return
+      }
+
+      setUploadOpen(false)
+      setSelectedFile(null)
+      setUploadForm({
+        doc_type: "contract",
+        title: "",
+        version: "1",
+        notes: "",
+      })
+
+      await fetchDocuments(obra.id)
+    } catch (e) {
+      console.error(e)
+      setUploadError("No se pudo registrar el documento. Intenta de nuevo.")
+    } finally {
+      setUploadSaving(false)
+    }
+  }
+
+  const filteredDocs = useMemo(() => {
+    const q = docSearch.trim().toLowerCase()
+    return docs.filter((d) => {
+      const matchesSearch =
+        !q ||
+        d.title.toLowerCase().includes(q) ||
+        d.file_name.toLowerCase().includes(q) ||
+        docTypeLabel(d.doc_type).toLowerCase().includes(q)
+
+      const matchesType = docTypeFilter === "all" || d.doc_type === docTypeFilter
+      const matchesStatus = docStatusFilter === "all" || d.status === docStatusFilter
+
+      return matchesSearch && matchesType && matchesStatus
+    })
+  }, [docs, docSearch, docTypeFilter, docStatusFilter])
+
+  const contractStatus: DocStatus = useMemo(() => {
+    const contractDocs = docs.filter((d) => d.doc_type === "contract")
+    if (contractDocs.length === 0) return "missing"
+    return contractDocs[0].status
+  }, [docs])
+
+  const quoteStatus: DocStatus = useMemo(() => {
+    const quoteDocs = docs.filter((d) => d.doc_type === "quote")
+    if (quoteDocs.length === 0) return "missing"
+    return quoteDocs[0].status
+  }, [docs])
+
+  // ------------------ Funciones existentes ------------------
+
+  async function handleUpdateObra() {
+    if (!obra) return
+    setSavingEdit(true)
+
+    const payload = {
+      name: editForm.name,
+      client_name: editForm.client_name || null,
+      location_text: editForm.location_text || null,
+      status: editForm.status,
+      start_date_planned: editForm.start_date_planned || null,
+      end_date_planned: editForm.end_date_planned || null,
+      notes: editForm.notes || null,
+    }
+
+    const { data, error } = await supabase
+      .from("obras")
+      .update(payload)
+      .eq("id", obra.id)
+      .select(
+        `
+        id,
+        code,
+        name,
+        client_name,
+        location_text,
+        status,
+        start_date_planned,
+        start_date_actual,
+        end_date_planned,
+        end_date_actual,
+        notes,
+        iva_included,
+        garantia_amount,
+        garantia_status,
+        garantia_pct,
+        contract_total_amount,
+        anticipo_pct,
+        anticipo_amount,
+        anticipo_status,
+        anticipo_amount_paid,
+        anticipo_invoice_number,
+        anticipo_date,
+        saldo_pct,
+        saldo_amount
+      `,
+      )
+      .single()
+
+    if (error || !data) {
+      console.error("Error updating obra:", error)
+      setSavingEdit(false)
+      return
+    }
+
+    const updatedObra = data as ObraRow
+    const prevStatus = obra.status
+    setObra(updatedObra)
+    if (prevStatus !== updatedObra.status) {
+      logActivity({
+        event_type: "obra.status_changed",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { from: prevStatus, to: updatedObra.status },
+      })
+    } else {
+      logActivity({
+        event_type: "obra.updated",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+      })
+    }
+    setEditOpen(false)
+    setSavingEdit(false)
+  }
+
+  async function handleDeleteObra() {
+    if (!obra) return
+    setDeleteLoading(true)
+    try {
+      // Borrado exhaustivo server-side (datos, archivos, nóminas, asistencias, etc.)
+      const res = await fetch("/api/obras", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obraIds: [obra.id] }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        console.error("Error deleting obra:", j)
+        alert(j?.error || "No se pudo eliminar la obra.")
+        setDeleteLoading(false)
+        return
+      }
+    } catch (e) {
+      console.error("Error deleting obra:", e)
+      alert("No se pudo eliminar la obra.")
+      setDeleteLoading(false)
+      return
+    }
+
+    logActivity({
+      event_type: "obra.deleted",
+      entity_type: "obra",
+      entity_id: obra.id,
+      entity_label: obra.name,
+    })
+    router.push(`${basePath}/projects/${params.empresaId}`)
+  }
+
+  async function handleUploadEvidence(accountId: string, file: File) {
+    if (!obra) return
+    setUploadingEvidenceId(accountId)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const safeName = file.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+      const uuid =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : String(Date.now())
+      const objectPath = `${obra.id}/${accountId}/${uuid}_${safeName}`
+
+      const { error: upErr } = await supabase.storage
+        .from(EVIDENCE_BUCKET)
+        .upload(objectPath, file, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        })
+
+      if (upErr) {
+        console.error("evidence upload error:", upErr)
+        alert("No se pudo subir el archivo. Revisa permisos del bucket.")
+        return
+      }
+
+      const { data: attData, error: attErr } = await supabase
+        .from("attachments")
+        .insert({
+          ref_table: "obra_state_accounts",
+          ref_id: accountId,
+          file_url: objectPath,
+          file_name: file.name,
+          mime_type: file.type || null,
+          size_bytes: file.size,
+          uploaded_by: userId,
+        })
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .single()
+
+      if (attErr || !attData) {
+        console.error("attachments insert error:", attErr)
+        await supabase.storage.from(EVIDENCE_BUCKET).remove([objectPath])
+        alert("No se pudo registrar la evidencia en la base de datos.")
+        return
+      }
+
+      setEvidenceMap((prev) => ({ ...prev, [accountId]: attData as AttachmentRow }))
+    } finally {
+      setUploadingEvidenceId(null)
+      setPendingEvidenceAccountId(null)
+    }
+  }
+
+  async function handleViewEvidence(attachment: AttachmentRow) {
+    setViewingEvidence(attachment)
+    setViewingSignedUrl(null)
+    setEvidenceViewOpen(true)
+    setViewingLoading(true)
+    try {
+      const url = await getSignedUrl(EVIDENCE_BUCKET, attachment.file_url, 600)
+      setViewingSignedUrl(url)
+    } catch {
+      alert("No se pudo generar el link del archivo.")
+      setEvidenceViewOpen(false)
+    } finally {
+      setViewingLoading(false)
+    }
+  }
+
+  async function handleReplaceEvidence(oldAttachment: AttachmentRow, file: File) {
+    if (!obra) return
+    setUploadingEvidenceId(oldAttachment.ref_id)
+    setViewingLoading(true)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      const safeName = file.name
+        .trim()
+        .replace(/\s+/g, "_")
+        .replace(/[^\w.\-]+/g, "")
+        .slice(0, 120)
+      const uuid =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : String(Date.now())
+      const objectPath = `${obra.id}/${oldAttachment.ref_id}/${uuid}_${safeName}`
+
+      const { error: upErr } = await supabase.storage
+        .from(EVIDENCE_BUCKET)
+        .upload(objectPath, file, {
+          contentType: file.type || "application/octet-stream",
+          upsert: false,
+        })
+      if (upErr) {
+        alert("No se pudo subir el archivo.")
+        return
+      }
+
+      const { data: attData, error: attErr } = await supabase
+        .from("attachments")
+        .update({
+          file_url: objectPath,
+          file_name: file.name,
+          mime_type: file.type || null,
+          size_bytes: file.size,
+          uploaded_by: userId,
+        })
+        .eq("id", oldAttachment.id)
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .single()
+
+      if (attErr || !attData) {
+        alert("No se pudo actualizar la evidencia.")
+        await supabase.storage.from(EVIDENCE_BUCKET).remove([objectPath])
+        return
+      }
+
+      // Borrar archivo anterior del bucket
+      await supabase.storage.from(EVIDENCE_BUCKET).remove([oldAttachment.file_url])
+
+      const newAtt = attData as AttachmentRow
+      setEvidenceMap((prev) => ({ ...prev, [newAtt.ref_id]: newAtt }))
+      setViewingEvidence(newAtt)
+
+      const url = await getSignedUrl(EVIDENCE_BUCKET, newAtt.file_url, 600)
+      setViewingSignedUrl(url)
+    } finally {
+      setUploadingEvidenceId(null)
+      setReplacingEvidence(null)
+      setViewingLoading(false)
+    }
+  }
+
+  async function handleDeleteEvidence(attachment: AttachmentRow) {
+    const ok = window.confirm("Eliminar esta evidencia? Esta accion no se puede deshacer.")
+    if (!ok) return
+    setDeletingEvidence(true)
+    try {
+      await supabase.storage.from(EVIDENCE_BUCKET).remove([attachment.file_url])
+
+      const { error: dbErr } = await supabase
+        .from("attachments")
+        .delete()
+        .eq("id", attachment.id)
+
+      if (dbErr) {
+        console.error("attachments delete error:", dbErr)
+        alert("No se pudo eliminar la evidencia.")
+        return
+      }
+
+      setEvidenceMap((prev) => {
+        const next = { ...prev }
+        delete next[attachment.ref_id]
+        return next
+      })
+      setEvidenceViewOpen(false)
+      setViewingEvidence(null)
+      setViewingSignedUrl(null)
+    } finally {
+      setDeletingEvidence(false)
+    }
+  }
+
+  async function handleCreatePayment() {
+    if (!obra) return
+
+    const amountNumber = Number(newPaymentForm.amount)
+    if (!amountNumber || amountNumber <= 0) {
+      alert("Ingresa un monto valido mayor a 0.")
+      return
+    }
+
+    setNewPaymentSaving(true)
+
+    const payload = {
+      obra_id: obra.id,
+      concept: newPaymentForm.concept,
+      amount: amountNumber,
+      method: newPaymentForm.method,
+      date: newPaymentForm.date,
+      bank_ref: newPaymentForm.bank_ref || null,
+      invoice_number: newPaymentForm.invoice_number || null,
+      note: newPaymentForm.note || null,
+    }
+
+    const { data, error } = await supabase
+      .from("obra_state_accounts")
+      .insert(payload)
+      .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, note")
+      .single()
+
+    if (error || !data) {
+      console.error("Error creating payment:", error)
+      alert("No se pudo registrar el movimiento, intenta de nuevo.")
+      setNewPaymentSaving(false)
+      return
+    }
+
+    setStateAccounts((prev) => {
+      const next = [...prev, data as ObraStateAccountRow]
+      next.sort((a, b) => (a.date > b.date ? -1 : 1))
+      const totalSpent = next.reduce((sum, m) => {
+        const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+        return sum + (val || 0)
+      }, 0)
+      setSpentTotal(totalSpent)
+      return next
+    })
+
+    logActivity({
+      event_type: "billing.payment_registered",
+      entity_type: "billing",
+      entity_id: (data as ObraStateAccountRow).id,
+      entity_label: obra ? `Pago en ${obra.name}` : "Pago registrado",
+      metadata: { concept: newPaymentForm.concept, amount: amountNumber, obra_id: obra?.id },
+    })
+    setNewPaymentForm({
+      concept: "deposit",
+      amount: "",
+      invoice_number: "",
+      method: "transfer",
+      date: toLocalDateStr(new Date()),
+      bank_ref: "",
+      note: "",
+    })
+    setNewPaymentOpen(false)
+    setNewPaymentSaving(false)
+  }
+
+  //  mock (otros tabs)
+  const milestones = [
+    { id: 1, name: "Site Preparation", status: "completed", date: "2024-02-15", progress: 100 },
+    { id: 2, name: "Foundation Work", status: "completed", date: "2024-04-30", progress: 100 },
+    { id: 3, name: "Structural Framework", status: "in-progress", date: "2024-08-15", progress: 75 },
+    { id: 4, name: "Interior Construction", status: "pending", date: "2024-10-30", progress: 0 },
+    { id: 5, name: "Final Inspection", status: "pending", date: "2024-12-20", progress: 0 },
+  ]
+
+  const teamMembers = [
+    { id: 1, name: "John Smith", role: "Project Manager", avatar: "JS" },
+    { id: 2, name: "Sarah Johnson", role: "Lead Engineer", avatar: "SJ" },
+    { id: 3, name: "Mike Chen", role: "Site Supervisor", avatar: "MC" },
+    { id: 4, name: "Emily Davis", role: "Safety Officer", avatar: "ED" },
+    { id: 5, name: "James Wilson", role: "Quality Control", avatar: "JW" },
+  ]
+
+
+  // Aplica las stats de equipo desde un array ya cargado
+  function applyTeamStats(assignments: ObraAssignmentRow[], today: string) {
+    const activeAssignments = assignments.filter(
+      (a) => !a.assigned_to || a.assigned_to >= today
+    )
+    setTeamSize(activeAssignments.length)
+
+    const directorAssignment = activeAssignments.find(
+      (a) => a.role_on_site === "director_obra"
+    )
+    let foundManagerName: string | null = null
+    if (directorAssignment) {
+      const emp = directorAssignment.employees
+      if (Array.isArray(emp)) foundManagerName = emp[0]?.full_name ?? null
+      else foundManagerName = emp?.full_name ?? null
+    }
+    setManagerName(foundManagerName)
+  }
+
+  /**
+   * Recalcula amount_paid y status de unas facturas a partir de los pagos que
+   * REALMENTE existen en obra_state_accounts.
+   *
+   * El monto pagado no se decrementa: se vuelve a sumar desde cero. Así, si se
+   * borra un pago (parcial o completo), la factura deja de estar "Pagada" en vez
+   * de quedarse con un saldo que ya no existe.
+   */
+  async function recomputeFacturasPagadas(facturaIds: (string | null)[]) {
+    const ids = Array.from(new Set(facturaIds.filter((x): x is string => !!x)))
+    if (ids.length === 0) return
+
+    const [{ data: facs }, { data: pagos }] = await Promise.all([
+      supabase.from("obra_facturas").select("id, amount").in("id", ids),
+      supabase
+        .from("obra_state_accounts")
+        .select("factura_id, amount, concept")
+        .in("factura_id", ids),
+    ])
+
+    const pagadoPorFactura = new Map<string, number>()
+    for (const pago of (pagos || []) as any[]) {
+      if (!pago.factura_id) continue
+      if (pago.concept !== "deposit" && pago.concept !== "advance") continue
+      pagadoPorFactura.set(
+        pago.factura_id,
+        (pagadoPorFactura.get(pago.factura_id) || 0) + (Number(pago.amount) || 0),
+      )
+    }
+
+    await Promise.all(
+      ((facs || []) as any[]).map((f) => {
+        const pagado = Math.round((pagadoPorFactura.get(f.id) || 0) * 100) / 100
+        const total = Number(f.amount) || 0
+        const status = pagado <= 0 ? "pending" : pagado >= total ? "paid" : "partial"
+        return supabase
+          .from("obra_facturas")
+          .update({ amount_paid: pagado, status, updated_at: new Date().toISOString() })
+          .eq("id", f.id)
+      }),
+    )
+  }
+
+  /**
+   * El fondo de garantía no cuelga de una factura, así que su estado se deriva
+   * de si existe o no un cobro marcado con source='garantia'. Si se borró el
+   * último, la garantía regresa a "Facturado" (si la factura sigue subida) o a
+   * "Esperando factura".
+   */
+  async function revertGarantiaSiNoQuedanCobros(targetObraId: string) {
+    const { data: cobros } = await supabase
+      .from("obra_state_accounts")
+      .select("id")
+      .eq("obra_id", targetObraId)
+      .eq("source", "garantia")
+      .limit(1)
+    if ((cobros || []).length > 0) return // todavía queda un cobro registrado
+
+    const { data: facturaAtt } = await supabase
+      .from("attachments")
+      .select("id")
+      .eq("ref_table", "obra_garantia_factura")
+      .eq("ref_id", targetObraId)
+      .limit(1)
+
+    await supabase
+      .from("obras")
+      .update({ garantia_status: (facturaAtt || []).length > 0 ? "invoiced" : "pending" })
+      .eq("id", targetObraId)
+      .eq("garantia_status", "paid") // no degradar un estado que no estaba cobrado
+
+    // La obra pudo haberse cerrado al subir el comprobante de la garantía;
+    // eso NO se revierte solo, porque no hay registro del estado anterior.
+  }
+
+  /** Movimientos que este usuario todavía puede borrar. */
+  const movimientosEditables = useMemo(
+    () => stateAccounts.filter((m) => movimientoEditable(m)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [stateAccounts, puedeBorrarCualquierMes],
+  )
+
+  // Re-fetcha state accounts (pagos) para refrescar después de un pago desde facturas
+  async function refreshStateAccounts() {
+    if (!obra) return
+    const { data } = await supabase
+      .from("obra_state_accounts")
+      .select("*")
+      .eq("obra_id", obra.id)
+      .order("date", { ascending: false })
+    const accounts = (data || []) as ObraStateAccountRow[]
+    setStateAccounts(accounts)
+    const totalSpent = accounts.reduce((sum, m) => {
+      const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+      return sum + (val || 0)
+    }, 0)
+    setSpentTotal(totalSpent)
+
+    // Reload evidences
+    if (accounts.length > 0) {
+      const accountIds = accounts.map((a) => a.id)
+      const { data: evidenceData } = await supabase
+        .from("attachments")
+        .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+        .eq("ref_table", "obra_state_accounts")
+        .in("ref_id", accountIds)
+      const map: Record<string, AttachmentRow> = {}
+      ;(evidenceData || []).forEach((a: any) => { map[a.ref_id] = a as AttachmentRow })
+      setEvidenceMap(map)
+    }
+  }
+
+  // ── Fondo de garantía handlers ──
+
+  async function handleSaveGarantiaAmount() {
+    if (!obra) return
+    setSavingGarantia(true)
+    const amount = parseFloat(garantiaAmount.replace(/[^0-9.]/g, ""))
+    if (isNaN(amount) || amount <= 0) { setSavingGarantia(false); return }
+
+    const { data, error } = await supabase
+      .from("obras")
+      .update({ garantia_amount: amount, garantia_status: "pending" })
+      .eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
+      .single()
+
+    if (!error && data) setObra(data as ObraRow)
+    setGarantiaDialogOpen(false)
+    setSavingGarantia(false)
+  }
+
+  async function handleUploadGarantiaFile(type: "factura" | "pago", file: File) {
+    if (!obra) return
+    setUploadingGarantiaFile(type)
+
+    const { data: authData } = await supabase.auth.getUser()
+    const userId = authData?.user?.id ?? null
+    const refTable = type === "factura" ? "obra_garantia_factura" : "obra_garantia_pago"
+
+    // Delete previous if exists
+    const prev = type === "factura" ? garantiaFactura : garantiaPago
+    if (prev) {
+      await supabase.from("attachments").delete().eq("id", prev.id)
+      const ext = prev.file_name?.split(".").pop() || "pdf"
+      await supabase.storage.from("obra-facturas").remove([`garantia/${obra.id}-${type}.${ext}`])
+    }
+
+    // Upload file
+    const ext = file.name.split(".").pop() || "pdf"
+    const path = `garantia/${obra.id}-${type}.${ext}`
+    const { error: uploadErr } = await supabase.storage
+      .from("obra-facturas")
+      .upload(path, file, { upsert: true })
+
+    if (uploadErr) { console.error("upload garantia error:", uploadErr); setUploadingGarantiaFile(null); return }
+
+    const { data: urlData } = supabase.storage.from("obra-facturas").getPublicUrl(path)
+
+    const { data: inserted } = await supabase.from("attachments").insert({
+      ref_table: refTable,
+      ref_id: obra.id,
+      file_url: urlData.publicUrl,
+      file_name: file.name,
+      mime_type: file.type,
+      size_bytes: file.size,
+      uploaded_by: userId,
+    }).select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at").single()
+
+    if (inserted) {
+      if (type === "factura") {
+        setGarantiaFactura(inserted as AttachmentRow)
+        // Update status to invoiced
+        const { data: d } = await supabase.from("obras").update({ garantia_status: "invoiced" }).eq("id", obra.id)
+          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount").single()
+        if (d) setObra(d as ObraRow)
+      } else {
+        setGarantiaPago(inserted as AttachmentRow)
+        // Al subir el comprobante, la obra queda oficialmente completada
+        const { data: dClosed } = await supabase
+          .from("obras")
+          .update({ status: "closed" })
+          .eq("id", obra.id)
+          .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
+          .single()
+        if (dClosed) setObra(dClosed as ObraRow)
+        logActivity({
+          event_type: "obra.completed",
+          entity_type: "obra",
+          entity_id: obra.id,
+          entity_label: obra.name,
+          metadata: { obra_id: obra.id, via: "garantia_comprobante" },
+        })
+      }
+    }
+    setUploadingGarantiaFile(null)
+  }
+
+  async function handleGarantiaPayment() {
+    if (!obra) return
+    setSavingGarantiaPay(true)
+
+    const payAmount = obra.garantia_amount ? Number(obra.garantia_amount) : 0
+    const { data: authData } = await supabase.auth.getUser()
+    const userId = authData?.user?.id ?? null
+
+    // Insert payment into state accounts
+    await supabase.from("obra_state_accounts").insert({
+      obra_id: obra.id,
+      concept: "deposit",
+      date: toLocalDateStr(new Date()),
+      amount: payAmount,
+      method: garantiaPayForm.method,
+      bank_ref: garantiaPayForm.bank_ref.trim() || null,
+      note: garantiaPayForm.note.trim() || `Cobro fondo de garantía`,
+      uploaded_by: userId,
+      // Sin esta marca el movimiento no se puede distinguir de cualquier otro
+      // depósito, y borrarlo dejaría la garantía como "Cobrada" para siempre.
+      source: "garantia",
+    })
+
+    // Update obra status to paid
+    const { data: d } = await supabase.from("obras").update({ garantia_status: "paid" }).eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount").single()
+    if (d) setObra(d as ObraRow)
+
+    setGarantiaPayDialogOpen(false)
+    setSavingGarantiaPay(false)
+    await refreshStateAccounts()
+  }
+
+  async function handleDownloadFile(url: string, filename: string) {
+    const res = await fetch(url)
+    const blob = await res.blob()
+    const blobUrl = URL.createObjectURL(blob)
+    const a = document.createElement("a")
+    a.href = blobUrl
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(blobUrl)
+  }
+
+  async function handleViewGarantiaFile(type: "factura" | "pago") {
+    if (!obra) return
+    const att = type === "factura" ? garantiaFactura : garantiaPago
+    if (!att) return
+    const ext = att.file_name?.split(".").pop() || "pdf"
+    const path = `garantia/${obra.id}-${type}.${ext}`
+    const { data } = await supabase.storage.from("obra-facturas").createSignedUrl(path, 300)
+    if (data?.signedUrl) {
+      setGarantiaPreviewUrl(data.signedUrl)
+      setGarantiaPreviewName(att.file_name || `garantia-${type}.${ext}`)
+    }
+  }
+
+
+  // Re-fetcha solo los datos de equipo (para refrescar el card Overview)
+  async function fetchTeamStats(obraId: string) {
+    const { data, error } = await supabase
+      .from("obra_assignments")
+      .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
+      .eq("obra_id", obraId)
+    if (error) { console.error("fetchTeamStats error:", error); return }
+    const today = toLocalDateStr(new Date())
+    applyTeamStats((data || []) as ObraAssignmentRow[], today)
+  }
+
+  // ── Bajada notifications (rango salida → reingreso, cualquier día) ──
+
+  /** Suma N días a una fecha YYYY-MM-DD y devuelve YYYY-MM-DD */
+  function addDaysStr(dateStr: string, days: number): string {
+    const d = new Date(dateStr + "T12:00:00")
+    d.setDate(d.getDate() + days)
+    return toLocalDateStr(d)
+  }
+
+  async function generateAndFetchBajadaNotifications(obraId: string, silent = false) {
+    if (!silent) setBajadaLoading(true)
+    const todayStr = toLocalDateStr(new Date())
+    const horizonStr = addDaysStr(todayStr, 7) // ventana: salidas dentro de 7 días
+
+    // Asignaciones activas de foráneos con fecha de salida
+    const { data: foraneoAssignments } = await supabase
+      .from("obra_assignments")
+      .select("id, employee_id, employees(full_name, is_foraneo, next_bajada_date, next_reingreso_date)")
+      .eq("obra_id", obraId)
+      .is("assigned_to", null)
+
+    // Filtra: foráneo, con salida definida, viaje próximo (≤7 días) y no terminado
+    const matching = (foraneoAssignments || []).filter((a: any) => {
+      const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
+      if (!emp?.is_foraneo || !emp?.next_bajada_date) return false
+      const salida = emp.next_bajada_date as string
+      const reingreso = (emp.next_reingreso_date as string | null) ?? null
+      const upcoming = salida <= horizonStr
+      const notOver = reingreso ? reingreso >= todayStr : salida >= todayStr
+      return upcoming && notOver
+    })
+
+    for (const a of matching as any[]) {
+      const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
+      const salida = emp.next_bajada_date as string
+      const reingreso = (emp.next_reingreso_date as string | null) ?? null
+      // Evita duplicar por asignación + fecha de salida
+      const { data: existing } = await supabase
+        .from("bajada_notifications")
+        .select("id")
+        .eq("assignment_id", a.id)
+        .eq("bajada_date", salida)
+        .limit(1)
+      if (!existing || existing.length === 0) {
+        await supabase.from("bajada_notifications").insert({
+          obra_id: obraId,
+          assignment_id: a.id,
+          employee_id: a.employee_id,
+          bajada_date: salida,
+          reingreso_date: reingreso,
+        })
+      }
+    }
+
+    // Pendientes de esta obra
+    const { data: notifications } = await supabase
+      .from("bajada_notifications")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, reingreso_date, status")
+      .eq("obra_id", obraId)
+      .eq("status", "pending")
+      .order("bajada_date", { ascending: true })
+
+    if (notifications && notifications.length > 0) {
+      const empIds = [...new Set(notifications.map((n: any) => n.employee_id))]
+      const { data: empData } = await supabase
+        .from("employees")
+        .select("id, full_name")
+        .in("id", empIds)
+
+      const empMap = new Map<string, string>()
+      ;(empData || []).forEach((e: any) => empMap.set(e.id, e.full_name))
+
+      const enriched: BajadaNotification[] = notifications.map((n: any) => ({
+        ...n,
+        employee_name: empMap.get(n.employee_id) ?? "Empleado",
+      }))
+      setBajadaNotifications(enriched)
+    } else {
+      setBajadaNotifications([])
+    }
+
+    // Bajadas de ticket confirmadas (extraordinarias) de esta obra
+    const { data: ticketRows } = await supabase
+      .from("bajada_notifications")
+      .select("id, obra_id, assignment_id, employee_id, bajada_date, reingreso_date, status")
+      .eq("obra_id", obraId)
+      .eq("kind", "ticket")
+      .eq("status", "confirmed")
+      .order("bajada_date", { ascending: false })
+    if (ticketRows && ticketRows.length > 0) {
+      const tEmpIds = [...new Set(ticketRows.map((n: any) => n.employee_id))]
+      const { data: tEmpData } = await supabase.from("employees").select("id, full_name").in("id", tEmpIds)
+      const tMap = new Map<string, string>()
+      ;(tEmpData || []).forEach((e: any) => tMap.set(e.id, e.full_name))
+      setTicketBajadas(ticketRows.map((n: any) => ({ ...n, employee_name: tMap.get(n.employee_id) ?? "Empleado" })))
+    } else {
+      setTicketBajadas([])
+    }
+
+    if (!silent) setBajadaLoading(false)
+  }
+
+  // El aviso de ticket se retira solo a los 5 segundos
+  useEffect(() => {
+    if (!bajadaToast) return
+    const t = setTimeout(() => setBajadaToast(null), 5000)
+    return () => clearTimeout(t)
+  }, [bajadaToast])
+
+  async function handleConfirmBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const resolvedBy = authData?.user?.id ?? null
+
+      // La bajada recurrente no requiere ni consume ticket.
+      const res = await fetch("/api/foraneo/confirm-bajada", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notificationId: notification.id,
+          obraId: notification.obra_id,
+          employeeId: notification.employee_id,
+          start: notification.bajada_date,
+          end: notification.reingreso_date ?? notification.bajada_date,
+          userId: resolvedBy,
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        alert(json?.error || "No se pudo confirmar la bajada.")
+        return
+      }
+
+      // Confirmada: la quitamos de pendientes y refrescamos
+      setBajadaNotifications((prev: BajadaNotification[]) => prev.filter((n: BajadaNotification) => n.id !== notification.id))
+      await generateAndFetchBajadaNotifications(notification.obra_id, true)
+    } catch (e) {
+      console.error("confirmBajada error:", e)
+      alert("No se pudo confirmar la bajada.")
+    } finally {
+      setProcessingBajadaId(null)
+    }
+  }
+
+  async function handleDismissBajada(notification: BajadaNotification) {
+    setProcessingBajadaId(notification.id)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const resolvedBy = authData?.user?.id ?? null
+
+      // Descartar significa que el trabajador no tomará esta bajada: ese viaje
+      // se guarda como ticket para una fecha posterior.
+      const res = await fetch("/api/foraneo/dismiss-bajada", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          notificationId: notification.id,
+          employeeId: notification.employee_id,
+          start: notification.bajada_date,
+          userId: resolvedBy,
+        }),
+      })
+      const json = await res.json().catch(() => ({}))
+
+      if (!res.ok) {
+        alert(json?.error || "No se pudo descartar la bajada.")
+        return
+      }
+
+      setBajadaNotifications((prev: BajadaNotification[]) =>
+        prev.filter((n: BajadaNotification) => n.id !== notification.id),
+      )
+
+      if (json?.granted) {
+        setBajadaToast({
+          name: notification.employee_name ?? "el trabajador",
+          balance: Number(json.balance) || 0,
+        })
+      }
+    } catch (e) {
+      console.error("dismissBajada error:", e)
+      alert("No se pudo descartar la bajada.")
+    } finally {
+      setProcessingBajadaId(null)
+    }
+  }
+
+  async function loadData() {
+      setLoading(true)
+      setError(null)
+
+      try {
+        const obraId = params.obraId as string
+
+        await loadIsAdmin()
+
+        const { data: obraData, error: obraError } = await supabase
+          .from("obras")
+          .select(
+            `
+            id,
+            code,
+            name,
+            client_name,
+            location_text,
+            status,
+            start_date_planned,
+            start_date_actual,
+            end_date_planned,
+            end_date_actual,
+            notes,
+            iva_included,
+            garantia_amount,
+            garantia_status,
+            garantia_pct,
+            contract_total_amount,
+            anticipo_pct,
+            anticipo_amount,
+            anticipo_status,
+            anticipo_amount_paid,
+            anticipo_invoice_number,
+            anticipo_date,
+            saldo_pct,
+            saldo_amount
+          `,
+          )
+          .eq("id", obraId)
+          .single()
+
+        if (obraError || !obraData) {
+          console.error("Error fetching obra:", obraError)
+          setError("No se encontro la obra o hubo un error al cargarla.")
+          setLoading(false)
+          return
+        }
+
+        const obraRow = obraData as ObraRow
+        setObra(obraRow)
+        setIvaIncluded(obraRow.iva_included ?? true)
+
+        setEditForm({
+          name: obraData.name,
+          client_name: obraData.client_name ?? "",
+          location_text: obraData.location_text ?? "",
+          status: obraData.status as DbObraStatus,
+          start_date_planned: obraData.start_date_planned ?? "",
+          end_date_planned: obraData.end_date_planned ?? "",
+          notes: obraData.notes ?? "",
+        })
+
+        const [
+          { data: contractsData, error: contractsError },
+          { data: stateAccountsData, error: stateAccountsError },
+          { data: reportsData, error: reportsError },
+          { data: assignmentsData, error: assignmentsError },
+          { data: billingItemsData, error: billingItemsError },
+        ] = await Promise.all([
+          supabase.from("contracts").select("id, obra_id, contract_amount, currency").eq("obra_id", obraId),
+          supabase
+            .from("obra_state_accounts")
+            .select("id, obra_id, amount, concept, method, date, bank_ref, invoice_number, factura_id, source, note, created_at")
+            .eq("obra_id", obraId),
+          supabase
+            .from("site_reports")
+            .select("id, obra_id, report_date, progress_percent")
+            .eq("obra_id", obraId)
+            .order("report_date", { ascending: false })
+            .limit(1),
+          supabase
+            .from("obra_assignments")
+            .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
+            .eq("obra_id", obraId),
+          supabase
+            .from("obra_billing_items")
+            .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+            .eq("obra_id", obraId)
+            .order("date", { ascending: true }),
+        ])
+
+        if (contractsError) console.error("contracts error", contractsError)
+        if (stateAccountsError) console.error("state accounts error", stateAccountsError)
+        if (reportsError) console.error("reports error", reportsError)
+        if (assignmentsError) console.error("assignments error", assignmentsError)
+        if (billingItemsError) console.error("billing items error", billingItemsError)
+
+        const contracts = (contractsData || []) as ContractRow[]
+        const totalContractAmount = contracts.reduce((sum, c) => {
+          const val = typeof c.contract_amount === "string" ? parseFloat(c.contract_amount) : c.contract_amount || 0
+          return sum + (val || 0)
+        }, 0)
+
+        const currency =
+          contracts[0]?.currency && contracts[0].currency.trim() !== "" ? contracts[0].currency : "MXN"
+
+        // Load billing items and compute budget from them instead of contracts
+        const loadedBillingItems = (billingItemsData || []) as BillingItem[]
+        setBillingItems(loadedBillingItems)
+
+        const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+        setBudgetTotal(totalBillingAmount)
+        setBudgetCurrency(currency)
+
+        const stateAccounts = (stateAccountsData || []) as ObraStateAccountRow[]
+        stateAccounts.sort((a, b) => (a.date > b.date ? -1 : 1))
+        setStateAccounts(stateAccounts)
+
+        // Cargar evidencias de los movimientos
+        if (stateAccounts.length > 0) {
+          const accountIds = stateAccounts.map((a) => a.id)
+          const { data: evidenceData } = await supabase
+            .from("attachments")
+            .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+            .eq("ref_table", "obra_state_accounts")
+            .in("ref_id", accountIds)
+
+          const map: Record<string, AttachmentRow> = {}
+          ;(evidenceData || []).forEach((a: any) => {
+            map[a.ref_id] = a as AttachmentRow
+          })
+          setEvidenceMap(map)
+        }
+
+        // Cargar attachments del fondo de garantía
+        const { data: garantiaAtts } = await supabase
+          .from("attachments")
+          .select("id, ref_table, ref_id, file_url, file_name, mime_type, size_bytes, uploaded_by, uploaded_at")
+          .in("ref_table", ["obra_garantia_factura", "obra_garantia_pago"])
+          .eq("ref_id", obraId)
+        ;(garantiaAtts || []).forEach((a: any) => {
+          if (a.ref_table === "obra_garantia_factura") setGarantiaFactura(a as AttachmentRow)
+          if (a.ref_table === "obra_garantia_pago") setGarantiaPago(a as AttachmentRow)
+        })
+
+        const totalSpent = stateAccounts.reduce((sum, m) => {
+          const val = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+          return sum + (val || 0)
+        }, 0)
+        setSpentTotal(totalSpent)
+
+        const lastReport = (reportsData || []) as SiteReportRow[]
+        const progressValue = lastReport[0]?.progress_percent
+        setProgress(progressValue !== null && progressValue !== undefined ? Number(progressValue) : 0)
+
+        const today = toLocalDateStr(new Date())
+        const assignments = (assignmentsData || []) as ObraAssignmentRow[]
+        applyTeamStats(assignments, today)
+
+        await fetchDocuments(obraId)
+        // Sincroniza recurrencia bimestral de foráneos (recalcula next_* desde el ancla)
+        try {
+          await fetch("/api/foraneo/sync", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ obraId }),
+          })
+        } catch (e) {
+          console.error("foraneo sync (obra) error:", e)
+        }
+        await generateAndFetchBajadaNotifications(obraId)
+      } catch (e) {
+        console.error(e)
+        setError("Error inesperado al cargar la obra.")
+      } finally {
+        setLoading(false)
+      }
+  }
+
+  useEffect(() => {
+    loadData()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.obraId])
+
+  // Realtime subscription for bajada notifications
+  useEffect(() => {
+    const obraId = params.obraId as string
+    if (!obraId) return
+
+    const channel = supabase
+      .channel(`bajada-notif-${obraId}`)
+      .on(
+        "postgres_changes" as any,
+        { event: "INSERT", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "bajada_notifications", filter: `obra_id=eq.${obraId}` },
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
+      )
+      .on(
+        "postgres_changes" as any,
+        { event: "UPDATE", schema: "public", table: "employees" },
+        () => { generateAndFetchBajadaNotifications(obraId, true) }
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [params.obraId])
+
+  // Move sliding indicator to the active tab
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const nav = tabNavRef.current
+      if (!nav) return
+      const activeEl = nav.querySelector('[role="tab"][data-state="active"]') as HTMLElement | null
+      if (!activeEl) return
+      const navRect = nav.getBoundingClientRect()
+      const elRect = activeEl.getBoundingClientRect()
+      setIndicatorStyle({ left: elRect.left - navRect.left, width: elRect.width, ready: true })
+    })
+    return () => cancelAnimationFrame(raf)
+  }, [activeTab])
+
+  if (loading) {
+    return (
+      <AdminLayout>
+        <div className="py-10 text-center text-slate-500 text-sm">Cargando informacion de la obra...</div>
+      </AdminLayout>
+    )
+  }
+
+  if (error || !obra) {
+    return (
+      <AdminLayout>
+        <div className="space-y-4">
+          <div className="flex items-center gap-3">
+            <Link href={`${basePath}/projects/${params.empresaId}`}>
+              <Button variant="ghost" size="icon">
+                <ArrowLeft className="w-5 h-5" />
+              </Button>
+            </Link>
+            <h1 className="text-2xl font-bold text-slate-100">Detalle de obra</h1>
+          </div>
+          <Card className="bg-slate-800 border-slate-700">
+            <CardContent className="py-10 text-center text-red-400">{error ?? "No se encontro la obra."}</CardContent>
+          </Card>
+        </div>
+      </AdminLayout>
+    )
+  }
+
+  const statusUi = mapDbStatusToBadge(obra.status)
+
+  // Opciones de estatus para el selector rápido del card de Resumen
+  const STATUS_OPTIONS: { value: DbObraStatus; label: string; dot: string }[] = [
+    { value: "planned",     label: "Planeada",   dot: "bg-yellow-400" },
+    { value: "in_progress", label: "En progreso", dot: "bg-blue-400" },
+    { value: "paused",      label: "En pausa",    dot: "bg-slate-400" },
+    { value: "closed",      label: "Completada",  dot: "bg-green-400" },
+  ]
+
+  // Acento del ícono según el estatus
+  const STATUS_ACCENT: Record<DbObraStatus, { icon: string; iconBg: string }> = {
+    planned:     { icon: "text-yellow-400", iconBg: "bg-yellow-500/15" },
+    in_progress: { icon: "text-blue-400",   iconBg: "bg-blue-500/15" },
+    paused:      { icon: "text-slate-300",  iconBg: "bg-slate-500/20" },
+    closed:      { icon: "text-green-400",  iconBg: "bg-green-500/15" },
+  }
+  const statusAccent = STATUS_ACCENT[obra.status] ?? STATUS_ACCENT.planned
+
+  async function handleChangeStatus(newStatus: DbObraStatus) {
+    if (!obra || newStatus === obra.status || savingStatus) { setStatusPopoverOpen(false); return }
+    setSavingStatus(true)
+    const { data, error } = await supabase
+      .from("obras")
+      .update({ status: newStatus })
+      .eq("id", obra.id)
+      .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount")
+      .single()
+    if (!error && data) {
+      setObra(data as ObraRow)
+      logActivity({
+        event_type: "obra.status_changed",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { obra_id: obra.id, status: newStatus },
+      })
+    }
+    setSavingStatus(false)
+    setStatusPopoverOpen(false)
+  }
+
+  const displayedProgress = Math.max(0, Math.min(100, Number.isFinite(progress) ? progress : 0))
+
+  const budgetFormatted = formatCurrency(budgetTotal, budgetCurrency)
+  const spentFormatted = formatCurrency(spentTotal, budgetCurrency)
+  const remaining = budgetTotal - spentTotal
+  const remainingFormatted = formatCurrency(remaining, budgetCurrency)
+
+  // Billing items computed values
+  const cotizacion = billingItems.find((b) => b.type === "cotizacion") ?? null
+  const aditivos = billingItems.filter((b) => b.type === "aditivo")
+  const totalBilling = billingItems.reduce((s, b) => s + Number(b.amount || 0), 0)
+  const saldoPendiente = totalBilling - spentTotal
+  const avanceFinanciero = totalBilling > 0 ? Math.min(100, Math.round((spentTotal / totalBilling) * 100)) : 0
+
+  const startDate = obra.start_date_actual ?? obra.start_date_planned ?? "Sin fecha de inicio"
+  const endDate = obra.end_date_actual ?? obra.end_date_planned ?? "Sin fecha de cierre"
+
+  const location = obra.location_text ?? "Sin ubicacion registrada"
+  const clientName = obra.client_name ?? "Cliente no especificado"
+
+  // ===== CRUD Functions for Billing Items =====
+
+  async function handleSaveBillingItem() {
+    if (!obra) return
+    const amount = parseFloat(billingForm.amount.replace(/[^0-9.]/g, ""))
+    if (isNaN(amount) || amount <= 0) {
+      setBillingError("Ingresa un monto valido.")
+      return
+    }
+    if (billingForm.type === "cotizacion" && !editingBillingItem) {
+      const hasCotizacion = billingItems.some((b) => b.type === "cotizacion")
+      if (hasCotizacion) {
+        setBillingError("Ya existe una cotizacion. Edita la existente.")
+        return
+      }
+    }
+    // Revalidar contra la DB: la factura pudo haberse subido en otra pestaña.
+    // Cierra el ARCHIVO subido, no el simple registro de la factura.
+    if (editingBillingItem && editingBillingItem.type === "aditivo") {
+      const { data: facRows } = await supabase
+        .from("obra_facturas")
+        .select("id")
+        .eq("aditivo_id", editingBillingItem.id)
+      const facIds = (facRows || []).map((f: any) => f.id)
+      if (facIds.length > 0) {
+        const { data: attRows } = await supabase
+          .from("attachments")
+          .select("id")
+          .eq("ref_table", "obra_facturas")
+          .in("ref_id", facIds)
+          .limit(1)
+        if (attRows && attRows.length > 0) {
+          setBillingError(
+            "Esta aditiva ya tiene su factura subida y quedó cerrada. Elimina primero su factura.",
+          )
+          return
+        }
+      }
+    }
+
+    setSavingBilling(true)
+    setBillingError(null)
+    const { data: authData } = await supabase.auth.getUser()
+    const created_by = authData?.user?.id ?? null
+    if (editingBillingItem) {
+      const { error } = await supabase
+        .from("obra_billing_items")
+        .update({ description: billingForm.description || null, amount, date: billingForm.date, with_iva: billingForm.with_iva })
+        .eq("id", editingBillingItem.id)
+      if (error) { setBillingError("No se pudo actualizar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_updated" : "billing.aditivo_updated"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_id: editingBillingItem.id,
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
+    } else {
+      const { error } = await supabase.from("obra_billing_items").insert({
+        obra_id: obra.id, type: billingForm.type, description: billingForm.description || null,
+        amount, date: billingForm.date, created_by, with_iva: billingForm.with_iva,
+      })
+      if (error) { setBillingError("No se pudo guardar."); setSavingBilling(false); return }
+      const evType = billingForm.type === "cotizacion" ? "billing.cotizacion_registered" : "billing.aditivo_added"
+      logActivity({
+        event_type: evType,
+        entity_type: "billing",
+        entity_label: obra ? `${billingForm.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : billingForm.type,
+        metadata: { obra_id: obra?.id, amount, type: billingForm.type },
+      })
+    }
+    setBillingDialogOpen(false)
+    setEditingBillingItem(null)
+    setSavingBilling(false)
+    // Reload data to refresh billing items
+    const obraId = params.obraId as string
+    const { data: billingItemsData, error: billingItemsError } = await supabase
+      .from("obra_billing_items")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+      .eq("obra_id", obraId)
+      .order("date", { ascending: true })
+    if (billingItemsError) console.error("billing items error", billingItemsError)
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({
+      ...item,
+      with_iva: item.with_iva ?? true,
+    })) as BillingItem[]
+    setBillingItems(loadedBillingItems)
+    const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+    setBudgetTotal(totalBillingAmount)
+    setEstFacReload((n) => n + 1) // refresca la subsección de Facturas (aditivas)
+  }
+
+  async function handleIvaChange(value: boolean) {
+    setIvaIncluded(value)
+    if (!obra) return
+    await supabase.from("obras").update({ iva_included: value }).eq("id", obra.id)
+  }
+
+  async function handleDeleteBillingItem(item: BillingItem) {
+    // Una aditiva con factura asignada no se puede eliminar (rompería la factura)
+    if (item.type === "aditivo") {
+      const { data: facRows } = await supabase
+        .from("obra_facturas")
+        .select("id")
+        .eq("aditivo_id", item.id)
+        .limit(1)
+      if (facRows && facRows.length > 0) {
+        alert("No se puede eliminar una aditiva que ya tiene factura asignada. Elimina primero su factura.")
+        return
+      }
+    }
+    const label = item.type === "cotizacion" ? "la cotizacion" : `el aditivo`
+    const ok = window.confirm(`Eliminar ${label}?`)
+    if (!ok) return
+    const { error } = await supabase.from("obra_billing_items").delete().eq("id", item.id)
+    if (error) { console.error("delete billing item error:", error); return }
+    const evType = item.type === "cotizacion" ? "billing.cotizacion_deleted" : "billing.aditivo_deleted"
+    logActivity({
+      event_type: evType,
+      entity_type: "billing",
+      entity_id: item.id,
+      entity_label: obra ? `${item.type === "cotizacion" ? "Cotización" : "Aditivo"} en ${obra.name}` : item.type,
+      metadata: { obra_id: obra?.id, amount: item.amount, type: item.type },
+    })
+    // Reload data
+    const obraId = params.obraId as string
+    const { data: billingItemsData, error: billingItemsError } = await supabase
+      .from("obra_billing_items")
+      .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+      .eq("obra_id", obraId)
+      .order("date", { ascending: true })
+    if (billingItemsError) console.error("billing items error", billingItemsError)
+    const loadedBillingItems = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
+    setBillingItems(loadedBillingItems)
+    const totalBillingAmount = loadedBillingItems.reduce((sum, item) => sum + Number(item.amount || 0), 0)
+    setBudgetTotal(totalBillingAmount)
+    setEstFacReload((n) => n + 1) // refresca la subsección de Facturas (aditivas)
+  }
+
+  function openAddBillingItem(type: "cotizacion" | "aditivo") {
+    setEditingBillingItem(null)
+    setBillingForm({ type, description: "", amount: "", date: toLocalDateStr(new Date()), with_iva: true })
+    setBillingError(null)
+    setBillingDialogOpen(true)
+  }
+
+  function openEditBillingItem(item: BillingItem) {
+    // Aditiva con factura ya subida: cerrada, cambiarle el monto la descuadraría
+    if (item.type === "aditivo" && aditivosFacturados.has(item.id)) {
+      alert("Esta aditiva ya tiene su factura subida y no se puede editar. Elimina primero su factura.")
+      return
+    }
+    setEditingBillingItem(item)
+    setBillingForm({ type: item.type, description: item.description || "", amount: String(item.amount), date: item.date, with_iva: item.with_iva })
+    setBillingError(null)
+    setBillingDialogOpen(true)
+  }
+
+  // ===== Datos financieros (captura manual) =====
+
+  function openFinancialData() {
+    setFinForm({ monto_total: "", anticipo_pct: "", anticipo_amount: "", garantia_pct: "", garantia_amount: "", with_iva: true })
+    setFinError(null)
+    setFinDialogOpen(true)
+  }
+
+  const OBRA_SELECT =
+    "id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual, notes, iva_included, garantia_amount, garantia_status, garantia_pct, contract_total_amount, anticipo_pct, anticipo_amount, anticipo_status, anticipo_amount_paid, anticipo_invoice_number, anticipo_date, saldo_pct, saldo_amount"
+
+  async function handleSaveFinancialData() {
+    if (!obra) return
+    const parse = (s: string) => { const n = parseFloat(String(s).replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : null }
+    const montoTotal = parse(finForm.monto_total)
+    if (montoTotal === null || montoTotal <= 0) {
+      setFinError("El monto total del contrato es obligatorio y debe ser mayor a 0.")
+      return
+    }
+    const antPct = parse(finForm.anticipo_pct) ?? 0
+    const antAmt = parse(finForm.anticipo_amount) ?? 0
+    const garPct = parse(finForm.garantia_pct) ?? 0
+    const garAmt = parse(finForm.garantia_amount) ?? 0
+
+    setSavingFin(true)
+    setFinError(null)
+    try {
+      const { data: authData } = await supabase.auth.getUser()
+      const userId = authData?.user?.id ?? null
+
+      // 1) Términos financieros en obras
+      const obraUpdate: Record<string, unknown> = {
+        contract_total_amount: montoTotal,
+        anticipo_pct: antPct,
+        anticipo_amount: antAmt,
+        garantia_pct: garPct,
+      }
+      if (antAmt > 0 && (obra.anticipo_status ?? "none") === "none") obraUpdate.anticipo_status = "pending"
+      // Garantía: siempre se guarda el monto capturado (el % ya se guarda arriba);
+      // el estatus pasa a "pending" solo si hay monto y aún no estaba configurada.
+      obraUpdate.garantia_amount = garAmt
+      if (garAmt > 0 && (obra.garantia_status ?? "none") === "none") obraUpdate.garantia_status = "pending"
+      // Al registrar la cotización, la obra pasa de "Planeada" a "En progreso"
+      if ((obra.status ?? "") === "planned") obraUpdate.status = "in_progress"
+      const { error: obraErr } = await supabase.from("obras").update(obraUpdate).eq("id", obra.id)
+      if (obraErr) { setFinError("No se pudieron guardar los datos financieros."); setSavingFin(false); return }
+
+      // 2) Cotización en obra_billing_items (crear si no existe; actualizar si difiere)
+      const existingCot = billingItems.find((b) => b.type === "cotizacion") ?? null
+      if (!existingCot) {
+        const { error: cotErr } = await supabase.from("obra_billing_items").insert({
+          obra_id: obra.id, type: "cotizacion",
+          description: "Monto del contrato (captura manual)",
+          amount: montoTotal, date: toLocalDateStr(new Date()), created_by: userId, with_iva: finForm.with_iva,
+        })
+        if (cotErr) { setFinError("No se pudo crear la cotización."); setSavingFin(false); return }
+      } else if (Math.abs(Number(existingCot.amount) - montoTotal) > 0.01) {
+        await supabase.from("obra_billing_items").update({ amount: montoTotal }).eq("id", existingCot.id)
+      }
+
+      // 3) Anticipo → estimación-anticipo (is_anticipo) si hay monto > 0
+      if (antAmt > 0) {
+        const { data: antEst } = await supabase
+          .from("obra_estimaciones")
+          .select("id, status")
+          .eq("obra_id", obra.id)
+          .eq("is_anticipo", true)
+          .limit(1)
+          .maybeSingle()
+        const desc = `Anticipo${antPct > 0 ? ` (${antPct}%)` : ""}`
+        if (!antEst) {
+          await supabase.from("obra_estimaciones").insert({
+            obra_id: obra.id, number: 0, description: desc, amount: antAmt,
+            status: "pending", is_anticipo: true, created_by: userId,
+          })
+        } else if (String(antEst.status) !== "completed") {
+          await supabase.from("obra_estimaciones")
+            .update({ description: desc, amount: antAmt, updated_at: new Date().toISOString() })
+            .eq("id", antEst.id)
+        }
+      }
+
+      logActivity({
+        event_type: "billing.financials_registered",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: `Datos financieros en ${obra.name}`,
+        metadata: { obra_id: obra.id, contract_total_amount: montoTotal, anticipo_amount: antAmt, garantia_amount: garAmt },
+      })
+
+      // Recargar obra + billing items + estimaciones
+      const { data: obraData } = await supabase.from("obras").select(OBRA_SELECT).eq("id", obra.id).single()
+      if (obraData) setObra(obraData as ObraRow)
+      const { data: billingItemsData } = await supabase
+        .from("obra_billing_items")
+        .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+        .eq("obra_id", obra.id)
+        .order("date", { ascending: true })
+      const loaded = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
+      setBillingItems(loaded)
+      setBudgetTotal(loaded.reduce((s, it) => s + Number(it.amount || 0), 0))
+      setEstFacReload((n) => n + 1)
+
+      setFinDialogOpen(false)
+    } finally {
+      setSavingFin(false)
+    }
+  }
+
+  // Auto-cálculo de monto = total × % (para el formulario financiero)
+  function finCalcAmount(pctStr: string, totalStr: string): string | null {
+    const pct = parseFloat(String(pctStr).replace(/[^0-9.]/g, ""))
+    const total = parseFloat(String(totalStr).replace(/[^0-9.]/g, ""))
+    if (!Number.isFinite(pct) || !Number.isFinite(total) || pct <= 0 || total <= 0) return null
+    return String(Math.round(total * pct) / 100)
+  }
+
+  function openDeleteFinancialData() {
+    setFinDeleteAck(false)
+    setFinError(null)
+    setFinDeleteOpen(true)
+  }
+
+  // Elimina los 3 grupos de datos financieros: cotización (monto contrato), anticipo y fondo de garantía
+  async function handleDeleteFinancialData() {
+    if (!obra || !finDeleteAck || deletingFin) return
+    setDeletingFin(true)
+    try {
+      // 1) Eliminar la cotización (obra_billing_items)
+      const cot = billingItems.find((b) => b.type === "cotizacion")
+      if (cot) {
+        await supabase.from("obra_billing_items").delete().eq("id", cot.id)
+      }
+
+      // 2) Eliminar la estimación-anticipo, solo si no tiene factura asignada
+      const { data: antEst } = await supabase
+        .from("obra_estimaciones")
+        .select("id")
+        .eq("obra_id", obra.id)
+        .eq("is_anticipo", true)
+        .limit(1)
+        .maybeSingle()
+      if (antEst) {
+        const { data: facRows } = await supabase
+          .from("obra_facturas")
+          .select("id")
+          .eq("estimacion_id", antEst.id)
+          .limit(1)
+        if (!facRows || facRows.length === 0) {
+          await supabase.from("obra_estimaciones").delete().eq("id", antEst.id)
+        }
+      }
+
+      // 3) Limpiar los campos financieros en obras
+      const { data: obraData } = await supabase
+        .from("obras")
+        .update({
+          contract_total_amount: null,
+          anticipo_pct: null,
+          anticipo_amount: null,
+          anticipo_status: "none",
+          anticipo_amount_paid: 0,
+          anticipo_invoice_number: null,
+          anticipo_date: null,
+          garantia_pct: null,
+          garantia_amount: null,
+          garantia_status: "none",
+        })
+        .eq("id", obra.id)
+        .select(OBRA_SELECT)
+        .single()
+      if (obraData) setObra(obraData as ObraRow)
+
+      logActivity({
+        event_type: "billing.financials_deleted",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: `Datos financieros eliminados en ${obra.name}`,
+        metadata: { obra_id: obra.id },
+      })
+
+      // Recargar billing items + estimaciones
+      const { data: billingItemsData } = await supabase
+        .from("obra_billing_items")
+        .select("id, obra_id, type, description, amount, date, created_at, with_iva")
+        .eq("obra_id", obra.id)
+        .order("date", { ascending: true })
+      const loaded = (billingItemsData || []).map((item: any) => ({ ...item, with_iva: item.with_iva ?? true })) as BillingItem[]
+      setBillingItems(loaded)
+      setBudgetTotal(loaded.reduce((s, it) => s + Number(it.amount || 0), 0))
+      setEstFacReload((n) => n + 1)
+
+      setFinDeleteOpen(false)
+    } finally {
+      setDeletingFin(false)
+    }
+  }
+
+  return (
+    <RoleGuard allowed={allowed}>
+    <AdminLayout>
+      <div className="space-y-8">
+        {/* Header */}
+        <div className="bg-gradient-to-r from-slate-900 to-slate-800 rounded-2xl p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <Link href={`${basePath}/projects/${params.empresaId}`}>
+              <button className="p-2 rounded-xl bg-white/10 hover:bg-white/20 transition-colors duration-200 text-white">
+                <ArrowLeft className="w-5 h-5" />
+              </button>
+            </Link>
+            <div>
+              <h1 className="text-2xl font-bold text-white leading-tight">{obra.name}</h1>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5">
+                <span className="flex items-center gap-1 text-slate-400 text-sm">
+                  <MapPin className="w-3.5 h-3.5" />
+                  {location}
+                </span>
+                <span className="text-slate-600 text-sm">·</span>
+                <span className="text-slate-400 text-sm">
+                  Cliente: <span className="text-slate-200 font-medium">{clientName}</span>
+                </span>
+                {obra.code && (
+                  <>
+                    <span className="text-slate-600 text-sm">·</span>
+                    <span className="text-slate-400 text-sm font-mono text-xs">{obra.code}</span>
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex gap-2 shrink-0">
+            <Button
+              variant="outline"
+              onClick={() => setEditOpen(true)}
+              className="bg-white/10 border-white/20 text-white hover:bg-white/20 hover:border-white/30 transition-all duration-200"
+            >
+              <Edit className="w-4 h-4 mr-2" />
+              Editar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true) }}
+              disabled={deleteLoading}
+              className="bg-red-500/80 hover:bg-red-500 border-0 transition-all duration-200"
+            >
+              <Trash2 className="w-4 h-4 mr-2" />
+              {deleteLoading ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </div>
+        </div>
+
+        {/* Tabs + contenido */}
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <div className="relative" ref={tabNavRef}>
+            {/* Static track line */}
+            <div className="absolute bottom-0 left-0 right-0 h-px bg-slate-700" />
+            {/* Sliding active indicator */}
+            <div
+              className="absolute bottom-0 h-0.5 bg-[#4da8e8] z-10"
+              style={{
+                left: indicatorStyle.left,
+                width: indicatorStyle.width,
+                opacity: indicatorStyle.ready ? 1 : 0,
+                transition: indicatorStyle.ready
+                  ? "left 280ms cubic-bezier(0.4,0,0.2,1), width 280ms cubic-bezier(0.4,0,0.2,1), opacity 150ms"
+                  : "none",
+              }}
+            />
+            <TabsList className="flex items-end gap-0 bg-transparent rounded-none p-0 h-auto border-0 w-full justify-start overflow-x-auto [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+              {[
+                { value: "overview",   icon: <LayoutDashboard className="w-4 h-4" />, label: "Resumen" },
+                { value: "milestones", icon: <FolderOpen className="w-4 h-4" />,      label: "Documentos" },
+                { value: "account",    icon: <CreditCard className="w-4 h-4" />,      label: "Estado de Cuenta" },
+                { value: "team",       icon: <Users className="w-4 h-4" />,            label: "Equipo" },
+                { value: "nominas",    icon: <DollarSign className="w-4 h-4" />,       label: "Nominas" },
+                { value: "activity",   icon: <Activity className="w-4 h-4" />,         label: "Actividad" },
+              ].map(({ value, icon, label }) => (
+                <TabsTrigger
+                  key={value}
+                  value={value}
+                  className={[
+                    "flex items-center gap-2 px-5 py-3 rounded-none border-0 shadow-none bg-transparent",
+                    "text-sm font-medium text-slate-500 hover:text-slate-200",
+                    "transition-colors duration-200 whitespace-nowrap",
+                    "data-[state=active]:text-slate-100 data-[state=active]:bg-transparent data-[state=active]:shadow-none",
+                  ].join(" ")}
+                >
+                  {icon}
+                  {label}
+                </TabsTrigger>
+              ))}
+            </TabsList>
+          </div>
+
+          {/* OVERVIEW */}
+          <TabsContent value="overview" className="space-y-6">
+            {/* Overview cards (Status / Progress / Budget / Team) */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              {/* Estatus */}
+              <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5 shadow-sm hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Estatus</p>
+                    <Popover open={statusPopoverOpen} onOpenChange={setStatusPopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <button
+                          type="button"
+                          title="Cambiar estatus"
+                          className={`${statusUi.className} mt-3 inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-lg font-bold cursor-pointer transition-all hover:brightness-125 hover:ring-2 hover:ring-white/15 focus:outline-none`}
+                        >
+                          {savingStatus ? <Loader2 className="w-5 h-5 animate-spin" /> : null}
+                          {statusUi.label}
+                          <ChevronDown className="w-5 h-5 opacity-70" />
+                        </button>
+                      </PopoverTrigger>
+                      <PopoverContent align="start" className="w-56 p-1.5 bg-slate-800 border-slate-700 shadow-xl">
+                        <p className="px-2 py-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Cambiar estatus</p>
+                        {STATUS_OPTIONS.map((opt) => {
+                          const active = obra.status === opt.value
+                          return (
+                            <button
+                              key={opt.value}
+                              type="button"
+                              onClick={() => handleChangeStatus(opt.value)}
+                              disabled={savingStatus}
+                              className={`w-full flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-sm transition-colors cursor-pointer disabled:cursor-not-allowed ${
+                                active ? "bg-slate-700/70 text-slate-100" : "text-slate-300 hover:bg-slate-700/50"
+                              }`}
+                            >
+                              <span className={`w-2.5 h-2.5 rounded-full ${opt.dot} shrink-0`} />
+                              <span className="flex-1 text-left">{opt.label}</span>
+                              {active && <Check className="w-4 h-4 text-[#4da8e8] shrink-0" />}
+                            </button>
+                          )
+                        })}
+                      </PopoverContent>
+                    </Popover>
+                    <p className="text-[11px] text-slate-500 mt-2">Haz clic para cambiar el estatus</p>
+                  </div>
+                  <div className={`p-2.5 ${statusAccent.iconBg} rounded-xl transition-colors duration-300`}>
+                    <Clock className={`w-5 h-5 ${statusAccent.icon} transition-colors duration-300`} />
+                  </div>
+                </div>
+              </div>
+
+              {/* Financiero */}
+              <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5 shadow-sm hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 cursor-pointer" onClick={() => setActiveTab("account")}>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cotizacion</p>
+                    <p className="text-2xl font-bold text-slate-100 mt-2">{budgetFormatted}</p>
+                    <p className="text-xs text-slate-500 mt-1">Cobrado: {spentFormatted}</p>
+                  </div>
+                  <div className="p-2.5 bg-purple-500/15 rounded-xl">
+                    <DollarSign className="w-5 h-5 text-purple-400" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Equipo */}
+              <div className="bg-slate-800 rounded-2xl border border-slate-700 p-5 shadow-sm hover:shadow-lg hover:-translate-y-0.5 transition-all duration-200 cursor-pointer" onClick={() => setActiveTab("team")}>
+                <div className="flex items-start justify-between">
+                  <div>
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Equipo</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Director de Obra:{" "}
+                      <span className="font-medium text-slate-100">{managerName ?? "Sin asignar"}</span>
+                    </p>
+                    <p className="text-2xl font-bold text-slate-100 mt-3">{teamSize}</p>
+                  </div>
+                  <div className="p-2.5 bg-orange-500/15 rounded-xl">
+                    <Users className="w-5 h-5 text-orange-400" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Notificaciones Pendientes (Bajadas) */}
+            {bajadaNotifications.length > 0 && (
+              <Card className="bg-slate-800 border-amber-500/30 shadow-[0_0_15px_rgba(245,158,11,0.05)]">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-amber-500/15">
+                      <Bell className="w-4.5 h-4.5 text-amber-400" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-slate-100">Notificaciones Pendientes</CardTitle>
+                      <p className="text-xs text-slate-500 mt-0.5">Bajadas programadas para este fin de semana</p>
+                    </div>
+                  </div>
+                  <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25">
+                    {bajadaNotifications.length}
+                  </Badge>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    Confirmar no consume tickets. Si se descarta, ese viaje se guarda
+                    como ticket para usarlo en una fecha posterior.
+                  </p>
+
+                  {bajadaNotifications.map((n: BajadaNotification) => {
+                    const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
+                    const salidaLabel = new Date(n.bajada_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                    const reingresoLabel = n.reingreso_date
+                      ? new Date(n.reingreso_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                      : null
+                    const isProcessing = processingBajadaId === n.id
+
+                    return (
+                      <div
+                        key={n.id}
+                        className="flex items-center justify-between gap-4 p-3.5 rounded-xl border border-slate-700/60 bg-slate-700/20 hover:bg-slate-700/30 transition-colors"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-9 h-9 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                            <CalendarDays className="w-4 h-4 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-200 truncate">
+                              {n.employee_name}
+                            </p>
+                            <p className="text-xs text-slate-500">
+                              {reingresoLabel ? `Bajada: ${salidaLabel} → Reingreso: ${reingresoLabel}` : `Bajada: ${salidaLabel}`}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={isProcessing}
+                            onClick={() => handleDismissBajada(n)}
+                            title="El trabajador no tomará esta bajada: se guarda como ticket para después"
+                            className="bg-transparent border-slate-600 text-slate-400 hover:bg-slate-700 hover:text-slate-200 text-xs"
+                          >
+                            Descartar
+                          </Button>
+                          <Button
+                            size="sm"
+                            disabled={isProcessing}
+                            onClick={() => handleConfirmBajada(n)}
+                            className="bg-amber-600 hover:bg-amber-700 text-white text-xs"
+                          >
+                            {isProcessing ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <>
+                                <CheckCircle className="w-3.5 h-3.5 mr-1" />
+                                Confirmar
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                  <p className="text-[11px] text-slate-600 text-center pt-1">
+                    Al confirmar, se marcará asistencia automática para todo el rango (salida → reingreso).
+                  </p>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Bajadas de ticket (extraordinarias) confirmadas */}
+            {ticketBajadas.length > 0 && (
+              <Card className="bg-slate-800 border-slate-700">
+                <CardHeader className="flex flex-row items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-amber-500/15">
+                      <CalendarDays className="w-4.5 h-4.5 text-amber-400" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-slate-100">Bajadas de ticket</CardTitle>
+                      <p className="text-xs text-slate-500 mt-0.5">Fechas de bajada por ticket confirmadas (extraordinarias)</p>
+                    </div>
+                  </div>
+                  <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25">{ticketBajadas.length}</Badge>
+                </CardHeader>
+                <CardContent className="space-y-2">
+                  {ticketBajadas.map((n: BajadaNotification) => {
+                    const fmtOpts: Intl.DateTimeFormatOptions = { weekday: "short", day: "numeric", month: "short" }
+                    const salidaLabel = new Date(n.bajada_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                    const reingresoLabel = n.reingreso_date
+                      ? new Date(n.reingreso_date + "T00:00:00").toLocaleDateString("es-MX", fmtOpts)
+                      : null
+                    return (
+                      <div key={n.id} className="flex items-center justify-between gap-4 p-3 rounded-xl border border-slate-700/60 bg-slate-700/20">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="w-8 h-8 rounded-full bg-amber-500/15 border border-amber-500/20 flex items-center justify-center shrink-0">
+                            <CalendarDays className="w-4 h-4 text-amber-400" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-200 truncate">{n.employee_name}</p>
+                            <p className="text-xs text-slate-500">
+                              {reingresoLabel ? `${salidaLabel} → ${reingresoLabel}` : salidaLabel}
+                            </p>
+                          </div>
+                        </div>
+                        <Badge className="bg-amber-500/15 text-amber-300 border border-amber-500/25 shrink-0">Ticket · Confirmada</Badge>
+                      </div>
+                    )
+                  })}
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Detalles de la obra */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader>
+                <CardTitle className="text-slate-100">Detalles de la obra</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div>
+                  <p className="text-sm font-medium text-slate-400">Notas</p>
+                  <p className="text-sm text-slate-200 mt-1">{obra.notes || "No hay notas registradas aun para esta obra."}</p>
+                </div>
+                <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700">
+                  <div>
+                    <p className="text-sm font-medium text-slate-400">Fecha de inicio</p>
+                    <p className="text-sm text-slate-200 mt-1">{startDate}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-400">Fecha de cierre</p>
+                    <p className="text-sm text-slate-200 mt-1">{endDate}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-400">Cliente</p>
+                    <p className="text-sm text-slate-200 mt-1">{clientName}</p>
+                  </div>
+                  <div>
+                    <p className="text-sm font-medium text-slate-400">Ubicacion</p>
+                    <p className="text-sm text-slate-200 mt-1">{location}</p>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Resumen financiero */}
+            <Card className="bg-slate-800 border-slate-700 shadow-sm hover:shadow-md transition-shadow duration-200">
+              <CardHeader>
+                <CardTitle className="text-slate-100">Resumen financiero</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-slate-400">Avance financiero</span>
+                      <span className="text-sm font-bold text-slate-200">
+                        {budgetTotal > 0 ? `${Math.round((spentTotal / budgetTotal) * 100)}%` : "0%"}
+                      </span>
+                    </div>
+                    <Progress
+                      value={budgetTotal > 0 ? Math.min(100, Math.max(0, (spentTotal / budgetTotal) * 100)) : 0}
+                      className="h-2 bg-slate-700/60 [&>div]:bg-gradient-to-r [&>div]:from-[#0174bd] [&>div]:to-[#4da8e8]"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-700">
+                    <div>
+                      <p className="text-sm text-slate-400">Total cotizado</p>
+                      <p className="text-lg font-bold text-slate-100">{budgetFormatted}</p>
+                    </div>
+                    <div>
+                      <p className="text-sm text-slate-400">Saldo pendiente</p>
+                      <p className="text-lg font-bold text-green-400">{remainingFormatted}</p>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* MILESTONES => Documentos (Opcion B con modal) */}
+          <TabsContent value="milestones" forceMount className="space-y-6">
+            {/* Header */}
+            <ProjectDocumentsTab obraId={obra.id} onContractTermsApplied={() => loadData()}/>
+          </TabsContent>
+
+          {/* ESTADO DE CUENTA */}
+          <TabsContent value="account" className="space-y-6">
+
+            {/* CARD 1 — Balance General */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-slate-100">Balance General de la Obra</CardTitle>
+                <span className="text-sm font-semibold text-green-400 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </span>
+              </CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-6">
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Total a cobrar</p>
+                    <p className="text-2xl font-bold text-slate-100 mt-1">{formatCurrency(totalBilling, budgetCurrency)}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">Cotización + Aditivas</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Cobrado</p>
+                    <p className="text-2xl font-bold text-green-400 mt-1">{spentFormatted}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Saldo pendiente</p>
+                    <p className={`text-2xl font-bold mt-1 ${saldoPendiente < 0 ? "text-red-400" : "text-slate-100"}`}>
+                      {formatCurrency(saldoPendiente, budgetCurrency)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-medium text-slate-500 uppercase tracking-wide">Avance financiero</p>
+                    <p className="text-2xl font-bold text-slate-100 mt-1">{avanceFinanciero}%</p>
+                    <div className="mt-2">
+                      <Progress value={avanceFinanciero} className="h-2 bg-slate-700/60 [&>div]:bg-gradient-to-r [&>div]:from-[#0174bd] [&>div]:to-[#4da8e8]" />
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* CARD 2 — Cotización */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-slate-100">Cotización</CardTitle>
+                {!cotizacion && (
+                  <Button size="sm" className="cursor-pointer" onClick={openFinancialData}>
+                    <Plus className="w-4 h-4 mr-1" />
+                    Registrar Datos Financieros
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                <div className="rounded-lg border border-slate-600 bg-slate-700/40 p-4">
+                  <div className="flex items-start justify-between flex-wrap gap-3">
+                    <div>
+                      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Cotización base</p>
+                      {cotizacion ? (
+                        <>
+                          <p className="text-2xl font-bold text-slate-100 mt-1">{formatCurrency(Number(cotizacion.amount), budgetCurrency)}</p>
+                          {cotizacion.description && (
+                            <p className="text-xs text-slate-400 mt-0.5">{cotizacion.description}</p>
+                          )}
+                          <p className="text-xs text-slate-500 mt-0.5">{cotizacion.date}</p>
+                          <span className={`inline-flex items-center gap-1 mt-1.5 text-xs font-semibold px-2 py-0.5 rounded-full ${cotizacion.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                            {cotizacion.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                            {cotizacion.with_iva ? "Con IVA 16%" : "Sin IVA"}
+                          </span>
+                        </>
+                      ) : (
+                        <p className="text-sm text-slate-500 mt-1">Sin cotización registrada</p>
+                      )}
+                    </div>
+                    {cotizacion && (
+                      <div className="flex gap-2 shrink-0">
+                        <Button size="sm" variant="outline" onClick={() => openEditBillingItem(cotizacion)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">
+                          Editar
+                        </Button>
+                        <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={openDeleteFinancialData}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* CARD 3 & 4 — Estimaciones + Facturas */}
+            <EstimacionesFacturasCards
+              obraId={obra.id}
+              currency={budgetCurrency}
+              onPaymentRegistered={refreshStateAccounts}
+              reloadSignal={estFacReload}
+              onFacturasChanged={(ids) => setAditivosFacturados(new Set(ids))}
+            />
+
+            {/* CARD 5 — Pagos y Movimientos */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-slate-100">Pagos y movimientos</CardTitle>
+                <div className="flex gap-2">
+                  {/* ===== TEMPORAL: registro manual de pagos para obras antiguas (flujo previo al EDC) =====
+                       Permite capturar pagos/movimientos sin referencia a una factura especifica, en lo que
+                       se cierran las obras del flujo anterior. Para eliminar esta funcion en el futuro,
+                       borra unicamente este bloque <Button>. El dialogo, el estado y handleCreatePayment
+                       tambien pueden retirarse cuando ya no se ocupe. */}
+                  <Button
+                    size="sm"
+                    className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white transition-all duration-150"
+                    onClick={() => setNewPaymentOpen(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Registrar pago
+                  </Button>
+                  {/* ===== FIN TEMPORAL ===== */}
+                  {stateAccounts.length > 0 && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150"
+                      onClick={() => {
+                        setSelectedPaymentIds(new Set())
+                        setEditPaymentsOpen(true)
+                      }}
+                    >
+                      Editar
+                    </Button>
+                  )}
+                </div>
+              </CardHeader>
+              <CardContent>
+                <input
+                  ref={evidenceInputRef}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.jpg,.jpeg,.png,.webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ""
+                    if (!file) return
+                    if (replacingEvidence) {
+                      handleReplaceEvidence(replacingEvidence, file)
+                    } else if (pendingEvidenceAccountId) {
+                      handleUploadEvidence(pendingEvidenceAccountId, file)
+                    }
+                  }}
+                />
+                {stateAccounts.length === 0 ? (
+                  <p className="text-sm text-slate-500">Aun no hay movimientos registrados para esta obra.</p>
+                ) : (
+                  <div className="rounded-md border border-slate-700 overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-slate-700 hover:bg-slate-700/30">
+                          <TableHead className="text-slate-400">Fecha</TableHead>
+                          <TableHead className="text-slate-400">Concepto</TableHead>
+                          <TableHead className="text-slate-400">Metodo</TableHead>
+                          <TableHead className="text-slate-400">Referencia</TableHead>
+                          <TableHead className="text-slate-400">No. Factura</TableHead>
+                          <TableHead className="text-slate-400">Nota</TableHead>
+                          <TableHead className="text-slate-400">Evidencia</TableHead>
+                          <TableHead className="text-right text-slate-400">Monto</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {stateAccounts.map((m) => {
+                          const amountNumber = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+                          const evidence = evidenceMap[m.id]
+                          const isUploading = uploadingEvidenceId === m.id
+                          return (
+                            <TableRow key={m.id} className="border-slate-700 hover:bg-slate-700/20">
+                              <TableCell className="text-slate-300">{m.date}</TableCell>
+                              <TableCell className="text-slate-300">
+                                {m.concept === "deposit" ? "Deposito" : m.concept === "advance" ? "Anticipo" : m.concept === "retention" ? "Retencion" : "Devolucion"}
+                              </TableCell>
+                              <TableCell className="text-slate-300">
+                                {m.method === "transfer" ? "Transferencia" : m.method === "cash" ? "Efectivo" : m.method === "check" ? "Cheque" : "Otro"}
+                              </TableCell>
+                              <TableCell className="text-slate-300">{m.bank_ref || "-"}</TableCell>
+                              <TableCell className="text-slate-300">{m.invoice_number || "-"}</TableCell>
+                              <TableCell className="max-w-xs truncate text-slate-300">{m.note || "-"}</TableCell>
+                              <TableCell>
+                                {isUploading ? (
+                                  <span className="text-xs text-slate-400 flex items-center gap-1">
+                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    Subiendo...
+                                  </span>
+                                ) : evidence ? (
+                                  <Button size="sm" variant="outline" className="text-xs h-7 cursor-pointer gap-1 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white" onClick={() => handleViewEvidence(evidence)}>
+                                    <Eye className="w-3 h-3" />
+                                    Visualizar
+                                  </Button>
+                                ) : (
+                                  <Button size="sm" variant="ghost" className="text-xs h-7 cursor-pointer text-slate-500 hover:text-slate-200 hover:bg-slate-700" onClick={() => { setPendingEvidenceAccountId(m.id); evidenceInputRef.current?.click() }}>
+                                    + Agregar
+                                  </Button>
+                                )}
+                              </TableCell>
+                              <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(amountNumber || 0), budgetCurrency)}</TableCell>
+                            </TableRow>
+                          )
+                        })}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARD 6 — Aditivas */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <CardTitle className="text-slate-100">Aditivas</CardTitle>
+                <Button size="sm" className="cursor-pointer" onClick={() => openAddBillingItem("aditivo")}>
+                  <Plus className="w-4 h-4 mr-1" />
+                  Nuevo aditivo
+                </Button>
+              </CardHeader>
+              <CardContent>
+                {aditivos.length > 0 ? (
+                  <div className="rounded-md border border-slate-700 overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow className="border-slate-700 hover:bg-slate-700/30">
+                          <TableHead className="text-slate-400">Fecha</TableHead>
+                          <TableHead className="text-slate-400">Descripcion</TableHead>
+                          <TableHead className="text-slate-400">IVA</TableHead>
+                          <TableHead className="text-right text-slate-400">Monto</TableHead>
+                          <TableHead className="text-right text-slate-400">Acciones</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {aditivos.map((item) => {
+                          const facturada = aditivosFacturados.has(item.id)
+                          return (
+                          <TableRow key={item.id} className="border-slate-700 hover:bg-slate-700/30">
+                            <TableCell className="text-sm text-slate-300">{item.date}</TableCell>
+                            <TableCell className="text-sm text-slate-300">{item.description || "-"}</TableCell>
+                            <TableCell>
+                              <span className={`inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full ${item.with_iva ? "bg-green-500/15 text-green-400" : "bg-amber-500/15 text-amber-400"}`}>
+                                {item.with_iva ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
+                                {item.with_iva ? "Con IVA" : "Sin IVA"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(item.amount), budgetCurrency)}</TableCell>
+                            <TableCell className="text-right">
+                              {facturada ? (
+                                <span
+                                  className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full bg-slate-600/30 text-slate-400 border border-slate-600/50"
+                                  title="Esta aditiva ya tiene su factura subida. Para modificarla, elimina primero su factura."
+                                >
+                                  <Lock className="w-3 h-3" />
+                                  Facturada
+                                </span>
+                              ) : (
+                                <div className="flex justify-end gap-1">
+                                  <Button size="sm" variant="ghost" className="cursor-pointer text-slate-400 hover:text-slate-100 hover:bg-slate-700 transition-all duration-150" onClick={() => openEditBillingItem(item)}>Editar</Button>
+                                  <Button size="sm" variant="ghost" className="cursor-pointer text-red-400 hover:text-red-300 hover:bg-red-500/10 transition-all duration-150" onClick={() => handleDeleteBillingItem(item)}>
+                                    <Trash2 className="w-4 h-4" />
+                                  </Button>
+                                </div>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                          )
+                        })}
+                        <TableRow className="bg-slate-700/40 font-semibold border-slate-700">
+                          <TableCell colSpan={3} className="text-slate-300">Total aditivas</TableCell>
+                          <TableCell className="text-right font-bold text-slate-100">
+                            {formatCurrency(aditivos.reduce((s, a) => s + Number(a.amount || 0), 0), budgetCurrency)}
+                          </TableCell>
+                          <TableCell />
+                        </TableRow>
+                      </TableBody>
+                    </Table>
+                  </div>
+                ) : (
+                  <p className="text-sm text-slate-500 text-center py-2">No hay aditivas registradas aún.</p>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* CARD 7 — Fondo de Garantía */}
+            <Card className="bg-slate-800 border-slate-700">
+              <CardHeader className="flex flex-row items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <ShieldCheck className="w-5 h-5 text-slate-400" />
+                  <CardTitle className="text-slate-100">Fondo de Garantía</CardTitle>
+                </div>
+                {obra.garantia_status === "none" && (
+                  <Button size="sm" className="cursor-pointer" onClick={() => { setGarantiaAmount(""); setGarantiaDialogOpen(true) }}>
+                    <Plus className="w-4 h-4 mr-1" />
+                    Configurar
+                  </Button>
+                )}
+              </CardHeader>
+              <CardContent>
+                {/* Hidden file input for garantia uploads */}
+                <input
+                  ref={garantiaFileRef}
+                  type="file"
+                  className="hidden"
+                  accept=".pdf,.xml,.jpg,.jpeg,.png"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    e.target.value = ""
+                    const target = garantiaUploadTargetRef.current
+                    garantiaUploadTargetRef.current = null
+                    if (file && target) {
+                      handleUploadGarantiaFile(target, file)
+                    }
+                  }}
+                />
+
+                {obra.garantia_status === "none" ? (
+                  <p className="text-sm text-slate-500 text-center py-4">
+                    No se ha configurado un fondo de garantía para esta obra.
+                  </p>
+                ) : (
+                  <div className="space-y-4">
+                    {/* Amount display */}
+                    <div className="rounded-lg border border-slate-600 bg-slate-700/40 p-4">
+                      <div className="flex items-start justify-between flex-wrap gap-3">
+                        <div>
+                          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Monto retenido</p>
+                          <p className="text-2xl font-bold text-slate-100 mt-1">
+                            {formatCurrency(Number(obra.garantia_amount || 0), budgetCurrency)}
+                          </p>
+                        </div>
+                        <Badge className={`text-xs border ${
+                          obra.garantia_status === "pending"
+                            ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
+                            : obra.garantia_status === "invoiced"
+                            ? "bg-blue-500/15 text-blue-400 border-blue-500/30"
+                            : "bg-green-500/15 text-green-400 border-green-500/30"
+                        }`}>
+                          {obra.garantia_status === "pending" && "Esperando factura"}
+                          {obra.garantia_status === "invoiced" && "Facturado — Pendiente de cobro"}
+                          {obra.garantia_status === "paid" && "Cobrado — Obra completada"}
+                        </Badge>
+                      </div>
+                    </div>
+
+                    {/* Stepper visual */}
+                    <div className="grid grid-cols-3 gap-3">
+                      {/* Step 1: Factura */}
+                      <div className={`rounded-lg border p-3 ${
+                        garantiaFactura
+                          ? "border-green-500/30 bg-green-500/5"
+                          : "border-amber-500/30 bg-amber-500/5"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">1. Factura del cliente</p>
+                        {garantiaFactura ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              {garantiaFactura.file_name || "Archivo subido"}
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                              onClick={() => handleViewGarantiaFile("factura")}
+                            >
+                              <Eye className="w-3 h-3 mr-1" />
+                              Ver
+                            </Button>
+                          </div>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!!uploadingGarantiaFile}
+                            className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                            onClick={() => { garantiaUploadTargetRef.current = "factura"; garantiaFileRef.current?.click() }}
+                          >
+                            {uploadingGarantiaFile === "factura" ? (
+                              <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
+                            ) : (
+                              <><Upload className="w-3 h-3 mr-1" />Subir factura</>
+                            )}
+                          </Button>
+                        )}
+                      </div>
+
+                      {/* Step 2: Cobro */}
+                      <div className={`rounded-lg border p-3 ${
+                        obra.garantia_status === "paid"
+                          ? "border-green-500/30 bg-green-500/5"
+                          : obra.garantia_status === "invoiced" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">2. Cobro</p>
+                        {obra.garantia_status === "paid" ? (
+                          <p className="text-xs text-green-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Cobrado
+                          </p>
+                        ) : obra.garantia_status === "invoiced" ? (
+                          <Button
+                            size="sm"
+                            className="cursor-pointer text-xs h-7 bg-green-600 hover:bg-green-700 text-white w-full"
+                            onClick={() => {
+                              setGarantiaPayForm({ amount: String(obra.garantia_amount || 0), note: "Cobro fondo de garantía", method: "transfer", bank_ref: "" })
+                              setGarantiaPayDialogOpen(true)
+                            }}
+                          >
+                            <DollarSign className="w-3 h-3 mr-1" />
+                            Registrar cobro
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">Pendiente de factura</p>
+                        )}
+                      </div>
+
+                      {/* Step 3: Comprobante */}
+                      <div className={`rounded-lg border p-3 ${
+                        garantiaPago
+                          ? "border-green-500/30 bg-green-500/5"
+                          : obra.garantia_status === "paid" ? "border-amber-500/30 bg-amber-500/5" : "border-slate-700 bg-slate-800/40"
+                      }`}>
+                        <p className="text-xs font-semibold text-slate-400 uppercase mb-2">3. Comprobante</p>
+                        {garantiaPago ? (
+                          <div className="space-y-1.5">
+                            <p className="text-xs text-green-400 flex items-center gap-1">
+                              <CheckCircle2 className="w-3 h-3" />
+                              {garantiaPago.file_name || "Archivo subido"}
+                            </p>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                              onClick={() => handleViewGarantiaFile("pago")}
+                            >
+                              <Eye className="w-3 h-3 mr-1" />
+                              Ver
+                            </Button>
+                          </div>
+                        ) : obra.garantia_status === "paid" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            disabled={!!uploadingGarantiaFile}
+                            className="cursor-pointer text-xs h-7 bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white w-full"
+                            onClick={() => { garantiaUploadTargetRef.current = "pago"; garantiaFileRef.current?.click() }}
+                          >
+                            {uploadingGarantiaFile === "pago" ? (
+                              <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Subiendo...</>
+                            ) : (
+                              <><Upload className="w-3 h-3 mr-1" />Subir comprobante</>
+                            )}
+                          </Button>
+                        ) : (
+                          <p className="text-xs text-slate-600 italic">Pendiente de cobro</p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Final status message */}
+                    {obra.garantia_status === "paid" && garantiaPago && (
+                      <div className="rounded-lg border border-green-500/30 bg-green-500/10 p-3 text-center">
+                        <p className="text-sm font-semibold text-green-400 flex items-center justify-center gap-2">
+                          <CheckCircle className="w-4 h-4" />
+                          Obra oficialmente completada y totalmente pagada
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          {/* TEAM  */}
+          <TabsContent value="team" forceMount className="space-y-6">
+            <ProjectTeamTab
+              obraId={obra.id}
+              obraInfo={{
+                name:          obra.name,
+                code:          obra.code,
+                client_name:   obra.client_name,
+                location_text: obra.location_text,
+                status:        obra.status,
+                start_date:    obra.start_date_actual ?? obra.start_date_planned ?? null,
+                end_date:      obra.end_date_actual   ?? obra.end_date_planned   ?? null,
+                notes:         obra.notes,
+              }}
+              allowManage
+              onTeamChange={() => fetchTeamStats(obra.id)}
+            />
+          </TabsContent>
+
+          {/* NOMINAS */}
+          <TabsContent value="nominas" className="space-y-6">
+            <NominasTab obraId={obra.id} />
+          </TabsContent>
+
+          {/* ACTIVIDAD — en desarrollo */}
+          <TabsContent value="activity">
+            <div className="min-h-[55vh] flex flex-col items-center justify-center select-none py-16">
+
+              {/* Animated icon */}
+              <div className="relative mb-8">
+                <span className="absolute inset-0 rounded-full bg-slate-400/15 animate-ping" />
+                <span className="absolute inset-3 rounded-full bg-slate-400/10 animate-ping [animation-delay:400ms]" />
+                <div className="relative w-24 h-24 rounded-full bg-gradient-to-br from-slate-900 to-slate-700 border border-slate-600 flex items-center justify-center shadow-2xl">
+                  <svg viewBox="0 0 64 64" className="w-12 h-12" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    {/* Timeline vertical line */}
+                    <line x1="20" y1="10" x2="20" y2="54" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
+                    {/* Dots on timeline */}
+                    <circle cx="20" cy="16" r="4" fill="#38bdf8" />
+                    <circle cx="20" cy="32" r="4" fill="#818cf8" />
+                    <circle cx="20" cy="48" r="4" fill="#34d399" opacity="0.5" />
+                    {/* Horizontal lines (log entries) */}
+                    <line x1="28" y1="16" x2="52" y2="16" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="28" y1="20" x2="44" y2="20" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
+                    <line x1="28" y1="32" x2="52" y2="32" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
+                    <line x1="28" y1="36" x2="40" y2="36" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
+                    <line x1="28" y1="48" x2="48" y2="48" stroke="#64748b" strokeWidth="2" strokeLinecap="round" opacity="0.4" />
+                    {/* Sparkles */}
+                    <circle cx="56" cy="10" r="1.5" fill="#38bdf8" />
+                    <circle cx="8"  cy="30" r="1"   fill="#818cf8" />
+                    <circle cx="58" cy="40" r="1"   fill="#34d399" />
+                  </svg>
+                </div>
+              </div>
+
+              {/* Label */}
+              <h2 className="text-2xl font-bold text-slate-100 mb-2 tracking-tight">Actividad de la Obra</h2>
+
+              {/* Badge */}
+              <div className="flex items-center gap-2 mb-4">
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 px-3 py-1 text-sm font-semibold text-amber-400">
+                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block" />
+                  En desarrollo
+                </span>
+              </div>
+
+              {/* Description */}
+              <p className="text-slate-500 text-sm text-center max-w-sm leading-relaxed">
+                Aqui podras ver el historial completo de movimientos de la obra: documentos subidos, cambios de estatus, pagos registrados, asignaciones de equipo y mas.
+              </p>
+
+              {/* Shimmer bar */}
+              <div className="mt-8 w-40 h-1 bg-slate-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    background: "linear-gradient(90deg, #93c5fd 0%, #2563eb 50%, #93c5fd 100%)",
+                    backgroundSize: "200% 100%",
+                    animation: "shimmer 2s ease-in-out infinite",
+                  }}
+                />
+              </div>
+
+              <style>{`
+                @keyframes shimmer {
+                  0%   { background-position: 200% center; }
+                  100% { background-position: -200% center; }
+                }
+              `}</style>
+            </div>
+          </TabsContent>
+        </Tabs>
+      </div>
+
+      {/* Dialog edit obra */}
+      <Dialog open={editOpen} onOpenChange={setEditOpen}>
+        <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Editar obra</DialogTitle>
+          </DialogHeader>
+
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !savingEdit)
+                handleUpdateObra()
+            }}
+          >
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Nombre *</label>
+              <Input value={editForm.name} onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Cliente</label>
+              <Input value={editForm.client_name} onChange={(e) => setEditForm((f) => ({ ...f, client_name: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Ubicación</label>
+              <Input value={editForm.location_text} onChange={(e) => setEditForm((f) => ({ ...f, location_text: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Estatus</label>
+              <Select value={editForm.status} onValueChange={(v) => setEditForm((f) => ({ ...f, status: v as DbObraStatus }))}>
+                <SelectTrigger className="bg-slate-700/60 border-slate-600 text-slate-100">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="bg-slate-800 border-slate-700">
+                  <SelectItem value="planned" className="text-slate-100 focus:bg-slate-700">Planeada</SelectItem>
+                  <SelectItem value="in_progress" className="text-slate-100 focus:bg-slate-700">En progreso</SelectItem>
+                  <SelectItem value="paused" className="text-slate-100 focus:bg-slate-700">Pausada</SelectItem>
+                  <SelectItem value="closed" className="text-slate-100 focus:bg-slate-700">Cerrada</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Inicio planeado</label>
+                <Input type="date" value={editForm.start_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, start_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Fin planeado</label>
+                <Input type="date" value={editForm.end_date_planned || ""} onChange={(e) => setEditForm((f) => ({ ...f, end_date_planned: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Notas</label>
+              <Textarea value={editForm.notes} onChange={(e) => setEditForm((f) => ({ ...f, notes: e.target.value }))} rows={3} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setEditOpen(false)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">
+                Cancelar
+              </Button>
+              <Button onClick={handleUpdateObra} disabled={savingEdit}>
+                {savingEdit ? "Guardando..." : "Guardar cambios"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog nuevo deposito / movimiento */}
+      <Dialog open={newPaymentOpen} onOpenChange={setNewPaymentOpen}>
+        <DialogContent className="max-w-lg bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Registrar nuevo deposito</DialogTitle>
+          </DialogHeader>
+
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.target as HTMLElement).tagName !== "TEXTAREA" && !newPaymentSaving)
+                handleCreatePayment()
+            }}
+          >
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Concepto</label>
+                <Select value={newPaymentForm.concept} onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, concept: v as ObraStateAccountRow["concept"] }))}>
+                  <SelectTrigger className="bg-slate-700/60 border-slate-600 text-slate-100">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="deposit" className="text-slate-100 focus:bg-slate-700">Deposito</SelectItem>
+                    <SelectItem value="advance" className="text-slate-100 focus:bg-slate-700">Anticipo</SelectItem>
+                    <SelectItem value="retention" className="text-slate-100 focus:bg-slate-700">Retencion</SelectItem>
+                    <SelectItem value="return" className="text-slate-100 focus:bg-slate-700">Devolucion</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Monto</label>
+                <Input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={newPaymentForm.amount}
+                  onChange={(e) => setNewPaymentForm((f) => ({ ...f, amount: e.target.value }))}
+                  placeholder="0.00"
+                  className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Metodo de pago</label>
+                <Select value={newPaymentForm.method || "transfer"} onValueChange={(v) => setNewPaymentForm((f) => ({ ...f, method: v as ObraStateAccountRow["method"] }))}>
+                  <SelectTrigger className="bg-slate-700/60 border-slate-600 text-slate-100">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent className="bg-slate-800 border-slate-700">
+                    <SelectItem value="transfer" className="text-slate-100 focus:bg-slate-700">Transferencia</SelectItem>
+                    <SelectItem value="cash" className="text-slate-100 focus:bg-slate-700">Efectivo</SelectItem>
+                    <SelectItem value="check" className="text-slate-100 focus:bg-slate-700">Cheque</SelectItem>
+                    <SelectItem value="other" className="text-slate-100 focus:bg-slate-700">Otro</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Fecha del deposito</label>
+                <Input type="date" value={newPaymentForm.date} onChange={(e) => setNewPaymentForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Referencia bancaria</label>
+                <Input value={newPaymentForm.bank_ref} onChange={(e) => setNewPaymentForm((f) => ({ ...f, bank_ref: e.target.value }))} placeholder="Referencia / folio / recibo" className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">No. de Factura</label>
+                <Input value={newPaymentForm.invoice_number} onChange={(e) => setNewPaymentForm((f) => ({ ...f, invoice_number: e.target.value }))} placeholder="Ej. FAC-2025-0042" className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Nota</label>
+              <Textarea rows={3} value={newPaymentForm.note} onChange={(e) => setNewPaymentForm((f) => ({ ...f, note: e.target.value }))} placeholder="Comentario adicional sobre este movimiento" className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setNewPaymentOpen(false)} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">
+                Cancelar
+              </Button>
+              <Button onClick={handleCreatePayment} disabled={newPaymentSaving} className="cursor-pointer">
+                {newPaymentSaving ? "Guardando..." : "Guardar deposito"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+      {/* Dialog visualizador de evidencia */}
+      <Dialog
+        open={evidenceViewOpen}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEvidenceViewOpen(false)
+            setViewingEvidence(null)
+            setViewingSignedUrl(null)
+          }
+        }}
+      >
+        <DialogContent className="max-w-3xl w-full bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-base text-slate-100">
+              <FileText className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{viewingEvidence?.file_name || "Evidencia"}</span>
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="mt-1 min-h-[200px] flex items-center justify-center">
+            {viewingLoading ? (
+              <div className="flex flex-col items-center gap-2 text-slate-400">
+                <Loader2 className="w-8 h-8 animate-spin" />
+                <span className="text-sm">Cargando archivo...</span>
+              </div>
+            ) : viewingSignedUrl ? (
+              viewingEvidence?.mime_type?.startsWith("image/") ? (
+                <img
+                  src={viewingSignedUrl}
+                  alt={viewingEvidence?.file_name || "Evidencia"}
+                  className="max-h-[60vh] w-full object-contain rounded border border-slate-600"
+                />
+              ) : (
+                <iframe
+                  src={viewingSignedUrl}
+                  title={viewingEvidence?.file_name || "Evidencia"}
+                  className="w-full h-[60vh] rounded border border-slate-600"
+                />
+              )
+            ) : (
+              <p className="text-sm text-red-400">No se pudo cargar el archivo.</p>
+            )}
+          </div>
+
+          <div className="flex items-center justify-between pt-3 border-t border-slate-700">
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={deletingEvidence || viewingLoading}
+              className="cursor-pointer transition-all duration-150"
+              onClick={() => viewingEvidence && handleDeleteEvidence(viewingEvidence)}
+            >
+              {deletingEvidence ? (
+                <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Eliminando...</>
+              ) : (
+                <><Trash2 className="w-3 h-3 mr-1" />Eliminar</>
+              )}
+            </Button>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={viewingLoading || deletingEvidence}
+                className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150"
+                onClick={() => {
+                  if (viewingEvidence) {
+                    setReplacingEvidence(viewingEvidence)
+                    evidenceInputRef.current?.click()
+                  }
+                }}
+              >
+                <Edit className="w-3 h-3 mr-1" />
+                Reemplazar
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150"
+                onClick={() => setEvidenceViewOpen(false)}
+              >
+                Cerrar
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Editar / Eliminar pagos */}
+      <Dialog open={editPaymentsOpen} onOpenChange={(v) => (deletingPayments ? null : setEditPaymentsOpen(v))}>
+        <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Editar pagos y movimientos</DialogTitle>
+          </DialogHeader>
+
+          <div className="mt-2 space-y-3">
+            <p className="text-sm text-slate-400">
+              Selecciona los movimientos que deseas eliminar y confirma.
+            </p>
+
+            {!puedeBorrarCualquierMes && (
+              <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                <p className="text-amber-200/90">
+                  Solo se pueden eliminar los movimientos <strong>registrados este mes</strong>.
+                  Los de meses anteriores ya están cerrados.
+                </p>
+              </div>
+            )}
+
+            <div className="rounded-md border border-slate-700 overflow-hidden max-h-96 overflow-y-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow className="border-slate-700">
+                    <TableHead className="w-10 text-slate-400">
+                      <input
+                        type="checkbox"
+                        className="rounded border-slate-600"
+                        checked={
+                          movimientosEditables.length > 0 &&
+                          selectedPaymentIds.size === movimientosEditables.length
+                        }
+                        disabled={movimientosEditables.length === 0}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedPaymentIds(new Set(movimientosEditables.map((a) => a.id)))
+                          } else {
+                            setSelectedPaymentIds(new Set())
+                          }
+                        }}
+                      />
+                    </TableHead>
+                    <TableHead className="text-slate-400">Fecha</TableHead>
+                    <TableHead className="text-slate-400">Concepto</TableHead>
+                    <TableHead className="text-slate-400">Metodo</TableHead>
+                    <TableHead className="text-right text-slate-400">Monto</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {stateAccounts.map((m) => {
+                    const amountNumber = typeof m.amount === "string" ? parseFloat(m.amount) : m.amount
+                    const checked = selectedPaymentIds.has(m.id)
+                    const editable = movimientoEditable(m)
+                    const alternar = () => {
+                      if (!editable) return
+                      setSelectedPaymentIds((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(m.id)) next.delete(m.id)
+                        else next.add(m.id)
+                        return next
+                      })
+                    }
+                    return (
+                      <TableRow
+                        key={m.id}
+                        title={editable ? undefined : "Registrado en un mes anterior: ya está cerrado."}
+                        className={`border-slate-700 ${
+                          !editable
+                            ? "opacity-50 cursor-not-allowed"
+                            : checked
+                              ? "cursor-pointer bg-red-900/20"
+                              : "cursor-pointer hover:bg-slate-700/30"
+                        }`}
+                        onClick={alternar}
+                      >
+                        <TableCell onClick={(e) => e.stopPropagation()}>
+                          {editable ? (
+                            <input
+                              type="checkbox"
+                              className="rounded border-slate-600"
+                              checked={checked}
+                              onChange={alternar}
+                            />
+                          ) : (
+                            <Lock className="w-3.5 h-3.5 text-slate-500" />
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-300">{m.date}</TableCell>
+                        <TableCell className="text-sm text-slate-300">
+                          {m.concept === "deposit" ? "Deposito" : m.concept === "advance" ? "Anticipo" : m.concept === "retention" ? "Retencion" : "Devolucion"}
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-300">
+                          {m.method === "transfer" ? "Transferencia" : m.method === "cash" ? "Efectivo" : m.method === "check" ? "Cheque" : "Otro"}
+                        </TableCell>
+                        <TableCell className="text-right font-medium text-slate-200">{formatCurrency(Number(amountNumber || 0), budgetCurrency)}</TableCell>
+                      </TableRow>
+                    )
+                  })}
+                </TableBody>
+              </Table>
+            </div>
+
+            {selectedPaymentIds.size > 0 && (
+              <p className="text-sm text-red-400 font-medium">
+                {selectedPaymentIds.size} movimiento{selectedPaymentIds.size > 1 ? "s" : ""} seleccionado{selectedPaymentIds.size > 1 ? "s" : ""} para eliminar.
+              </p>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setEditPaymentsOpen(false)} disabled={deletingPayments} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                className="cursor-pointer transition-all duration-150"
+                disabled={selectedPaymentIds.size === 0 || deletingPayments}
+                onClick={async () => {
+                  const ok = window.confirm(`Eliminar ${selectedPaymentIds.size} movimiento${selectedPaymentIds.size > 1 ? "s" : ""}? Esta accion no se puede deshacer.`)
+                  if (!ok) return
+                  setDeletingPayments(true)
+                  const ids = Array.from(selectedPaymentIds)
+                  // Qué facturas toca este borrado: hay que saberlo ANTES de borrar
+                  const movimientosBorrados = stateAccounts.filter((a) =>
+                    selectedPaymentIds.has(a.id),
+                  )
+                  // La pantalla ya los bloquea, pero el handler se niega solo:
+                  // la selección pudo quedar vieja al cambiar de mes.
+                  const cerrados = movimientosBorrados.filter((a) => !movimientoEditable(a))
+                  if (cerrados.length > 0) {
+                    alert(
+                      `${cerrados.length} movimiento(s) se registraron en un mes anterior y ya están cerrados. Quítalos de la selección.`,
+                    )
+                    setDeletingPayments(false)
+                    return
+                  }
+                  const facturasAfectadas = movimientosBorrados.map((a) => a.factura_id ?? null)
+                  const tocaGarantia = movimientosBorrados.some((a) => a.source === "garantia")
+                  const { error } = await supabase
+                    .from("obra_state_accounts")
+                    .delete()
+                    .in("id", ids)
+                  if (error) {
+                    console.error("delete payments error:", error)
+                  } else {
+                    logActivity({
+                      event_type: "billing.payment_deleted",
+                      entity_type: "billing",
+                      entity_label: obra ? `${ids.length} pago(s) eliminado(s) en ${obra.name}` : `${ids.length} pago(s) eliminado(s)`,
+                      metadata: { obra_id: obra?.id, deleted_ids: ids, count: ids.length },
+                    })
+                    setStateAccounts((prev) => prev.filter((a) => !selectedPaymentIds.has(a.id)))
+                    setEvidenceMap((prev) => {
+                      const next = { ...prev }
+                      ids.forEach((id) => delete next[id])
+                      return next
+                    })
+                    // Sin esto la factura se queda "Pagada" por pagos que ya no existen
+                    await recomputeFacturasPagadas(facturasAfectadas)
+                    if (tocaGarantia && obra) await revertGarantiaSiNoQuedanCobros(obra.id)
+                    setSelectedPaymentIds(new Set())
+                    setEditPaymentsOpen(false)
+                    await loadData()
+                    // Refresca el card de Estimaciones/Facturas con el nuevo saldo
+                    setEstFacReload((n) => n + 1)
+                  }
+                  setDeletingPayments(false)
+                }}
+              >
+                {deletingPayments ? "Eliminando..." : `Eliminar${selectedPaymentIds.size > 0 ? ` (${selectedPaymentIds.size})` : ""}`}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Confirmacion de eliminacion de obra */}
+      <Dialog open={deleteConfirmOpen} onOpenChange={(v) => (deleteLoading ? null : setDeleteConfirmOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-5 h-5 shrink-0" />
+              Eliminar obra permanentemente
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 py-1">
+            {/* Warning box */}
+            <div className="bg-red-900/30 border border-red-700/50 rounded-xl p-4 space-y-1.5">
+              <p className="text-sm font-semibold text-red-300">⚠️ Esta accion no tiene vuelta atras</p>
+              <p className="text-sm text-red-400">
+                Se eliminara permanentemente la obra{" "}
+                <span className="font-bold">"{obra?.name}"</span>{" "}
+                junto con toda su informacion asociada.
+              </p>
+            </div>
+
+            {/* Confirmation input */}
+            <div className="space-y-2">
+              <p className="text-sm text-slate-400">
+                Para confirmar, escribe{" "}
+                <span className="font-bold text-red-400 font-mono tracking-wide">ELIMINAR</span>{" "}
+                en el campo:
+              </p>
+              <Input
+                value={deleteConfirmText}
+                onChange={(e) => setDeleteConfirmText(e.target.value)}
+                placeholder="Escribe ELIMINAR"
+                className="font-mono tracking-wider bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500"
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && deleteConfirmText === "ELIMINAR" && !deleteLoading) {
+                    setDeleteConfirmOpen(false)
+                    handleDeleteObra()
+                  }
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex gap-2 justify-end pt-2">
+            <Button
+              variant="outline"
+              onClick={() => setDeleteConfirmOpen(false)}
+              disabled={deleteLoading}
+              className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150"
+            >
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={deleteConfirmText !== "ELIMINAR" || deleteLoading}
+              onClick={() => {
+                setDeleteConfirmOpen(false)
+                handleDeleteObra()
+              }}
+              className="cursor-pointer bg-red-600 hover:bg-red-700 transition-all duration-200"
+            >
+              {deleteLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Eliminando...
+                </>
+              ) : (
+                <>
+                  <Trash2 className="w-4 h-4 mr-2" />
+                  Confirmar eliminacion
+                </>
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Cotizacion / Aditivo */}
+      <Dialog open={billingDialogOpen} onOpenChange={(v) => (savingBilling ? null : setBillingDialogOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">
+              {editingBillingItem
+                ? editingBillingItem.type === "cotizacion" ? "Editar cotizacion" : "Editar aditivo"
+                : billingForm.type === "cotizacion" ? "Registrar cotizacion" : "Nuevo aditivo"}
+            </DialogTitle>
+          </DialogHeader>
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && !savingBilling) handleSaveBillingItem()
+            }}
+          >
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Fecha</label>
+              <Input type="date" value={billingForm.date} onChange={(e) => setBillingForm((f) => ({ ...f, date: e.target.value }))} className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd] [&::-webkit-calendar-picker-indicator]:invert [&::-webkit-calendar-picker-indicator]:cursor-pointer [&::-webkit-calendar-picker-indicator]:opacity-70 [&::-webkit-calendar-picker-indicator]:hover:opacity-100" />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">
+                {billingForm.type === "cotizacion" ? "Descripcion (opcional)" : "Descripcion del aditivo"}
+              </label>
+              <Input
+                value={billingForm.description}
+                onChange={(e) => setBillingForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder={billingForm.type === "cotizacion" ? "Cotizacion inicial..." : "Trabajo extra, material adicional..."}
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">IVA</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: true }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    billingForm.with_iva
+                      ? "bg-green-500/15 border-green-500/50 text-green-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBillingForm((f) => ({ ...f, with_iva: false }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    !billingForm.with_iva
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <XCircle className="w-4 h-4" />
+                  Sin IVA
+                </button>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Monto *</label>
+              <Input value={billingForm.amount} onChange={(e) => setBillingForm((f) => ({ ...f, amount: e.target.value }))} placeholder="0.00" className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]" />
+            </div>
+            {billingError && (
+              <div className="rounded-md border border-red-700/50 bg-red-900/30 px-3 py-2 text-sm text-red-300">{billingError}</div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setBillingDialogOpen(false)} disabled={savingBilling} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">Cancelar</Button>
+              <Button onClick={handleSaveBillingItem} disabled={savingBilling} className="cursor-pointer">
+                {savingBilling ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Registrar Datos Financieros (captura manual) */}
+      <Dialog open={finDialogOpen} onOpenChange={(v) => (savingFin ? null : setFinDialogOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Registrar Datos Financieros</DialogTitle>
+          </DialogHeader>
+          <div
+            className="space-y-4 mt-2"
+            onKeyDown={(e) => { if (e.key === "Enter" && !savingFin) handleSaveFinancialData() }}
+          >
+            <p className="text-xs text-slate-500">
+              Captura manualmente los datos financieros de la obra cuando aún no hay contrato.
+              Al subir el contrato después, la IA comparará lo capturado con lo que detecte.
+            </p>
+
+            {/* Monto total del contrato */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Monto total del contrato *</label>
+              <Input
+                value={finForm.monto_total}
+                onChange={(e) => setFinForm((f) => {
+                  const total = e.target.value
+                  return {
+                    ...f,
+                    monto_total: total,
+                    anticipo_amount: finCalcAmount(f.anticipo_pct, total) ?? f.anticipo_amount,
+                    garantia_amount: finCalcAmount(f.garantia_pct, total) ?? f.garantia_amount,
+                  }
+                })}
+                placeholder="0.00"
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+              />
+              <p className="text-[11px] text-slate-500">Alimenta la Cotización de la obra.</p>
+            </div>
+
+            {/* Anticipo */}
+            <div className="rounded-lg border border-slate-700 bg-slate-700/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Anticipo</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Porcentaje %</label>
+                  <Input
+                    value={finForm.anticipo_pct}
+                    onChange={(e) => setFinForm((f) => {
+                      const pct = e.target.value
+                      return { ...f, anticipo_pct: pct, anticipo_amount: finCalcAmount(pct, f.monto_total) ?? f.anticipo_amount }
+                    })}
+                    placeholder="30"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Monto</label>
+                  <Input
+                    value={finForm.anticipo_amount}
+                    onChange={(e) => setFinForm((f) => ({ ...f, anticipo_amount: e.target.value }))}
+                    placeholder="0.00"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Fondo de Garantía */}
+            <div className="rounded-lg border border-slate-700 bg-slate-700/20 p-3 space-y-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">Fondo de Garantía</p>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Porcentaje %</label>
+                  <Input
+                    value={finForm.garantia_pct}
+                    onChange={(e) => setFinForm((f) => {
+                      const pct = e.target.value
+                      return { ...f, garantia_pct: pct, garantia_amount: finCalcAmount(pct, f.monto_total) ?? f.garantia_amount }
+                    })}
+                    placeholder="5"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+                <div className="flex flex-col gap-1.5">
+                  <label className="text-[11px] text-slate-500">Monto</label>
+                  <Input
+                    value={finForm.garantia_amount}
+                    onChange={(e) => setFinForm((f) => ({ ...f, garantia_amount: e.target.value }))}
+                    placeholder="0.00"
+                    className="bg-slate-700/60 border-slate-600 text-slate-100 focus:border-[#0174bd]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* IVA */}
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">IVA</label>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => setFinForm((f) => ({ ...f, with_iva: true }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    finForm.with_iva
+                      ? "bg-green-500/15 border-green-500/50 text-green-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  Con IVA 16%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setFinForm((f) => ({ ...f, with_iva: false }))}
+                  className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                    !finForm.with_iva
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                      : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                  }`}
+                >
+                  <XCircle className="w-4 h-4" />
+                  Sin IVA
+                </button>
+              </div>
+            </div>
+
+            {finError && (
+              <div className="rounded-md border border-red-700/50 bg-red-900/30 px-3 py-2 text-sm text-red-300">{finError}</div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setFinDialogOpen(false)} disabled={savingFin} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white transition-all duration-150">Cancelar</Button>
+              <Button onClick={handleSaveFinancialData} disabled={savingFin} className="cursor-pointer">
+                {savingFin ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Eliminar Datos Financieros (doble confirmación) */}
+      <Dialog open={finDeleteOpen} onOpenChange={(v) => (deletingFin ? null : setFinDeleteOpen(v))}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2 text-red-400">
+              <AlertTriangle className="w-5 h-5" />
+              Eliminar datos financieros
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-1">
+            <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-300">
+              Esta acción es <strong>irreversible</strong>. Se eliminarán los siguientes datos financieros de la obra:
+            </div>
+
+            <div className="rounded-lg border border-slate-700 divide-y divide-slate-700 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2.5 bg-slate-700/30">
+                <span className="text-sm text-slate-300">Monto total del contrato (Cotización)</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(cotizacion?.amount ?? obra.contract_total_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5">
+                <span className="text-sm text-slate-300">Anticipo{obra.anticipo_pct ? ` (${obra.anticipo_pct}%)` : ""}</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(obra.anticipo_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between px-3 py-2.5 bg-slate-700/30">
+                <span className="text-sm text-slate-300">Fondo de garantía{obra.garantia_pct ? ` (${obra.garantia_pct}%)` : ""}</span>
+                <span className="text-sm font-semibold text-slate-100">
+                  {formatCurrency(Number(obra.garantia_amount ?? 0), budgetCurrency)}
+                </span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-500">
+              También se eliminará la estimación de anticipo (si no tiene factura asignada). Las estimaciones, facturas y aditivas no se eliminan.
+            </p>
+
+            <label className="flex items-start gap-2.5 cursor-pointer select-none rounded-lg border border-slate-700 bg-slate-700/20 px-3 py-2.5">
+              <input
+                type="checkbox"
+                checked={finDeleteAck}
+                onChange={(e) => setFinDeleteAck(e.target.checked)}
+                className="mt-0.5 h-4 w-4 accent-red-500 cursor-pointer"
+              />
+              <span className="text-sm text-slate-300">Confirmo que deseo eliminar permanentemente estos datos financieros.</span>
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => setFinDeleteOpen(false)}
+                disabled={deletingFin}
+                className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white"
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={handleDeleteFinancialData}
+                disabled={!finDeleteAck || deletingFin}
+                className="disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deletingFin ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Eliminando...</> : <><Trash2 className="w-4 h-4 mr-2" />Eliminar datos</>}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Configurar Fondo de Garantía */}
+      <Dialog open={garantiaDialogOpen} onOpenChange={(v) => (!savingGarantia ? setGarantiaDialogOpen(v) : null)}>
+        <DialogContent className="max-w-sm bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Configurar Fondo de Garantía</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Monto retenido *</label>
+              <Input
+                value={garantiaAmount}
+                onChange={(e) => setGarantiaAmount(e.target.value)}
+                placeholder="0.00"
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+              />
+            </div>
+            <p className="text-xs text-slate-500">
+              Este monto se retiene hasta que la obra sea completada, revisada y aceptada por el cliente.
+            </p>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setGarantiaDialogOpen(false)} disabled={savingGarantia} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
+              <Button onClick={handleSaveGarantiaAmount} disabled={savingGarantia} className="cursor-pointer">
+                {savingGarantia ? "Guardando..." : "Guardar"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog: Registrar cobro del Fondo de Garantía */}
+      <Dialog open={garantiaPayDialogOpen} onOpenChange={(v) => (!savingGarantiaPay ? setGarantiaPayDialogOpen(v) : null)}>
+        <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+          <DialogHeader>
+            <DialogTitle className="text-slate-100">Registrar Cobro — Fondo de Garantía</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 mt-2">
+            <div className="rounded-md border border-slate-600 bg-slate-700/40 p-3">
+              <div className="flex justify-between text-sm">
+                <span className="text-slate-400">Monto del fondo:</span>
+                <span className="text-slate-200 font-medium">{formatCurrency(Number(obra?.garantia_amount || 0), budgetCurrency)}</span>
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Método</label>
+                <select
+                  value={garantiaPayForm.method}
+                  onChange={(e) => setGarantiaPayForm((f) => ({ ...f, method: e.target.value }))}
+                  className="h-10 rounded-md border border-slate-600 bg-slate-700/60 px-3 text-sm text-slate-100 focus:border-[#0174bd] outline-none"
+                >
+                  <option value="transfer">Transferencia</option>
+                  <option value="cash">Efectivo</option>
+                  <option value="check">Cheque</option>
+                  <option value="other">Otro</option>
+                </select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <label className="text-xs font-medium text-slate-400">Ref. bancaria</label>
+                <Input
+                  value={garantiaPayForm.bank_ref}
+                  onChange={(e) => setGarantiaPayForm((f) => ({ ...f, bank_ref: e.target.value }))}
+                  placeholder="Opcional"
+                  className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                />
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-slate-400">Nota (opcional)</label>
+              <Textarea
+                value={garantiaPayForm.note}
+                onChange={(e) => setGarantiaPayForm((f) => ({ ...f, note: e.target.value }))}
+                placeholder="Observaciones..."
+                className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                rows={2}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setGarantiaPayDialogOpen(false)} disabled={savingGarantiaPay} className="cursor-pointer bg-transparent border-slate-600 text-slate-300 hover:bg-slate-700 hover:text-white">Cancelar</Button>
+              <Button onClick={handleGarantiaPayment} disabled={savingGarantiaPay} className="cursor-pointer bg-green-600 hover:bg-green-700 text-white">
+                {savingGarantiaPay ? <><Loader2 className="w-4 h-4 mr-1 animate-spin" />Registrando...</> : "Registrar cobro"}
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* File Preview Dialog (Garantía) */}
+      <Dialog open={!!garantiaPreviewUrl} onOpenChange={(v) => { if (!v) setGarantiaPreviewUrl(null) }}>
+        <DialogContent className="max-w-4xl max-h-[90vh] bg-slate-800 border-slate-700 text-slate-100 flex flex-col p-0">
+          <DialogHeader className="px-6 pt-6 pb-3 border-b border-slate-700">
+            <DialogTitle className="text-slate-100 truncate">{garantiaPreviewName}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 min-h-0 px-6 pt-3">
+            {garantiaPreviewUrl && (/\.(png|jpe?g|gif|webp|svg)$/i.test(garantiaPreviewName) ? (
+              <img src={garantiaPreviewUrl} alt={garantiaPreviewName} className="max-w-full max-h-[65vh] mx-auto rounded-md object-contain" />
+            ) : (
+              <iframe src={garantiaPreviewUrl} title={garantiaPreviewName} className="w-full h-[65vh] rounded-md border border-slate-600 bg-white" />
+            ))}
+          </div>
+          <div className="flex justify-end px-6 py-4 border-t border-slate-700">
+            <Button
+              className="cursor-pointer bg-[#0174bd] hover:bg-[#0163a3] text-white"
+              onClick={() => garantiaPreviewUrl && handleDownloadFile(garantiaPreviewUrl, garantiaPreviewName)}
+            >
+              <Download className="w-4 h-4 mr-1.5" />
+              Descargar
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    {/* ── Aviso flotante: ticket ganado al descartar una bajada ── */}
+    {bajadaToast && (
+      <div
+        className="fixed bottom-5 right-5 z-[100] max-w-[calc(100vw-2.5rem)]"
+        role="status"
+        aria-live="polite"
+      >
+        <div
+          className="
+            flex items-center gap-3 rounded-xl border border-amber-500/30
+            bg-slate-900/95 backdrop-blur px-4 py-3 shadow-2xl shadow-black/40
+            animate-in fade-in-0 zoom-in-95 slide-in-from-bottom-4 duration-300
+          "
+        >
+          <div className="p-2 rounded-lg bg-amber-500/15 shrink-0">
+            <Ticket className="w-4 h-4 text-amber-400" />
+          </div>
+
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-amber-300 leading-tight">
+              +1 ticket para {bajadaToast.name}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Bajada descartada · {bajadaToast.balance}{" "}
+              {bajadaToast.balance === 1 ? "ticket disponible" : "tickets disponibles"}
+            </p>
+          </div>
+
+          <button
+            onClick={() => setBajadaToast(null)}
+            aria-label="Cerrar aviso"
+            className="ml-1 shrink-0 text-slate-500 hover:text-slate-300 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+
+      </div>
+    )}
+    </AdminLayout>
+    </RoleGuard>
+  )
+}
