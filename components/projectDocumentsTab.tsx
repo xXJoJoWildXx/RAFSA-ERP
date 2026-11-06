@@ -2,6 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from "react"
 import { supabase } from "@/lib/supabaseClient"
+import { useAuth } from "@/lib/auth-context"
+import { can } from "@/lib/permissions"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -143,7 +145,12 @@ export function ProjectDocumentsTab({
   const [docs, setDocs] = useState<UiObraDocument[]>([])
   const [docsLoading, setDocsLoading] = useState(false)
   const [docsError, setDocsError] = useState<string | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
+  // Quién puede borrar lo decide el catálogo de permisos, no una consulta
+  // aparte: antes este componente preguntaba el rol por su cuenta y lo
+  // comparaba con "admin", así que nadie más podía borrar aunque la base
+  // se lo permitiera.
+  const { user } = useAuth()
+  const puedeBorrarDocs = can(user?.role, "obra.documents.delete")
 
   const [docSearch, setDocSearch] = useState("")
   const [docTypeFilter, setDocTypeFilter] = useState<"all" | DocType>("all")
@@ -172,15 +179,19 @@ export function ProjectDocumentsTab({
   const [previewLoading, setPreviewLoading] = useState(false)
 
   // AI contract extraction
-  const [extracting, setExtracting]         = useState(false)
+  // Guarda el id del documento en proceso, no un booleano: si no, al extraer
+  // el contrato también se veía "Extrayendo…" en la cotización.
+  const [extracting, setExtracting]         = useState<string | null>(null)
   const [extractError, setExtractError]     = useState<string | null>(null)
   const [reviewOpen, setReviewOpen]         = useState(false)
   const [reviewExtraction, setReviewExtraction] = useState<ContractTermsExtraction | null>(null)
   const [reviewDoc, setReviewDoc]           = useState<UiObraDocument | null>(null)
 
-  async function handleExtractContract(doc: UiObraDocument) {
+  /** Extracción con IA. Sirve igual para el contrato y para la cotización:
+   *  la función de servidor elige el prompt según el doc_type. */
+  async function handleExtractDoc(doc: UiObraDocument) {
     setExtractError(null)
-    setExtracting(true)
+    setExtracting(doc.id)
     try {
       const { data, error } = await supabase.functions.invoke("extract-contract-terms", {
         body: { document_id: doc.id },
@@ -206,7 +217,7 @@ export function ProjectDocumentsTab({
     } catch (e) {
       setExtractError(e instanceof Error ? e.message : "Error al extraer los datos.")
     } finally {
-      setExtracting(false)
+      setExtracting(null)
     }
   }
 
@@ -311,23 +322,6 @@ export function ProjectDocumentsTab({
     e.stopPropagation()
   }
 
-  async function loadIsAdmin() {
-    const { data: authData } = await supabase.auth.getUser()
-    const uid = authData?.user?.id
-    if (!uid) {
-      setIsAdmin(false)
-      return
-    }
-
-    const { data, error } = await supabase.from("app_users").select("role").eq("id", uid).single()
-    if (error) {
-      console.error("loadIsAdmin error:", error)
-      setIsAdmin(false)
-      return
-    }
-    setIsAdmin(String(data?.role || "").toLowerCase() === "admin")
-  }
-
   async function fetchDocuments() {
     setDocsLoading(true)
     setDocsError(null)
@@ -388,42 +382,86 @@ export function ProjectDocumentsTab({
     return data.signedUrl
   }
 
-  async function handlePreview(doc: UiObraDocument) {
-    try {
-      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
-      window.open(url, "_blank", "noopener,noreferrer")
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "No se pudo abrir el archivo.")
-    }
-  }
 
   async function handleDownload(doc: UiObraDocument) {
     try {
-      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+      // El atributo `download` del <a> no aplica a otro origen: sin la opción
+      // `download` en la URL firmada, Storage sirve el archivo inline y el
+      // navegador lo abre en vez de guardarlo.
+      const nombre = doc.file_name || "documento"
+      const { data, error } = await supabase.storage
+        .from(doc.bucket)
+        .createSignedUrl(doc.object_path, 180, { download: nombre })
+      if (error || !data?.signedUrl) throw new Error(error?.message || "sin URL")
+
       const a = document.createElement("a")
-      a.href = url
-      a.download = doc.file_name || "documento"
+      a.href = data.signedUrl
+      a.download = nombre
       document.body.appendChild(a)
       a.click()
       a.remove()
-    } catch {
+    } catch (e) {
+      console.error("descargar documento:", e)
       alert("No se pudo descargar el archivo.")
     }
   }
 
-  async function handleCopyLink(doc: UiObraDocument) {
+  /**
+   * Copia texto al portapapeles.
+   *
+   * navigator.clipboard SÓLO existe en contexto seguro (https o localhost).
+   * Entrando por IP de red sobre HTTP —como 192.168.1.84:3000— no está
+   * definido, así que hace falta el camino viejo con execCommand.
+   */
+  async function copiarAlPortapapeles(texto: string): Promise<boolean> {
     try {
-      const url = await getSignedUrl(doc.bucket, doc.object_path, 180)
-      await navigator.clipboard.writeText(url)
-      alert("Link copiado (temporal).")
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(texto)
+        return true
+      }
     } catch {
-      alert("No se pudo copiar el link.")
+      // sigue con el respaldo
+    }
+    try {
+      const ta = document.createElement("textarea")
+      ta.value = texto
+      ta.setAttribute("readonly", "")
+      ta.style.position = "fixed"
+      ta.style.top = "-1000px"
+      document.body.appendChild(ta)
+      ta.select()
+      const ok = document.execCommand("copy")
+      ta.remove()
+      return ok
+    } catch {
+      return false
     }
   }
 
+  async function handleCopyLink(doc: UiObraDocument) {
+    // Separar los dos fallos posibles: generar el link y copiarlo. Antes los
+    // dos salían con el mismo mensaje y no se sabía cuál había fallado.
+    let url: string
+    try {
+      url = await getSignedUrl(doc.bucket, doc.object_path, 180)
+    } catch (e) {
+      console.error("link temporal:", e)
+      alert("No se pudo generar el link del archivo.")
+      return
+    }
+
+    if (await copiarAlPortapapeles(url)) {
+      alert("Link copiado. Vence en 3 minutos.")
+      return
+    }
+
+    // Sin portapapeles disponible: al menos que lo puedan copiar a mano
+    window.prompt("Copia el link (vence en 3 minutos):", url)
+  }
+
   async function handleDeleteDoc(doc: UiObraDocument) {
-    if (!isAdmin) {
-      alert("Solo un admin puede eliminar documentos.")
+    if (!puedeBorrarDocs) {
+      alert("Tu rol no puede eliminar documentos de obra.")
       return
     }
 
@@ -562,7 +600,6 @@ export function ProjectDocumentsTab({
   }
 
   useEffect(() => {
-    loadIsAdmin()
     fetchDocuments()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [obraId])
@@ -676,11 +713,11 @@ export function ProjectDocumentsTab({
               <div className="pt-1 space-y-2">
                 <Button
                   size="sm"
-                  onClick={() => handleExtractContract(currentContract)}
-                  disabled={extracting}
+                  onClick={() => handleExtractDoc(currentContract)}
+                  disabled={!!extracting}
                   className="w-full bg-[#0174bd] hover:bg-[#0163a3] text-white"
                 >
-                  {extracting ? (
+                  {extracting === currentContract.id ? (
                     <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Extrayendo datos…</>
                   ) : (
                     <><Sparkles className="w-4 h-4 mr-1.5" />Extraer datos financieros</>
@@ -753,6 +790,28 @@ export function ProjectDocumentsTab({
                     <p className="text-xs text-slate-600 mt-1">PDF/Excel recomendado. Máx. 25MB.</p>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {/* Extracción con IA — igual que en el contrato, decide el usuario
+                de cuál de los dos documentos quiere sacar los datos */}
+            {currentQuote && (
+              <div className="pt-1 space-y-2">
+                <Button
+                  size="sm"
+                  onClick={() => handleExtractDoc(currentQuote)}
+                  disabled={!!extracting}
+                  className="w-full bg-violet-600 hover:bg-violet-700 text-white"
+                >
+                  {extracting === currentQuote.id ? (
+                    <><Loader2 className="w-4 h-4 mr-1.5 animate-spin" />Extrayendo datos…</>
+                  ) : (
+                    <><Sparkles className="w-4 h-4 mr-1.5" />Extraer datos financieros</>
+                  )}
+                </Button>
+                <p className="text-[11px] text-slate-500 text-center">
+                  La IA leerá la cotización (subtotal, IVA, total y anticipo) para tu revisión.
+                </p>
               </div>
             )}
           </div>
@@ -876,7 +935,11 @@ export function ProjectDocumentsTab({
 
                         <TableCell className="text-right">
                           <div className="inline-flex gap-2">
-                            <Button variant="outline" size="icon" onClick={() => handlePreview(d)} className={btnOutlineCls}>
+                            <Button
+                              variant="outline" size="icon" title="Ver documento"
+                              onClick={() => openDocPreview(d)}
+                              className={btnOutlineCls}
+                            >
                               <Eye className="w-4 h-4" />
                             </Button>
                             <Button variant="outline" size="icon" onClick={() => handleDownload(d)} className={btnOutlineCls}>
@@ -886,7 +949,7 @@ export function ProjectDocumentsTab({
                               <Link2 className="w-4 h-4" />
                             </Button>
 
-                            {isAdmin && (
+                            {puedeBorrarDocs && (
                               <Button variant="destructive" size="icon" onClick={() => handleDeleteDoc(d)}>
                                 <Trash2 className="w-4 h-4" />
                               </Button>
@@ -1177,6 +1240,7 @@ export function ProjectDocumentsTab({
           file_name: reviewDoc.file_name,
         } : null}
         extraction={reviewExtraction}
+        docKind={reviewDoc?.doc_type === "quote" ? "quote" : "contract"}
         onApplied={() => {
           onContractTermsApplied?.()
         }}

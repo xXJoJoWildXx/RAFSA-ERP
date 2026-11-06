@@ -1,9 +1,15 @@
 // ═══════════════════════════════════════════════════════════════════════
 // Edge Function: extract-contract-terms
 // ─────────────────────────────────────────────────────────────────────────
-// Descarga el PDF de un contrato (obra_documents, doc_type = 'contract'),
-// lo manda a OpenAI con un JSON schema estricto y devuelve los términos
-// financieros. Persiste el resultado en obra_documents.ai_extracted_json.
+// Descarga el PDF de un CONTRATO o de una COTIZACIÓN (obra_documents,
+// doc_type 'contract' o 'quote'), lo manda a OpenAI con un JSON schema
+// estricto y devuelve los términos financieros. Persiste el resultado en
+// obra_documents.ai_extracted_json.
+//
+// Los dos tipos comparten esquema pero NO prompt: un contrato escribe cada
+// cantidad en dígitos y letras y hay que cruzarlas; una cotización trae una
+// tabla con SUB-TOTAL / IVA / TOTAL, donde el cruce es aritmético y mucho
+// más confiable.
 //
 // Requiere el secret:  OPENAI_API_KEY
 //   supabase secrets set OPENAI_API_KEY=sk-...
@@ -115,6 +121,26 @@ const CONTRACT_TERMS_SCHEMA = {
       type: ["string", "null"],
       description: "Fecha de término/entrega en formato YYYY-MM-DD, o null.",
     },
+    subtotal: {
+      type: ["number", "null"],
+      description:
+        "SOLO cotizaciones: el SUB-TOTAL (suma de partidas, sin IVA) tal como aparece. null en contratos o si no viene.",
+    },
+    iva_monto: {
+      type: ["number", "null"],
+      description:
+        "SOLO cotizaciones: el importe del IVA tal como aparece en el renglón 'IVA'. null si no viene.",
+    },
+    total_con_iva: {
+      type: ["number", "null"],
+      description:
+        "SOLO cotizaciones: el TOTAL del documento (subtotal + IVA). null si no viene.",
+    },
+    vigencia: {
+      type: ["string", "null"],
+      description:
+        "SOLO cotizaciones: fecha de vigencia / validez de la cotización en formato YYYY-MM-DD. null si no aparece.",
+    },
     confianza: {
       type: "number",
       description: "Confianza global de la extracción, de 0 a 1.",
@@ -134,6 +160,10 @@ const CONTRACT_TERMS_SCHEMA = {
     "garantia",
     "fecha_inicio",
     "fecha_termino",
+    "subtotal",
+    "iva_monto",
+    "total_con_iva",
+    "vigencia",
     "confianza",
   ],
 }
@@ -183,6 +213,43 @@ OTROS:
 - Fechas en formato YYYY-MM-DD.
 - confianza refleja qué tan seguro estás de la extracción completa (0 a 1).`
 
+const QUOTE_PROMPT = `Eres un asistente experto en cotizaciones de obra de RAFSA (Recubrimientos Técnicos RAF S.A. de C.V.).
+Extrae ÚNICAMENTE los datos financieros de la cotización adjunta y devuélvelos en el esquema JSON solicitado.
+
+QUIÉN ES QUIÉN (no los inviertas):
+- RAFSA / "Recubrimientos Técnicos RAF" es QUIEN COTIZA. NUNCA es el cliente.
+- cliente = la razón social que aparece después de "CLIENTE:" (por ejemplo "JAMAR ESTRUCTURAS S.A. DE C.V." o "CUSHMAN & WAKEFIELD").
+- Ignora el renglón "SOLICITA:" (es la persona de contacto) y el de "ELABORÓ:" (es de RAFSA).
+
+CAMPOS DE CABECERA:
+- nombre_obra = lo que dice "PROYECTO:" (ej. "PLATAFORMA PARK NAVE 4 - GDL - RAFSA 020").
+- folio_contrato = lo que dice "FOLIO:" o el código arriba a la derecha (ej. "NO.CLIENT/2026/000020"). Cópialo tal cual.
+- ubicacion = la ubicación DE LA OBRA si se menciona. OJO: la dirección del pie de página (Av. Sebastián Bach 4978, Zapopan) es el domicilio de RAFSA, NO la obra. Si no se indica dónde se ejecuta, devuelve null.
+- fecha_inicio / fecha_termino: una cotización normalmente NO las trae ("7 días hábiles una vez recibido el anticipo" no es una fecha). Devuelve null salvo que haya fechas concretas.
+- vigencia = la fecha que aparece como "VIGENCIA:" en formato YYYY-MM-DD, o null.
+
+MONTOS — la cotización trae una tabla de totales al final:
+- subtotal      = el renglón "SUB-TOTAL" (suma de partidas, SIN IVA).
+- iva_monto     = el renglón "IVA" o "IVA (16%)".
+- total_con_iva = el renglón "TOTAL".
+- Transcribe los tres tal como están impresos, sin recalcular ni redondear. Si alguno no aparece, null.
+- monto_total_digitos = el TOTAL (el que ya incluye IVA), porque es el importe real del trabajo contratado.
+- monto_total_letras = null. Las cotizaciones NO escriben las cantidades con letra; no intentes deducirlas.
+- iva_incluido = true. El TOTAL que reportas ya trae el IVA.
+  (La leyenda "SE INCLUIRÁ EL IVA AL FACTURAR" se refiere a que los precios unitarios de la tabla van sin IVA; el renglón TOTAL sí lo incluye.)
+
+ANTICIPO:
+- En "CONDICIONES GENERALES" suele venir "ANTICIPO: SE SOLICITA EL 30% DEL TOTAL DE LOS TRABAJOS".
+- anticipo.porcentaje = ese número (30). anticipo.monto_digitos y monto_letras = null: la cotización da el porcentaje, no el importe; el sistema lo calcula.
+- Si no se menciona anticipo: { "porcentaje": 0, "monto_digitos": 0, "monto_letras": 0 }.
+
+SALDO Y GARANTÍA:
+- Las cotizaciones casi nunca los traen. Si no aparecen, devuelve 0 en los tres campos de cada uno. NO los inventes ni los deduzcas del anticipo.
+
+OTROS:
+- Las partidas o conceptos de la tabla NO se extraen; sólo interesan los totales.
+- confianza refleja qué tan seguro estás (0 a 1). Si subtotal + iva no da exactamente el total impreso, baja la confianza.`
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders })
@@ -213,18 +280,22 @@ Deno.serve(async (req) => {
     return json({ error: "Falta document_id." }, 400)
   }
 
-  // 1) Validar sesión + rol admin
+  // 1) Validar sesión + rol de oficina
+  // Cada llamada consume créditos de OpenAI, así que no se deja abierta:
+  // sólo admin y el personal de administración ('user'), que es quien
+  // mantiene al día la información de la plataforma.
   const { data: userData, error: userErr } = await userClient.auth.getUser()
   if (userErr || !userData?.user) {
     return json({ error: "No autenticado." }, 401)
   }
   const { data: appUser } = await userClient
     .from("app_users")
-    .select("role")
+    .select("role, is_active")
     .eq("id", userData.user.id)
     .single()
-  if (String(appUser?.role ?? "").toLowerCase() !== "admin") {
-    return json({ error: "Solo un admin puede extraer datos del contrato." }, 403)
+  const rol = String(appUser?.role ?? "").toLowerCase()
+  if (appUser?.is_active === false || (rol !== "admin" && rol !== "user")) {
+    return json({ error: "Tu rol no puede extraer datos de documentos." }, 403)
   }
 
   // 2) Cargar el documento
@@ -236,8 +307,9 @@ Deno.serve(async (req) => {
   if (docErr || !doc) {
     return json({ error: "Documento no encontrado." }, 404)
   }
-  if (doc.doc_type !== "contract") {
-    return json({ error: "El documento no es un contrato." }, 400)
+  const esCotizacion = doc.doc_type === "quote"
+  if (doc.doc_type !== "contract" && !esCotizacion) {
+    return json({ error: "El documento no es un contrato ni una cotización." }, 400)
   }
 
   // Marcar como procesando
@@ -267,17 +339,19 @@ Deno.serve(async (req) => {
       body: JSON.stringify({
         model: OPENAI_MODEL,
         input: [
-          { role: "system", content: SYSTEM_PROMPT },
+          { role: "system", content: esCotizacion ? QUOTE_PROMPT : SYSTEM_PROMPT },
           {
             role: "user",
             content: [
               {
                 type: "input_text",
-                text: "Extrae los términos financieros de este contrato.",
+                text: esCotizacion
+                  ? "Extrae los datos financieros de esta cotización."
+                  : "Extrae los términos financieros de este contrato.",
               },
               {
                 type: "input_file",
-                filename: doc.file_name || "contrato.pdf",
+                filename: doc.file_name || (esCotizacion ? "cotizacion.pdf" : "contrato.pdf"),
                 file_data: `data:application/pdf;base64,${base64}`,
               },
             ],
@@ -286,7 +360,7 @@ Deno.serve(async (req) => {
         text: {
           format: {
             type: "json_schema",
-            name: "contract_terms",
+            name: esCotizacion ? "quote_terms" : "contract_terms",
             strict: true,
             schema: CONTRACT_TERMS_SCHEMA,
           },
@@ -315,7 +389,8 @@ Deno.serve(async (req) => {
     // consenso, prioriza letras → dígitos → cálculo, y marca "sin consenso"
     // para que el admin lo revise. Esto evita tanto errores de OCR en un
     // dígito como discrepancias por redondeo del cálculo.
-    extracted = consolidateMontos(extracted)
+    extracted = esCotizacion ? consolidateCotizacion(extracted) : consolidateMontos(extracted)
+    extracted.doc_kind = esCotizacion ? "quote" : "contract"
 
     // 5) Persistir resultado
     await admin
@@ -401,6 +476,65 @@ function consolidateMontos(data: any): any {
     node.monto_calc = calc
     node.monto_source = vote.agreed ? "consenso" : "sin_consenso"
   }
+  return data
+}
+
+/**
+ * Consolidación de una COTIZACIÓN.
+ *
+ * Aquí no hay dígitos-contra-letras que cruzar, pero hay algo mejor: la
+ * tabla de totales se verifica sola. subtotal + IVA tiene que dar el total,
+ * y el IVA tiene que ser el 16% del subtotal. Si las dos cuentas cuadran,
+ * la lectura es correcta; si no, se marca para que el admin la revise.
+ */
+function consolidateCotizacion(data: any): any {
+  if (!data || typeof data !== "object") return data
+
+  const subtotal = toNum(data.subtotal)
+  const iva = toNum(data.iva_monto)
+  const totalDoc = toNum(data.total_con_iva)
+  const totalLeido = toNum(data.monto_total_digitos)
+
+  // El importe que se captura es el TOTAL: el ERP maneja todo con IVA.
+  const total = totalDoc ?? totalLeido ?? null
+  data.monto_total = total ?? 0
+  data.iva_incluido = true // el total ya lo trae
+
+  // ── Las dos comprobaciones ──
+  const cuadraSuma =
+    subtotal !== null && iva !== null && total !== null
+      ? Math.abs(round2(subtotal + iva) - total) < 0.02
+      : null
+  const cuadraTasa =
+    subtotal !== null && total !== null
+      ? Math.abs(round2(subtotal * 1.16) - total) < 0.02
+      : null
+
+  data.checks = { subtotal, iva, total, cuadra_suma: cuadraSuma, cuadra_tasa: cuadraTasa }
+  data.monto_total_source =
+    cuadraSuma === true && cuadraTasa === true ? "consenso" : "sin_consenso"
+
+  // ── Anticipo: la cotización da el porcentaje, el monto se calcula ──
+  for (const key of ["anticipo", "saldo", "garantia"]) {
+    const node = data[key]
+    if (!node || typeof node !== "object") continue
+    const pct = toNum(node.porcentaje) ?? 0
+    const dig = toNum(node.monto_digitos)
+
+    if (pct <= 0 && !dig) {
+      node.porcentaje = 0
+      node.monto = 0
+      node.monto_source = "n/a"
+      continue
+    }
+    const calc = total !== null && total > 0 && pct > 0 ? round2((total * pct) / 100) : null
+    // Si el documento trae importe, manda ese; si no, el calculado
+    const vote = voteAmount([dig, calc])
+    node.monto = vote.value ?? 0
+    node.monto_calc = calc
+    node.monto_source = dig === null && calc !== null ? "calculado" : vote.agreed ? "consenso" : "sin_consenso"
+  }
+
   return data
 }
 
