@@ -1,0 +1,806 @@
+"use client"
+
+import type { AppRole as UserRoleScreen } from "@/lib/permissions"
+import { useBasePath } from "@/lib/appScope"
+
+import { useState, useMemo, useEffect, FormEvent } from "react"
+import Link from "next/link"
+import { useParams } from "next/navigation"
+import { AdminLayout } from "@/components/admin-layout"
+import { RoleGuard } from "@/lib/role-guard"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Badge } from "@/components/ui/badge"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, FileSpreadsheet, X, CheckSquare, Pencil, Trash2, AlertTriangle } from "lucide-react"
+import { supabase } from "@/lib/supabaseClient"
+import { logActivity } from "@/lib/activityLog"
+import { generateEDCPdf, type EDCEmpresa, type EDCObra } from "@/lib/edcPdf"
+import { generateEDCExcel } from "@/lib/edcExcel"
+import { fetchEDCObras } from "@/lib/edcData"
+
+// ----- Tipos -----
+
+type DbObraStatus = "planned" | "in_progress" | "paused" | "closed"
+type ProjectStatus = "Planning" | "In Progress" | "Completed" | "On Hold"
+
+type ObraRow = {
+  id: string; code: string | null; name: string; client_name: string | null
+  location_text: string | null; status: DbObraStatus
+  start_date_planned: string | null; start_date_actual: string | null
+  end_date_planned: string | null;   end_date_actual: string | null
+}
+
+type Project = {
+  id: string; name: string; location: string; status: ProjectStatus
+  progress: number; startDate: string; endDate: string
+  budget: string; spent: string; manager: string; teamSize: number; code?: string | null
+}
+
+type EmployeeManager = { id: string; full_name: string; status: string }
+
+type ObraAssignmentWithEmployee = {
+  obra_id: string; employee_id: string
+  employees: { full_name: string } | { full_name: string }[] | null
+}
+
+type SiteReportRow       = { obra_id: string; progress_percent: number | null; report_date: string | null }
+type ObraStateAccountRow = {
+  obra_id: string
+  amount: number | null
+  concept: "deposit" | "advance" | "retention" | "return"
+  date: string | null
+}
+
+// ----- Helpers -----
+
+function mapDbStatusToUi(s: DbObraStatus): ProjectStatus {
+  return s === "planned" ? "Planning" : s === "in_progress" ? "In Progress" : s === "paused" ? "On Hold" : "Completed"
+}
+function mapUiStatusToDb(s: ProjectStatus): DbObraStatus {
+  return s === "Planning" ? "planned" : s === "In Progress" ? "in_progress" : s === "On Hold" ? "paused" : "closed"
+}
+function getStatusLabel(s: ProjectStatus) {
+  return s === "Planning" ? "Planeación" : s === "In Progress" ? "En progreso" : s === "Completed" ? "Completada" : "En pausa"
+}
+function formatCurrency(amount: number | null | undefined): string {
+  if (amount == null || Number.isNaN(amount)) return "-"
+  if (amount === 0) return "$0.00"
+  return amount.toLocaleString("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 2 })
+}
+function mapObraToProject(obra: ObraRow, opts?: { managerName?: string; progress?: number; budget?: string; spent?: string; teamSize?: number }): Project {
+  return {
+    id: obra.id, code: obra.code, name: obra.name,
+    location: obra.location_text ?? "Sin ubicación",
+    status: mapDbStatusToUi(obra.status),
+    progress: opts?.progress ?? 0,
+    startDate: obra.start_date_actual ?? obra.start_date_planned ?? "",
+    endDate: obra.end_date_actual ?? obra.end_date_planned ?? "",
+    budget: opts?.budget ?? "-", spent: opts?.spent ?? "-",
+    manager: opts?.managerName || "Sin asignar", teamSize: opts?.teamSize ?? 0,
+  }
+}
+
+// ----- Página -----
+
+export function EmpresaObrasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
+  const basePath = useBasePath()
+  const params    = useParams()
+  const empresaId = params.empresaId as string
+
+  const [empresaNombre, setEmpresaNombre] = useState("")
+  const [projects, setProjects]           = useState<Project[]>([])
+  const [loading, setLoading]             = useState(true)
+  const [error, setError]                 = useState<string | null>(null)
+  const [searchQuery, setSearchQuery]     = useState("")
+  const [statusFilter, setStatusFilter]   = useState<"all" | "in-progress" | "planning" | "completed" | "on-hold">("all")
+  const [openDialog, setOpenDialog]       = useState(false)
+  const [managers, setManagers]           = useState<EmployeeManager[]>([])
+  const [loadingManagers, setLoadingManagers] = useState(false)
+  const [saving, setSaving]               = useState(false)
+  const [formError, setFormError]         = useState<string | null>(null)
+
+  // ── Modo EDC ──
+  const [edcMode, setEdcMode]             = useState(false)
+  const [edcSelected, setEdcSelected]     = useState<Set<string>>(new Set())
+  const [edcGenerating, setEdcGenerating] = useState(false)
+  const [edcGeneratingExcel, setEdcGeneratingExcel] = useState(false)
+
+  // ── Modo edición (selección para eliminar obras) ──
+  const [editMode, setEditMode]                   = useState(false)
+  const [selected, setSelected]                   = useState<Set<string>>(new Set())
+  const [deleting, setDeleting]                   = useState(false)
+  const [deleteDialogOpen, setDeleteDialogOpen]   = useState(false)
+  const [deleteConfirmText, setDeleteConfirmText] = useState("")
+
+  useEffect(() => {
+    supabase.from("empresas").select("name").eq("id", empresaId).single()
+      .then(({ data }) => { if (data) setEmpresaNombre(data.name) })
+  }, [empresaId])
+
+  useEffect(() => {
+    async function fetchObras() {
+      setLoading(true); setError(null)
+      const { data, error } = await supabase
+        .from("obras")
+        .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual")
+        .eq("empresa_id", empresaId).order("created_at", { ascending: false })
+
+      if (error) { setError(error.message); setLoading(false); return }
+      const obras = (data as ObraRow[]) || []
+      if (obras.length === 0) { setProjects([]); setLoading(false); return }
+
+      const obraIds = obras.map((o) => o.id)
+      const [assignRes, teamRes, siteRes, billingRes, accountsRes] = await Promise.all([
+        supabase.from("obra_assignments").select("obra_id, employee_id, employees(full_name)").in("obra_id", obraIds).eq("role_on_site", "director_obra").is("assigned_to", null),
+        supabase.from("obra_assignments").select("obra_id").in("obra_id", obraIds).is("assigned_to", null),
+        supabase.from("site_reports").select("obra_id, progress_percent, report_date").in("obra_id", obraIds),
+        supabase.from("obra_billing_items").select("obra_id, amount").in("obra_id", obraIds),
+        supabase.from("obra_state_accounts").select("obra_id, amount, concept, date").in("obra_id", obraIds).order("date", { ascending: true }),
+      ])
+
+      const teamMap: Record<string, number> = {}
+      ;(teamRes.data || []).forEach((r: { obra_id: string }) => { teamMap[r.obra_id] = (teamMap[r.obra_id] || 0) + 1 })
+
+      const managerMap: Record<string, string> = {}
+      ;(assignRes.data as ObraAssignmentWithEmployee[] || []).forEach((a) => {
+        const emp = a.employees; const name = Array.isArray(emp) ? emp[0]?.full_name : emp?.full_name
+        if (name) managerMap[a.obra_id] = name
+      })
+
+      const progressMap: Record<string, number> = {}; const lastDateMap: Record<string, string> = {}
+      ;(siteRes.data as SiteReportRow[] || []).forEach((r) => {
+        if (!r.progress_percent || !r.report_date) return
+        if (!lastDateMap[r.obra_id] || r.report_date > lastDateMap[r.obra_id]) {
+          lastDateMap[r.obra_id] = r.report_date; progressMap[r.obra_id] = Number(r.progress_percent)
+        }
+      })
+
+      const budgetMap: Record<string, number> = {}
+      ;(billingRes.data || []).forEach((item: { obra_id: string; amount: number }) => {
+        budgetMap[item.obra_id] = (budgetMap[item.obra_id] || 0) + Number(item.amount || 0)
+      })
+
+      const spentMap: Record<string, number> = {}
+      ;(accountsRes.data as ObraStateAccountRow[] || []).forEach((a) => {
+        const sign = (a.concept || "").toLowerCase() === "return" ? -1 : 1
+        spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
+      })
+
+      setProjects(obras.map((obra) => {
+        const budget = budgetMap[obra.id] ?? 0; const spent = spentMap[obra.id] ?? 0
+        return mapObraToProject(obra, {
+          managerName: managerMap[obra.id],
+          progress: budget > 0 ? Math.min(100, Math.round((spent / budget) * 100)) : 0,
+          budget: formatCurrency(budget), spent: formatCurrency(spent), teamSize: teamMap[obra.id] ?? 0,
+        })
+      }))
+      setLoading(false)
+    }
+    fetchObras()
+  }, [empresaId])
+
+  useEffect(() => {
+    async function fetchDirectores() {
+      setLoadingManagers(true)
+      const { data } = await supabase.from("employees")
+        .select("id, full_name, status, employee_roles(employee_roles_catalog(code))")
+        .eq("status", "active").order("full_name", { ascending: true })
+      const filtered = (data || []).filter((emp: any) =>
+        (emp.employee_roles || []).some((er: any) => er.employee_roles_catalog?.code === "director_obra"))
+      setManagers(filtered.map((e: any) => ({ id: e.id, full_name: e.full_name, status: e.status })))
+      setLoadingManagers(false)
+    }
+    fetchDirectores()
+  }, [])
+
+  const filteredProjects = useMemo(() => projects.filter((p) => {
+    const matchesSearch = p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.location.toLowerCase().includes(searchQuery.toLowerCase())
+    const normalizedStatus = p.status.toLowerCase().replace(" ", "-") as any
+    return matchesSearch && (statusFilter === "all" || normalizedStatus === statusFilter)
+  }), [projects, searchQuery, statusFilter])
+
+  const getStatusColor = (s: ProjectStatus) => {
+    if (s === "In Progress") return "bg-[#0174bd]/15 text-[#4da8e8] border border-[#0174bd]/25"
+    if (s === "Planning")    return "bg-amber-500/15 text-amber-300 border border-amber-500/25"
+    if (s === "Completed")   return "bg-emerald-500/15 text-emerald-400 border border-emerald-500/25"
+    return "bg-slate-500/15 text-slate-400 border border-slate-500/25"
+  }
+
+  async function handleSaveProject(data: Omit<Project, "id"> & { id?: string }) {
+    setSaving(true); setFormError(null)
+    try {
+      const { data: inserted, error } = await supabase.from("obras")
+        .insert({ name: data.name, client_name: null, location_text: data.location || null, status: mapUiStatusToDb(data.status), notes: null, empresa_id: empresaId })
+        .select("id, code, name, client_name, location_text, status, start_date_planned, start_date_actual, end_date_planned, end_date_actual").single()
+      if (error || !inserted) { setFormError("No se pudo crear la obra, intenta de nuevo."); return }
+      const obra = inserted as ObraRow
+      if (data.manager) await supabase.from("obra_assignments").insert({ obra_id: obra.id, employee_id: data.manager, role_on_site: "director_obra" })
+      logActivity({
+        event_type: "obra.created",
+        entity_type: "obra",
+        entity_id: obra.id,
+        entity_label: obra.name,
+        metadata: { empresa_id: empresaId, empresa_name: empresaNombre },
+      })
+      setProjects((prev) => [mapObraToProject(obra), ...prev]); setOpenDialog(false)
+    } catch { setFormError("Error inesperado al crear la obra.") }
+    finally { setSaving(false) }
+  }
+
+  // ── Funciones EDC ──
+  function enterEdcMode() { setEditMode(false); setSelected(new Set()); setEdcSelected(new Set()); setEdcMode(true) }
+  function exitEdcMode()  { setEdcMode(false); setEdcSelected(new Set()) }
+  function toggleEdcSelect(id: string) {
+    setEdcSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  // ── Funciones edición / eliminación de obras ──
+  function enterEditMode() { setEdcMode(false); setEdcSelected(new Set()); setSelected(new Set()); setEditMode(true) }
+  function exitEditMode()  { setEditMode(false); setSelected(new Set()) }
+  function toggleSelect(id: string) {
+    setSelected((prev) => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
+  }
+
+  function openDeleteDialog() {
+    if (selected.size === 0) return
+    setDeleteConfirmText(""); setDeleteDialogOpen(true)
+  }
+
+  async function handleDelete() {
+    if (deleteConfirmText !== "ELIMINAR") return
+    setDeleting(true)
+    const ids = Array.from(selected)
+    try {
+      // Borrado exhaustivo server-side (obra + storage + tablas hijas)
+      const res = await fetch("/api/obras", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ obraIds: ids }),
+      })
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({}))
+        alert(j?.error || "No se pudieron eliminar las obras.")
+        setDeleting(false)
+        return
+      }
+    } catch {
+      alert("No se pudieron eliminar las obras.")
+      setDeleting(false)
+      return
+    }
+    const deletedNames = ids.map((id) => projects.find((p) => p.id === id)?.name).filter(Boolean).join(", ")
+    logActivity({
+      event_type: "obra.deleted",
+      entity_type: "obra",
+      entity_label: deletedNames || `${ids.length} obra(s)`,
+      metadata: { deleted_ids: ids, empresa_id: empresaId, empresa_name: empresaNombre },
+    })
+    setProjects((prev) => prev.filter((p) => !selected.has(p.id)))
+    setDeleting(false); setDeleteDialogOpen(false); exitEditMode()
+  }
+
+  async function buildEdcData(): Promise<{ edcData: EDCEmpresa[]; userLabel: string }> {
+    const selectedIds = Array.from(edcSelected)
+
+    // Datos financieros completos por obra (contrato, anticipo, garantía,
+    // estimaciones con neto a facturar, facturas y cobros)
+    const financials = await fetchEDCObras(selectedIds)
+    const edcObras = selectedIds
+      .map((id) => financials[id])
+      .filter(Boolean) as EDCObra[]
+
+    const edcData: EDCEmpresa[] = [{
+      id: empresaId,
+      name: empresaNombre,
+      obras: edcObras,
+    }]
+
+    const { data: authData } = await supabase.auth.getUser()
+    const userLabel = authData?.user?.email ?? authData?.user?.id ?? "Sistema"
+    return { edcData, userLabel }
+  }
+
+  async function handleGenerateEDC() {
+    if (edcSelected.size === 0 || edcGenerating || edcGeneratingExcel) return
+    setEdcGenerating(true)
+    try {
+      const { edcData, userLabel } = await buildEdcData()
+      await generateEDCPdf(edcData, new Date(), userLabel)
+      exitEdcMode()
+    } catch (err) {
+      console.error("Error generando EDC (PDF):", err)
+    } finally {
+      setEdcGenerating(false)
+    }
+  }
+
+  async function handleGenerateExcel() {
+    if (edcSelected.size === 0 || edcGenerating || edcGeneratingExcel) return
+    setEdcGeneratingExcel(true)
+    try {
+      const { edcData, userLabel } = await buildEdcData()
+      await generateEDCExcel(edcData, new Date(), userLabel)
+      exitEdcMode()
+    } catch (err) {
+      console.error("Error generando EDC (Excel):", err)
+    } finally {
+      setEdcGeneratingExcel(false)
+    }
+  }
+
+  const inputCls   = "bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-600 focus:border-[#0174bd]/60"
+  const btnOutline = "border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200 hover:border-slate-600"
+
+  return (
+    <RoleGuard allowed={allowed}>
+      <AdminLayout>
+        <div className="space-y-6">
+
+          {/* ── Back + Header ── */}
+          <div className="flex items-center gap-3">
+            <Link href={`${basePath}/projects`}>
+              <Button variant="ghost" size="icon" className="rounded-xl text-slate-500 hover:text-slate-200 hover:bg-slate-700/60">
+                <ArrowLeft className="w-5 h-5" />
+              </Button>
+            </Link>
+            <div
+              className="rounded-2xl border border-slate-700/60 p-5 flex items-center justify-between flex-1"
+              style={{
+                background: "linear-gradient(135deg, #1e293b 0%, #0f1e2e 50%, #162438 100%)",
+                boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 4px 20px rgba(0,0,0,0.3)",
+              }}
+            >
+              <div>
+                <p className="text-[#4da8e8]/60 text-xs font-medium uppercase tracking-widest mb-1">Empresa</p>
+                <h1 className="text-2xl font-bold text-slate-100">{empresaNombre || "Cargando..."}</h1>
+                <p className="text-slate-400 text-sm mt-0.5">
+                  {editMode
+                    ? "Selecciona las obras que deseas eliminar"
+                    : edcMode
+                    ? "Selecciona las obras a incluir en el Estado de Cuenta"
+                    : `${projects.length} ${projects.length === 1 ? "obra registrada" : "obras registradas"}`}
+                </p>
+              </div>
+              {!edcMode && !editMode ? (
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    onClick={enterEdcMode}
+                    disabled={projects.length === 0}
+                    className="font-semibold border-emerald-700/60 text-emerald-400 hover:bg-emerald-900/30 hover:text-emerald-300 hover:border-emerald-600 disabled:opacity-40"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />Generar EDC
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={enterEditMode}
+                    disabled={projects.length === 0}
+                    className={`font-semibold ${btnOutline} disabled:opacity-40`}
+                  >
+                    <Pencil className="w-4 h-4 mr-2" />Editar
+                  </Button>
+                  <Button onClick={() => setOpenDialog(true)} className="font-semibold bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+                    <Plus className="w-4 h-4 mr-2" />Nueva obra
+                  </Button>
+                </div>
+              ) : editMode ? (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEditMode} disabled={deleting} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex gap-2">
+                  <Button variant="outline" onClick={exitEdcMode} disabled={edcGenerating || edcGeneratingExcel} className={btnOutline}>
+                    <X className="w-4 h-4 mr-2" />Cancelar
+                  </Button>
+                  <Button
+                    onClick={handleGenerateEDC}
+                    disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                    className="font-semibold bg-[#8a1c3b] hover:bg-[#701530] text-white disabled:opacity-40"
+                  >
+                    {edcGenerating
+                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
+                      : <><FileText className="w-4 h-4 mr-2" />Generar PDF{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>}
+                  </Button>
+                  <Button
+                    onClick={handleGenerateExcel}
+                    disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                    className="font-semibold bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40"
+                  >
+                    {edcGeneratingExcel
+                      ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" />Generando...</>
+                      : <><FileSpreadsheet className="w-4 h-4 mr-2" />Generar Excel{edcSelected.size > 0 ? ` (${edcSelected.size})` : ""}</>}
+                  </Button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Lista de obras ── */}
+          <div className="bg-slate-900 rounded-2xl border border-slate-700/60">
+            {/* Header */}
+            <div className="p-6 pb-4 border-b border-slate-700/60 rounded-t-2xl"
+              style={{ background: "linear-gradient(135deg, #1a2535 0%, #111e2c 100%)" }}
+            >
+              <div className="flex flex-col md:flex-row gap-4 items-start md:items-center justify-between">
+                <h2 className="text-lg font-bold text-slate-100">Obras</h2>
+                <div className="flex flex-col sm:flex-row gap-2 w-full md:w-auto">
+                  <div className="relative flex-1 md:w-64">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500 pointer-events-none" />
+                    <Input placeholder="Buscar obras..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                      className={`pl-10 ${inputCls}`} />
+                  </div>
+                  <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as any)}>
+                    <SelectTrigger className={`w-full sm:w-40 ${inputCls}`}>
+                      <SelectValue placeholder="Filtrar" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-slate-800 border-slate-700 text-slate-200">
+                      <SelectItem value="all"         className="focus:bg-slate-700 focus:text-slate-100">Todos</SelectItem>
+                      <SelectItem value="in-progress" className="focus:bg-slate-700 focus:text-slate-100">En progreso</SelectItem>
+                      <SelectItem value="planning"    className="focus:bg-slate-700 focus:text-slate-100">Planeación</SelectItem>
+                      <SelectItem value="completed"   className="focus:bg-slate-700 focus:text-slate-100">Completada</SelectItem>
+                      <SelectItem value="on-hold"     className="focus:bg-slate-700 focus:text-slate-100">En pausa</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 pt-5">
+              {loading && (
+                <div className="py-16 flex flex-col items-center gap-3 text-slate-500">
+                  <Loader2 className="w-8 h-8 animate-spin text-[#0174bd]" />
+                  <span className="text-sm">Cargando obras...</span>
+                </div>
+              )}
+              {!loading && error && <div className="py-10 text-center text-red-400 text-sm">Error: {error}</div>}
+              {!loading && !error && filteredProjects.length === 0 && (
+                <div className="py-16 flex flex-col items-center gap-2 text-slate-500">
+                  <Building2 className="w-10 h-10 text-slate-700" />
+                  <p className="text-sm font-medium text-slate-400">No hay obras registradas</p>
+                  <p className="text-xs text-slate-600">Crea la primera obra para esta empresa</p>
+                </div>
+              )}
+              {!loading && !error && filteredProjects.length > 0 && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-5">
+                  {filteredProjects.map((project) => {
+                    const isEdcSel  = edcSelected.has(project.id)
+                    const isEditSel = selected.has(project.id)
+                    if (editMode) {
+                      return (
+                        <div key={project.id} className="cursor-pointer" onClick={() => toggleSelect(project.id)}>
+                          <ProjectCard project={project} statusClass={getStatusColor(project.status)} isEditSelected={isEditSel} />
+                        </div>
+                      )
+                    }
+                    if (edcMode) {
+                      return (
+                        <div key={project.id} className="cursor-pointer" onClick={() => toggleEdcSelect(project.id)}>
+                          <ProjectCard project={project} statusClass={getStatusColor(project.status)} isEdcSelected={isEdcSel} />
+                        </div>
+                      )
+                    }
+                    return (
+                      <Link key={project.id} href={`${basePath}/projects/${empresaId}/${project.id}`} className="block">
+                        <ProjectCard project={project} statusClass={getStatusColor(project.status)} />
+                      </Link>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ── Floating EDC Action Bar ── */}
+          {edcMode && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-emerald-600/40 shadow-2xl shadow-black/50"
+              style={{ background: "linear-gradient(135deg, #0d2e1a 0%, #0a1f12 100%)" }}>
+              <CheckSquare className="w-5 h-5 text-emerald-400 shrink-0" />
+              <span className="text-sm font-medium text-slate-200">
+                {edcSelected.size === 0
+                  ? "Selecciona las obras para el EDC"
+                  : `${edcSelected.size} obra${edcSelected.size !== 1 ? "s" : ""} seleccionada${edcSelected.size !== 1 ? "s" : ""}`}
+              </span>
+              <div className="w-px h-5 bg-slate-600" />
+              <Button
+                onClick={handleGenerateEDC}
+                disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                size="sm"
+                className="bg-[#8a1c3b] hover:bg-[#701530] text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                {edcGenerating
+                  ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
+                  : <><FileText className="w-3.5 h-3.5 mr-1.5" />Generar PDF</>}
+              </Button>
+              <Button
+                onClick={handleGenerateExcel}
+                disabled={edcSelected.size === 0 || edcGenerating || edcGeneratingExcel}
+                size="sm"
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                {edcGeneratingExcel
+                  ? <><Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />Generando...</>
+                  : <><FileSpreadsheet className="w-3.5 h-3.5 mr-1.5" />Generar Excel</>}
+              </Button>
+              <button onClick={exitEdcMode} disabled={edcGenerating || edcGeneratingExcel}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* ── Floating Delete Action Bar ── */}
+          {editMode && (
+            <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-red-600/40 shadow-2xl shadow-black/50"
+              style={{ background: "linear-gradient(135deg, #2d1515 0%, #1e0e0e 100%)" }}>
+              <CheckSquare className="w-5 h-5 text-red-400 shrink-0" />
+              <span className="text-sm font-medium text-slate-200">
+                {selected.size === 0
+                  ? "Selecciona las obras a eliminar"
+                  : `${selected.size} obra${selected.size !== 1 ? "s" : ""} seleccionada${selected.size !== 1 ? "s" : ""}`}
+              </span>
+              <div className="w-px h-5 bg-slate-600" />
+              <Button
+                onClick={openDeleteDialog}
+                disabled={selected.size === 0 || deleting}
+                size="sm"
+                className="bg-red-600 hover:bg-red-500 text-white font-semibold disabled:opacity-40 h-8 px-4"
+              >
+                <Trash2 className="w-3.5 h-3.5 mr-1.5" />Eliminar
+              </Button>
+              <button onClick={exitEditMode} disabled={deleting}
+                className="p-1.5 rounded-lg text-slate-500 hover:text-slate-200 hover:bg-slate-700/60 transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
+          {/* ── Dialog eliminar obras ── */}
+          <Dialog open={deleteDialogOpen} onOpenChange={(v) => deleting ? null : setDeleteDialogOpen(v)}>
+            <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="w-5 h-5" />Confirmar eliminación
+                </DialogTitle>
+                <DialogDescription className="text-slate-400">
+                  Esta acción no se puede deshacer.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="space-y-4 mt-1">
+                <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-300">
+                  Esta acción es <strong>irreversible</strong>. Se eliminará por completo cada obra seleccionada:
+                  datos financieros, estimaciones, facturas, cobros, nóminas, asistencias, documentos y archivos.
+                </div>
+
+                <div className="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                  {Array.from(selected).map((id) => {
+                    const obra = projects.find((p) => p.id === id)
+                    return (
+                      <div key={id} className="flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-700/40 px-3 py-2">
+                        <Building2 className="w-4 h-4 text-red-400 shrink-0" />
+                        <span className="text-sm font-semibold text-slate-100 truncate">{obra?.name || "Obra"}</span>
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="text-xs font-medium text-slate-400">
+                    Escribe <strong className="text-red-400">ELIMINAR</strong> para confirmar
+                  </label>
+                  <Input value={deleteConfirmText} onChange={(e) => setDeleteConfirmText(e.target.value)}
+                    placeholder="ELIMINAR" className={`font-mono ${inputCls}`}
+                    onKeyDown={(e) => e.key === "Enter" && deleteConfirmText === "ELIMINAR" && handleDelete()} />
+                </div>
+
+                <div className="flex justify-end gap-2 pt-1">
+                  <Button variant="outline" onClick={() => setDeleteDialogOpen(false)} disabled={deleting} className={btnOutline}>
+                    Cancelar
+                  </Button>
+                  <Button variant="destructive" onClick={handleDelete} disabled={deleteConfirmText !== "ELIMINAR" || deleting}>
+                    <Trash2 className="w-4 h-4 mr-2" />
+                    {deleting ? "Eliminando..." : "Confirmar eliminación"}
+                  </Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* ── Dialog nueva obra ── */}
+          <Dialog open={openDialog} onOpenChange={setOpenDialog}>
+            <DialogContent className="max-w-xl bg-slate-800 border-slate-700 text-slate-100">
+              <DialogHeader>
+                <DialogTitle className="text-slate-100">Nueva obra</DialogTitle>
+                <DialogDescription className="text-slate-400">Define la información principal de esta obra.</DialogDescription>
+              </DialogHeader>
+              <ProjectForm onCancel={() => setOpenDialog(false)} onSubmit={handleSaveProject}
+                loading={saving} error={formError} managers={managers} loadingManagers={loadingManagers} />
+            </DialogContent>
+          </Dialog>
+
+        </div>
+      </AdminLayout>
+    </RoleGuard>
+  )
+}
+
+// ---------- CARD ----------
+
+function ProjectCard({ project, statusClass, isEdcSelected = false, isEditSelected = false }: { project: Project; statusClass: string; isEdcSelected?: boolean; isEditSelected?: boolean }) {
+  return (
+    <div
+      className={`group relative rounded-2xl border-2 p-5 flex flex-col gap-4 transition-all duration-200 cursor-pointer overflow-hidden
+        ${isEditSelected
+          ? "border-red-500/70 shadow-lg shadow-red-950/40 -translate-y-0.5"
+          : isEdcSelected
+          ? "border-emerald-500/70 shadow-lg shadow-emerald-950/40 -translate-y-0.5"
+          : "border-slate-700/60 hover:border-[#0174bd]/40 hover:shadow-xl hover:shadow-black/40 hover:-translate-y-1"}`}
+      style={{
+        background: isEditSelected
+          ? "linear-gradient(145deg, #2d1515 0%, #1e0e0e 60%, #200f0f 100%)"
+          : isEdcSelected
+          ? "linear-gradient(145deg, #0d2e1a 0%, #091f12 60%, #0b2015 100%)"
+          : "linear-gradient(145deg, #1e293b 0%, #172030 60%, #1a2535 100%)",
+        boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04)",
+      }}
+    >
+
+      {/* Acento top */}
+      {isEditSelected
+        ? <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-red-500 to-red-400" />
+        : isEdcSelected
+        ? <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-emerald-500 to-emerald-300" />
+        : <div className="absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r from-[#0174bd] to-[#4da8e8] opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
+      }
+
+      {/* Checkbox eliminación (rojo) */}
+      {isEditSelected && (
+        <div className="absolute top-4 right-4 z-10 w-5 h-5 rounded border-2 bg-red-500 border-red-500 flex items-center justify-center">
+          <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      )}
+
+      {/* Checkbox EDC */}
+      {isEdcSelected && (
+        <div className="absolute top-4 right-4 z-10 w-5 h-5 rounded border-2 bg-emerald-500 border-emerald-500 flex items-center justify-center">
+          <svg className="w-3 h-3 text-white" viewBox="0 0 12 12" fill="none">
+            <path d="M2 6l3 3 5-5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </div>
+      )}
+
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="font-bold text-slate-100 text-base leading-tight truncate group-hover:text-white transition-colors duration-200">
+            {project.name}
+          </h3>
+          <div className="flex items-center gap-1 mt-1.5 text-xs text-slate-500">
+            <MapPin className="w-3 h-3 shrink-0" />
+            <span className="truncate">{project.location}</span>
+          </div>
+        </div>
+        <Badge className={`${statusClass} shrink-0 text-xs font-semibold`}>
+          {getStatusLabel(project.status)}
+        </Badge>
+      </div>
+
+      <div className="space-y-1.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium text-slate-500">Avance financiero</span>
+          <span className="text-xs font-bold text-slate-300">{project.progress}%</span>
+        </div>
+        <div className="w-full bg-slate-700/60 rounded-full h-1.5 overflow-hidden">
+          <div className="h-full rounded-full bg-gradient-to-r from-[#0174bd] to-[#4da8e8] transition-all duration-700"
+            style={{ width: `${project.progress}%` }} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3 pt-1">
+        <div className="bg-slate-700/40 rounded-xl p-3">
+          <p className="text-xs text-slate-500 mb-0.5">Cotización</p>
+          <p className="text-sm font-bold text-slate-200 truncate">{project.budget}</p>
+          <p className="text-xs text-slate-500 mt-0.5">Cobrado: {project.spent}</p>
+        </div>
+        <div className="bg-slate-700/40 rounded-xl p-3">
+          <p className="text-xs text-slate-500 mb-0.5">Director</p>
+          <p className="text-sm font-bold text-slate-200 truncate">{project.manager}</p>
+          <p className="text-xs text-slate-500 mt-0.5">Equipo: {project.teamSize}</p>
+        </div>
+      </div>
+
+      <div className="absolute bottom-4 right-4 opacity-0 group-hover:opacity-100 transition-all duration-200 translate-x-1 group-hover:translate-x-0">
+        <ChevronRight className="w-4 h-4 text-[#4da8e8]" />
+      </div>
+    </div>
+  )
+}
+
+// ---------- FORM ----------
+
+type ProjectFormProps = {
+  onSubmit: (data: Omit<Project, "id"> & { id?: string }) => Promise<void> | void
+  onCancel: () => void; loading?: boolean; error?: string | null
+  managers: EmployeeManager[]; loadingManagers?: boolean
+}
+
+function ProjectForm({ onSubmit, onCancel, loading = false, error, managers, loadingManagers = false }: ProjectFormProps) {
+  const [form, setForm] = useState<Omit<Project, "id">>({
+    name: "", location: "", status: "Planning",
+    progress: 0, startDate: "", endDate: "", budget: "-", spent: "-", manager: "", teamSize: 0,
+  })
+
+  const inputCls        = "bg-slate-900 border-slate-700 text-slate-200 placeholder:text-slate-600 focus:border-[#0174bd]/60"
+  const selectTrigger   = "bg-slate-900 border-slate-700 text-slate-200"
+  const selectContent   = "bg-slate-800 border-slate-700 text-slate-200"
+  const selectItemClass = "focus:bg-slate-700 focus:text-slate-100"
+
+  return (
+    <form className="mt-2 space-y-4" onSubmit={(e) => { e.preventDefault(); if (!form.name.trim()) return; onSubmit({ ...form }) }}>
+      <div className="grid gap-4 md:grid-cols-2">
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-slate-400">Nombre de la obra *</label>
+          <Input value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+            placeholder="Plaza Centro..." required className={inputCls} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-slate-400">Ubicación</label>
+          <Input value={form.location} onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
+            placeholder="Ciudad, Estado" className={inputCls} />
+        </div>
+        <div className="flex flex-col gap-1.5">
+          <label className="text-xs font-medium text-slate-400">Estatus</label>
+          <Select value={form.status} onValueChange={(v) => setForm((f) => ({ ...f, status: v as ProjectStatus }))}>
+            <SelectTrigger className={selectTrigger}><SelectValue /></SelectTrigger>
+            <SelectContent className={selectContent}>
+              <SelectItem value="Planning"    className={selectItemClass}>Planeación</SelectItem>
+              <SelectItem value="In Progress" className={selectItemClass}>En progreso</SelectItem>
+              <SelectItem value="Completed"   className={selectItemClass}>Completada</SelectItem>
+              <SelectItem value="On Hold"     className={selectItemClass}>En pausa</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex flex-col gap-1.5 md:col-span-2">
+          <label className="text-xs font-medium text-slate-400">Director de obra</label>
+          <Select value={form.manager} onValueChange={(v) => setForm((f) => ({ ...f, manager: v }))} disabled={loadingManagers}>
+            <SelectTrigger className={selectTrigger}>
+              <SelectValue placeholder={loadingManagers ? "Cargando..." : managers.length === 0 ? "Sin directores disponibles" : "Seleccionar director"} />
+            </SelectTrigger>
+            <SelectContent className={selectContent}>
+              {managers.map((m) => <SelectItem key={m.id} value={m.id} className={selectItemClass}>{m.full_name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      {error && <p className="text-xs text-red-400">{error}</p>}
+      <div className="flex justify-end gap-2 mt-4">
+        <Button type="button" variant="outline" onClick={onCancel}
+          className="border-slate-700 text-slate-400 hover:bg-slate-700/60 hover:text-slate-200">Cancelar</Button>
+        <Button type="submit" disabled={loading} className="bg-[#0174bd] hover:bg-[#0174bd]/90 text-white">
+          {loading ? "Guardando..." : "Crear obra"}
+        </Button>
+      </div>
+    </form>
+  )
+}

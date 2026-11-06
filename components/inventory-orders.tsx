@@ -28,8 +28,12 @@ type Obra = { id: string; name: string; code: string | null; empresa_id: string 
 type Empresa = { id: string; name: string }
 type Draft = { product: InventoryProduct; quantity: string }
 
-export function InventoryOrders({ role, headerRight }: { role: "admin" | "almacen"; headerRight?: React.ReactNode }) {
+export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" | "almacen"; headerRight?: React.ReactNode }) {
   const { user } = useAuth()
+  // Dos lados del flujo: quien PIDE la salida (oficina: admin y administración)
+  // y quien la SURTE (almacén). Casi todas las diferencias de pantalla son por
+  // el lado, no por el rol exacto.
+  const esSolicitante = role !== "almacen"
   const [orders, setOrders] = useState<OrderRow[]>([])
   const [products, setProducts] = useState<InventoryProduct[]>([])
   const [obras, setObras] = useState<Obra[]>([])
@@ -584,12 +588,12 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
             Órdenes de inventario
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            {role === "admin" ? "Genera salidas a obra con la cantidad a surtir; almacén prepara el pedido, sube la factura y confirma la entrega." : "Recibe las órdenes, prepara el pedido, sube la factura y confirma la entrega a obra."}
+            {esSolicitante ? "Genera salidas a obra con la cantidad a surtir; almacén prepara el pedido, sube la factura y confirma la entrega." : "Recibe las órdenes, prepara el pedido, sube la factura y confirma la entrega a obra."}
           </p>
         </div>
-        {(role === "admin" || headerRight) && (
+        {(esSolicitante || headerRight) && (
           <div className="flex items-center gap-2 flex-wrap sm:justify-end">
-            {role === "admin" && (
+            {esSolicitante && (
               <Button size="sm" className="cursor-pointer bg-violet-600 hover:bg-violet-700 text-white" onClick={() => openCreate()}>
                 <Truck className="w-4 h-4 mr-1.5" /> Nueva salida a obra
               </Button>
@@ -867,7 +871,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "almace
                 <div className="space-y-2">
                   {detailInvoices.length === 0 && (
                     <p className="text-xs text-slate-500">
-                      {role === "admin"
+                      {esSolicitante
                         ? "Aún no se sube factura. Aparecerá aquí cuando almacén la cargue."
                         : "Aún no se sube factura."}
                     </p>

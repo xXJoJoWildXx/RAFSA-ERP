@@ -104,6 +104,8 @@ function fmtDateDisplay(value: string | null | undefined): string {
   return d.toLocaleDateString("es-MX", { day: "2-digit", month: "2-digit", year: "numeric" })
 }
 
+const round2 = (n: number) => Math.round(n * 100) / 100
+
 function fmtCurrency(value: number, currency: string = "MXN"): string {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency, minimumFractionDigits: 2 }).format(value)
 }
@@ -257,6 +259,18 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   const avanceTrabajo = totalEstimaciones > 0 ? Math.round((completedEstimaciones / totalEstimaciones) * 100) : 0
 
   const getFacturaForEst = (estId: string) => facturas.find((f: Factura) => f.estimacion_id === estId) ?? null
+  /** Todas las facturas de una estimación. Normalmente es una sola, pero el
+   *  anticipo se paga a plazos y lleva varias (nunca más de 3 o 4). */
+  const getFacturasForEst = (estId: string) =>
+    facturas.filter((f: Factura) => f.estimacion_id === estId)
+
+  /** Lo que ya está facturado de una estimación. */
+  const facturadoDe = (estId: string) =>
+    round2(getFacturasForEst(estId).reduce((s, f) => s + Number(f.amount || 0), 0))
+
+  /** Cuánto falta por facturar del anticipo (o de cualquier estimación). */
+  const porFacturarDe = (est: Estimacion) =>
+    round2(Math.max(0, Number(est.amount || 0) - facturadoDe(est.id)))
   const getFacturaForAditivo = (aditivoId: string) => facturas.find((f: Factura) => f.aditivo_id === aditivoId) ?? null
 
   const round2 = (n: number) => Math.round(n * 100) / 100
@@ -431,7 +445,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     // Para estimaciones normales se prellena el NETO (monto − retención − amortización);
     // para el anticipo se usa el monto completo.
     const ded = getDeduction(est)
-    const preAmount = ded ? ded.neto : Number(est.amount)
+    // Anticipo a plazos: se prellena con lo que falta, no con el total.
+    const preAmount = ded ? ded.neto : est.is_anticipo ? porFacturarDe(est) : Number(est.amount)
     setFacForm({
       invoice_number: "",
       amount: String(preAmount),
@@ -463,6 +478,18 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     const amount = parseFloat(facForm.amount.replace(/[^0-9.]/g, ""))
     if (isNaN(amount) || amount <= 0) { setSavingFac(false); return }
 
+    // Anticipo a plazos: la suma de sus facturas no puede pasarse del anticipo
+    if (facTargetEst?.is_anticipo) {
+      const restante = porFacturarDe(facTargetEst)
+      if (amount > restante + 0.009) {
+        alert(
+          `El monto no puede ser mayor a lo que falta por facturar del anticipo (${fmtCurrency(restante, currency)}).`,
+        )
+        setSavingFac(false)
+        return
+      }
+    }
+
     const { data: authData } = await supabase.auth.getUser()
     const userId = authData?.user?.id ?? null
 
@@ -482,14 +509,37 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
       .select("id")
       .single()
 
-    if (error || !inserted) { console.error("insert factura error:", error); setSavingFac(false); return }
+    if (error || !inserted) {
+      // Un PostgrestError no se imprime bien con console.error(obj): sale "{}"
+      // y no hay forma de saber qué falló. Se desarman los campos a mano.
+      console.error("insert factura error:", {
+        message: error?.message,
+        details: (error as any)?.details,
+        hint: (error as any)?.hint,
+        code: (error as any)?.code,
+      })
+      const duplicada = (error as any)?.code === "23505"
+      alert(
+        duplicada
+          ? "Esta estimación ya tiene una factura asignada. Solo el anticipo admite varias."
+          : `No se pudo guardar la factura.${error?.message ? `\n\n${error.message}` : ""}`,
+      )
+      setSavingFac(false)
+      return
+    }
 
-    // Solo las estimaciones tienen estado; se marca completada al facturar
+    // Solo las estimaciones tienen estado. Una normal se completa con su
+    // factura; el anticipo, hasta que la suma de las suyas cubre el monto.
     if (facTargetEst) {
-      await supabase
-        .from("obra_estimaciones")
-        .update({ status: "completed", updated_at: new Date().toISOString() })
-        .eq("id", facTargetEst.id)
+      const cubierta = facTargetEst.is_anticipo
+        ? facturadoDe(facTargetEst.id) + amount >= Number(facTargetEst.amount || 0) - 0.009
+        : true
+      if (cubierta) {
+        await supabase
+          .from("obra_estimaciones")
+          .update({ status: "completed", updated_at: new Date().toISOString() })
+          .eq("id", facTargetEst.id)
+      }
     }
 
     // Upload file if provided
@@ -703,24 +753,42 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
     partial: { label: "Saldo Pendiente", className: "bg-blue-500/15 text-blue-400 border-blue-500/30" },
   }
 
+  /** true si el monto capturado se pasa de lo que falta por facturar del
+   *  anticipo. Sólo aplica al anticipo; el resto no tiene tope aquí. */
+  const montoFacExcede = (() => {
+    if (!facTargetEst?.is_anticipo) return false
+    const n = parseFloat((facForm.amount || "").replace(/[^0-9.]/g, ""))
+    if (isNaN(n) || n <= 0) return false
+    return n > porFacturarDe(facTargetEst) + 0.009
+  })()
+
   // Fila reutilizable de factura (para estimaciones y aditivas)
   const FacturaRow = ({
     title,
     subtitle,
     montoText,
-    fac,
+    facs,
     onAssign,
     deduction = null,
+    /** Total que hay que cubrir entre todas las facturas. Sólo se usa cuando
+     *  se permiten varias (anticipo a plazos). */
+    totalAFacturar = null,
   }: {
     title: string
     subtitle: string | null
     montoText: string
-    fac: Factura | null
+    facs: Factura[]
     onAssign: () => void
     deduction?: Deduction | null
+    totalAFacturar?: number | null
   }) => {
-    const att = fac ? attachments[fac.id] : null
-    const facRemaining = fac ? Number(fac.amount) - Number(fac.amount_paid) : 0
+    // El anticipo puede pagarse en varias exhibiciones: se siguen aceptando
+    // facturas hasta cubrir el total. El resto lleva una sola.
+    const multiples = totalAFacturar !== null
+    const facturado = round2(facs.reduce((s, f) => s + Number(f.amount || 0), 0))
+    const porFacturar = multiples ? round2(Math.max(0, totalAFacturar - facturado)) : 0
+    const faltanFacturas = multiples ? porFacturar > 0.009 : facs.length === 0
+
     return (
       <div className="rounded-lg border border-slate-700 bg-slate-700/30 p-4">
         <div className="flex items-start justify-between gap-3 mb-2">
@@ -757,8 +825,33 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
           </div>
         )}
 
-        {fac ? (
-          <div className="mt-3 rounded-md border border-slate-600 bg-slate-800/60 p-3">
+        {/* Avance de facturación, sólo cuando se aceptan varias (anticipo) */}
+        {multiples && facs.length > 0 && (
+          <div className="mb-3 rounded-md border border-slate-600/70 bg-slate-800/40 p-2.5 space-y-1">
+            <div className="flex justify-between text-xs">
+              <span className="text-slate-400">
+                Facturado ({facs.length} {facs.length === 1 ? "factura" : "facturas"})
+              </span>
+              <span className="text-slate-300">{fmtCurrency(facturado, currency)}</span>
+            </div>
+            <div className="flex justify-between text-xs font-semibold border-t border-slate-600/70 pt-1">
+              <span className="text-slate-300">
+                {porFacturar > 0.009 ? "Falta por facturar" : "Total cubierto"}
+              </span>
+              <span className={porFacturar > 0.009 ? "text-amber-400" : "text-green-400"}>
+                {porFacturar > 0.009
+                  ? fmtCurrency(porFacturar, currency)
+                  : fmtCurrency(totalAFacturar, currency)}
+              </span>
+            </div>
+          </div>
+        )}
+
+        {facs.map((fac) => {
+          const att = attachments[fac.id]
+          const facRemaining = Number(fac.amount) - Number(fac.amount_paid)
+          return (
+          <div key={fac.id} className="mt-3 rounded-md border border-slate-600 bg-slate-800/60 p-3">
             <div className="flex items-start justify-between flex-wrap gap-3">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -818,9 +911,16 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
               </div>
             </div>
           </div>
-        ) : (
+          )
+        })}
+
+        {faltanFacturas && (
           <div className="mt-3 flex items-center justify-between border-t border-slate-700/50 pt-3">
-            <span className="text-xs text-slate-500 italic">Sin factura asignada</span>
+            <span className="text-xs text-slate-500 italic">
+              {facs.length === 0
+                ? "Sin factura asignada"
+                : `Falta facturar ${fmtCurrency(porFacturar, currency)}`}
+            </span>
             <Button
               size="sm"
               variant="outline"
@@ -828,7 +928,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
               onClick={onAssign}
             >
               <Upload className="w-3 h-3 mr-1" />
-              Asignar factura
+              {facs.length === 0 ? "Asignar factura" : "Asignar otra factura"}
             </Button>
           </div>
         )}
@@ -1051,9 +1151,12 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                     title={est.is_anticipo ? "Anticipo" : `Estimación #${est.number}`}
                     subtitle={est.description}
                     montoText={`Monto estimado: ${fmtCurrency(Number(est.amount), currency)}`}
-                    fac={getFacturaForEst(est.id)}
+                    facs={getFacturasForEst(est.id)}
                     onAssign={() => openAddFactura(est)}
                     deduction={getDeduction(est)}
+                    // El anticipo se paga a plazos: acepta varias facturas hasta
+                    // cubrir su monto. Las estimaciones llevan una sola.
+                    totalAFacturar={est.is_anticipo ? Number(est.amount || 0) : null}
                   />
                 ))}
               </div>
@@ -1075,7 +1178,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                     title="Aditiva"
                     subtitle={ad.description}
                     montoText={`Monto: ${fmtCurrency(Number(ad.amount), currency)}`}
-                    fac={getFacturaForAditivo(ad.id)}
+                    facs={getFacturaForAditivo(ad.id) ? [getFacturaForAditivo(ad.id)!] : []}
                     onAssign={() => openAddFacturaAditivo(ad)}
                   />
                 ))}
@@ -1210,6 +1313,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
       </Dialog>
 
       {/* ═══════════ DIALOG: Asignar Factura ═══════════ */}
+      {/* El monto de una factura del anticipo no puede pasarse del restante */}
       <Dialog open={facDialogOpen} onOpenChange={(v) => (!savingFac ? setFacDialogOpen(v) : null)}>
         <DialogContent className="max-w-md bg-slate-800 border-slate-700 text-slate-100">
           <DialogHeader>
@@ -1254,6 +1358,39 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                 </div>
               )
             })()}
+            {/* Anticipo a plazos: cuánto se lleva facturado y cuánto falta */}
+            {facTargetEst?.is_anticipo && (() => {
+              const yaFacturado = facturadoDe(facTargetEst.id)
+              const restante = porFacturarDe(facTargetEst)
+              const nFacturas = getFacturasForEst(facTargetEst.id).length
+              return (
+                <div className="rounded-md border border-slate-600 bg-slate-700/40 p-3 space-y-1">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-slate-400">Anticipo total</span>
+                    <span className="text-slate-200 font-medium">
+                      {fmtCurrency(Number(facTargetEst.amount || 0), currency)}
+                    </span>
+                  </div>
+                  {nFacturas > 0 && (
+                    <div className="flex justify-between text-sm">
+                      <span className="text-slate-400">
+                        − Ya facturado ({nFacturas} {nFacturas === 1 ? "factura" : "facturas"})
+                      </span>
+                      <span className="text-amber-400">−{fmtCurrency(yaFacturado, currency)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between text-sm font-semibold border-t border-slate-600 pt-1">
+                    <span className="text-slate-300">Falta por facturar</span>
+                    <span className="text-[#4da8e8]">{fmtCurrency(restante, currency)}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500 pt-0.5">
+                    El anticipo se puede cubrir con varias facturas. El monto no puede
+                    pasar de lo que falta.
+                  </p>
+                </div>
+              )
+            })()}
+
             <div className="flex flex-col gap-1.5">
               <label className="text-xs font-medium text-slate-400">Número de factura *</label>
               <Input
@@ -1270,8 +1407,16 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                   value={facForm.amount}
                   onChange={(e) => setFacForm((f) => ({ ...f, amount: e.target.value }))}
                   placeholder="0.00"
-                  className="bg-slate-700/60 border-slate-600 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd]"
+                  className={`bg-slate-700/60 text-slate-100 placeholder:text-slate-500 focus:border-[#0174bd] ${
+                    montoFacExcede ? "border-red-500" : "border-slate-600"
+                  }`}
                 />
+                {montoFacExcede && facTargetEst && (
+                  <p className="text-[11px] text-red-400">
+                    Supera lo que falta por facturar del anticipo (
+                    {fmtCurrency(porFacturarDe(facTargetEst), currency)}).
+                  </p>
+                )}
               </div>
               <div className="flex flex-col gap-1.5">
                 <label className="text-xs font-medium text-slate-400">Fecha</label>
@@ -1321,7 +1466,7 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
               </Button>
               <Button
                 onClick={handleSaveFactura}
-                disabled={savingFac || !facFile || !facForm.invoice_number.trim()}
+                disabled={savingFac || !facFile || !facForm.invoice_number.trim() || montoFacExcede}
                 className="cursor-pointer disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {savingFac && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
