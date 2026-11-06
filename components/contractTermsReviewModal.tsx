@@ -16,6 +16,12 @@ export interface ContractTermsExtraction {
   nombre_obra: string | null
   monto_total: number | null
   monto_total_source?: "consenso" | "sin_consenso"
+  /** Sólo cotizaciones: desglose impreso en la tabla de totales. */
+  subtotal?: number | null
+  iva_monto?: number | null
+  total_con_iva?: number | null
+  vigencia?: string | null
+  checks?: { cuadra_suma?: boolean | null; cuadra_tasa?: boolean | null } | null
   moneda: string
   iva_incluido: boolean
   anticipo: { porcentaje: number | null; monto: number | null; monto_source?: string }
@@ -40,6 +46,8 @@ interface Props {
   doc: DocRef | null
   extraction: ContractTermsExtraction | null
   currency?: string
+  /** De qué documento salieron los datos. Cambia títulos y el desglose. */
+  docKind?: "contract" | "quote"
   onApplied?: () => void
 }
 
@@ -86,8 +94,10 @@ export function ContractTermsReviewModal({
   doc,
   extraction,
   currency = "MXN",
+  docKind = "contract",
   onApplied,
 }: Props) {
+  const esCotizacion = docKind === "quote"
   // Editable form
   const [form, setForm] = useState({
     // Datos de cabecera de la obra
@@ -395,9 +405,11 @@ export function ContractTermsReviewModal({
         const { error: insErr } = await supabase.from("obra_billing_items").insert({
           obra_id: obraId,
           type: "cotizacion",
-          description: ivaIncluido
-            ? "Monto del contrato (extraído por IA)"
-            : "Monto del contrato (extraído por IA, + IVA 16%)",
+          description: esCotizacion
+            ? "Monto de la cotización (extraído por IA)"
+            : ivaIncluido
+              ? "Monto del contrato (extraído por IA)"
+              : "Monto del contrato (extraído por IA, + IVA 16%)",
           amount: montoTotalNum,
           date: new Date().toISOString().slice(0, 10),
           created_by: userId,
@@ -465,7 +477,7 @@ export function ContractTermsReviewModal({
         <DialogHeader className="px-6 pt-6 pb-3 border-b border-slate-700">
           <DialogTitle className="flex items-center gap-2 text-slate-100">
             <Sparkles className="w-5 h-5 text-[#4da8e8]" />
-            Revisar datos extraídos del contrato
+            {esCotizacion ? "Revisar datos extraídos de la cotización" : "Revisar datos extraídos del contrato"}
           </DialogTitle>
           <p className="text-xs text-slate-500 mt-1">
             Verifica y corrige los datos antes de aplicarlos al Estado de Cuenta.
@@ -508,8 +520,58 @@ export function ContractTermsReviewModal({
               </div>
             )}
 
+            {/* ═══ Cotización: el desglose impreso y su comprobación ═══ */}
+            {esCotizacion && extraction && (extraction.subtotal != null || extraction.total_con_iva != null) && (() => {
+              const cuadra =
+                extraction.checks?.cuadra_suma === true && extraction.checks?.cuadra_tasa === true
+              return (
+                <div
+                  className={`rounded-lg border p-3 space-y-1.5 ${
+                    cuadra ? "border-emerald-500/30 bg-emerald-500/10" : "border-amber-500/40 bg-amber-500/10"
+                  }`}
+                >
+                  <div className="flex items-start gap-2">
+                    {cuadra ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    )}
+                    <p className={`text-xs font-semibold ${cuadra ? "text-emerald-300" : "text-amber-300"}`}>
+                      {cuadra
+                        ? "La tabla de totales de la cotización cuadra"
+                        : "Los totales de la cotización no cuadran — revísalos"}
+                    </p>
+                  </div>
+                  <div className="rounded-md border border-slate-700/60 bg-slate-900/40 px-2.5 py-2 space-y-1">
+                    {extraction.subtotal != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-slate-400">Sub-total (sin IVA)</span>
+                        <span className="text-slate-300 tabular-nums">{fmtCurrency(extraction.subtotal, currency)}</span>
+                      </div>
+                    )}
+                    {extraction.iva_monto != null && (
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-slate-400">+ IVA</span>
+                        <span className="text-slate-300 tabular-nums">{fmtCurrency(extraction.iva_monto, currency)}</span>
+                      </div>
+                    )}
+                    {extraction.total_con_iva != null && (
+                      <div className="flex justify-between text-[11px] font-semibold border-t border-slate-700/60 pt-1">
+                        <span className="text-slate-300">Total</span>
+                        <span className="text-[#4da8e8] tabular-nums">{fmtCurrency(extraction.total_con_iva, currency)}</span>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Se captura el <strong>total</strong>, que ya incluye IVA.
+                    {extraction.vigencia ? ` Cotización vigente hasta el ${extraction.vigencia}.` : ""}
+                  </p>
+                </div>
+              )
+            })()}
+
             {/* ═══ Aviso de IVA: lo primero que debe ver el admin ═══ */}
-            {extraction && (
+            {!esCotizacion && extraction && (
               <div
                 className={`rounded-lg border p-3 space-y-2.5 ${
                   ivaIncluido

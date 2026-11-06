@@ -32,6 +32,10 @@ export type Capability =
   /** Borrar pagos y movimientos registrados en meses anteriores.
    *  Sin esta capacidad, sólo se puede tocar lo registrado este mes. */
   | "payments.delete.anyMonth"
+  // ── Documentos de obra ──
+  /** Eliminar un documento de la obra (contrato, cotización, etc.).
+   *  Es de oficina: el director de obra no borra el contrato. */
+  | "obra.documents.delete"
   // ── Secciones del panel ──
   | "projects.view"
   | "employees.view"
@@ -61,6 +65,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
 
   almacen: [
     "payments.delete.anyMonth",
+    "obra.documents.delete",
     "projects.view",
     "employees.view",
     "nomina.view",
@@ -71,6 +76,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
 
   worker: [
     "payments.delete.anyMonth",
+    "obra.documents.delete",
     "inventory.view",
     "inventory.products.create",
     "inventory.products.edit",
