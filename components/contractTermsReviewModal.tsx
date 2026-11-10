@@ -64,6 +64,12 @@ function conIva(value: number | null | undefined): number | null {
   return round2(Number(value) * (1 + IVA_RATE))
 }
 
+/** Quita el IVA de un importe que ya lo trae. */
+function sinIva(value: number | null | undefined): number | null {
+  if (value === null || value === undefined || !Number.isFinite(Number(value))) return null
+  return round2(Number(value) / (1 + IVA_RATE))
+}
+
 function fmtCurrency(value: number, currency = "MXN") {
   if (!Number.isFinite(value)) return "-"
   return new Intl.NumberFormat("es-MX", { style: "currency", currency, minimumFractionDigits: 2 }).format(value)
@@ -120,9 +126,18 @@ export function ContractTermsReviewModal({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  /** ¿El contrato ya traía el IVA incluido? Lo detecta la IA, pero queda
+  /** ¿El DOCUMENTO ya traía el IVA incluido? Lo detecta la IA, pero queda
    *  corregible: si se equivoca, todos los montos salen mal por un 16%. */
   const [ivaIncluido, setIvaIncluido] = useState(true)
+
+  /**
+   * ¿Cómo se REGISTRA la cotización, con IVA o sin él?
+   *
+   * Son dos preguntas distintas y conviene no mezclarlas: una es cómo viene
+   * el documento, la otra cómo se va a cobrar. Hay obras chicas que se pagan
+   * en efectivo y no llevan IVA, aunque el documento lo traiga.
+   */
+  const [registrarConIva, setRegistrarConIva] = useState(true)
 
   // PDF preview
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -152,11 +167,23 @@ export function ContractTermsReviewModal({
 
   const isEmpty = (v: string | null | undefined) => !v || String(v).trim() === ""
 
-  /** Los montos que se van a capturar: los del contrato tal cual si ya traía
-   *  IVA, o escalados al 16% si venía en base. El ERP guarda todo con IVA. */
-  function montosACapturar(ext: ContractTermsExtraction, incluyeIva: boolean) {
-    const ajusta = (v: number | null | undefined) =>
-      incluyeIva ? (v ?? null) : conIva(v)
+  /**
+   * Los montos que se van a capturar.
+   *
+   * Primero se normaliza lo que dice el documento a su BASE (sin IVA); de ahí
+   * se saca cualquiera de las dos lecturas. Así da igual cómo venga escrito:
+   * ir y venir entre "con IVA" y "sin IVA" no acumula error, porque siempre
+   * se parte del mismo número.
+   */
+  function montosACapturar(
+    ext: ContractTermsExtraction,
+    documentoIncluyeIva: boolean,
+    conIvaAlRegistrar: boolean,
+  ) {
+    const ajusta = (v: number | null | undefined) => {
+      const base = documentoIncluyeIva ? sinIva(v) : (v ?? null)
+      return conIvaAlRegistrar ? conIva(base) : base
+    }
     return {
       monto_total: ajusta(ext.monto_total),
       anticipo_amount: ajusta(ext.anticipo?.monto),
@@ -170,7 +197,9 @@ export function ContractTermsReviewModal({
     if (!extraction) return
     const incluyeIva = extraction.iva_incluido !== false
     setIvaIncluido(incluyeIva)
-    const m = montosACapturar(extraction, incluyeIva)
+    // Por omisión se registra con IVA, que es el caso normal
+    setRegistrarConIva(true)
+    const m = montosACapturar(extraction, incluyeIva, true)
     setForm({
       cliente: extraction.cliente ?? "",
       ubicacion: extraction.ubicacion ?? "",
@@ -190,11 +219,10 @@ export function ContractTermsReviewModal({
     setCotizacionChoice("replace")
   }, [extraction])
 
-  /** Corregir la detección de la IA: recalcula los montos desde el contrato. */
-  function cambiarIvaIncluido(incluyeIva: boolean) {
-    setIvaIncluido(incluyeIva)
+  /** Recalcula los montos del formulario desde el documento. */
+  function recalcularMontos(documentoIncluyeIva: boolean, conIvaAlRegistrar: boolean) {
     if (!extraction) return
-    const m = montosACapturar(extraction, incluyeIva)
+    const m = montosACapturar(extraction, documentoIncluyeIva, conIvaAlRegistrar)
     setForm((f) => ({
       ...f,
       monto_total: numOrEmpty(m.monto_total),
@@ -202,6 +230,18 @@ export function ContractTermsReviewModal({
       saldo_amount: numOrEmpty(m.saldo_amount),
       garantia_amount: numOrEmpty(m.garantia_amount),
     }))
+  }
+
+  /** Corregir la detección de la IA sobre cómo viene el documento. */
+  function cambiarIvaIncluido(incluyeIva: boolean) {
+    setIvaIncluido(incluyeIva)
+    recalcularMontos(incluyeIva, registrarConIva)
+  }
+
+  /** Elegir cómo se registra la cotización: con IVA o sin él. */
+  function cambiarRegistroIva(conIvaAlRegistrar: boolean) {
+    setRegistrarConIva(conIvaAlRegistrar)
+    recalcularMontos(ivaIncluido, conIvaAlRegistrar)
   }
 
   // Load PDF preview + existing state when opened
@@ -308,7 +348,7 @@ export function ContractTermsReviewModal({
     }
 
     // Lo "detectado" se compara ya escalado a IVA, igual que lo capturado
-    const det = montosACapturar(extraction, ivaIncluido)
+    const det = montosACapturar(extraction, ivaIncluido, registrarConIva)
 
     // Monto total del contrato
     const mtCap = existingObra.contract_total_amount, mtDet = det.monto_total
@@ -333,7 +373,7 @@ export function ContractTermsReviewModal({
     if (rows.length === 0) return null
     return { rows, allCongruent: rows.every((r) => r.congruent) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [extraction, existingObra, ivaIncluido])
+  }, [extraction, existingObra, ivaIncluido, registrarConIva])
 
   const fmtVal = (v: number | null, kind: "money" | "pct") =>
     v === null ? "—" : kind === "pct" ? `${v}%` : fmtCurrency(v, currency)
@@ -405,15 +445,13 @@ export function ContractTermsReviewModal({
         const { error: insErr } = await supabase.from("obra_billing_items").insert({
           obra_id: obraId,
           type: "cotizacion",
-          description: esCotizacion
-            ? "Monto de la cotización (extraído por IA)"
-            : ivaIncluido
-              ? "Monto del contrato (extraído por IA)"
-              : "Monto del contrato (extraído por IA, + IVA 16%)",
+          description: `Monto ${esCotizacion ? "de la cotización" : "del contrato"} (extraído por IA${
+            registrarConIva ? "" : ", sin IVA"
+          })`,
           amount: montoTotalNum,
           date: new Date().toISOString().slice(0, 10),
           created_by: userId,
-          with_iva: true,
+          with_iva: registrarConIva,
         })
         if (insErr) throw new Error("No se pudo crear la cotización.")
       } else if (hasCotizacionConflict && cotizacionChoice === "replace") {
@@ -520,6 +558,51 @@ export function ContractTermsReviewModal({
               </div>
             )}
 
+            {/* ═══ Cómo se registra: con IVA o sin él ═══ */}
+            {extraction && (
+              <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-3 space-y-2">
+                <div>
+                  <p className="text-xs font-semibold text-slate-300">Registrar la cotización</p>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Hay obras chicas que se pagan en efectivo y no llevan IVA, aunque el
+                    documento lo traiga.
+                  </p>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => cambiarRegistroIva(true)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                      registrarConIva
+                        ? "bg-green-500/15 border-green-500/50 text-green-400"
+                        : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                    }`}
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    Con IVA 16%
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => cambiarRegistroIva(false)}
+                    className={`flex-1 flex items-center justify-center gap-1.5 rounded-md border py-2 text-sm font-semibold transition-all cursor-pointer ${
+                      !registrarConIva
+                        ? "bg-amber-500/15 border-amber-500/50 text-amber-400"
+                        : "bg-slate-700/40 border-slate-600 text-slate-400 hover:bg-slate-700"
+                    }`}
+                  >
+                    <AlertTriangle className="w-4 h-4" />
+                    Sin IVA
+                  </button>
+                </div>
+                {!registrarConIva && (
+                  <p className="text-[11px] text-amber-400/90">
+                    Los montos de abajo son la base sin IVA. La cotización y las
+                    estimaciones de esta obra se manejarán así.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* ═══ Cotización: el desglose impreso y su comprobación ═══ */}
             {esCotizacion && extraction && (extraction.subtotal != null || extraction.total_con_iva != null) && (() => {
               const cuadra =
@@ -571,7 +654,7 @@ export function ContractTermsReviewModal({
             })()}
 
             {/* ═══ Aviso de IVA: lo primero que debe ver el admin ═══ */}
-            {!esCotizacion && extraction && (
+            {!esCotizacion && extraction && registrarConIva && (
               <div
                 className={`rounded-lg border p-3 space-y-2.5 ${
                   ivaIncluido
@@ -589,7 +672,9 @@ export function ContractTermsReviewModal({
                     <p className={`font-semibold ${ivaIncluido ? "text-emerald-300" : "text-amber-300"}`}>
                       {ivaIncluido
                         ? "El contrato YA incluye IVA"
-                        : "El contrato NO incluye IVA — se le agregó el 16%"}
+                        : registrarConIva
+                          ? "El contrato NO incluye IVA — se le agregó el 16%"
+                          : "El contrato NO incluye IVA"}
                     </p>
                     <p className="text-slate-400 mt-0.5">
                       {ivaIncluido
