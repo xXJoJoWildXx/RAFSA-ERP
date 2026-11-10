@@ -143,7 +143,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const logout = async () => {
     await supabase.auth.signOut()
     setUser(null)
-    router.push("/login")
+    // replace y no push: después de cerrar sesión, el botón "atrás" no debe
+    // regresar a una pantalla de la app.
+    router.replace("/login")
   }
 
   return (

@@ -1905,6 +1905,20 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
     return () => cancelAnimationFrame(raf)
   }, [activeTab])
 
+  /**
+   * Régimen de IVA del balance, leído de lo que de verdad se registró.
+   * Antes decía "Con IVA 16%" siempre, aunque la cotización se hubiera
+   * capturado sin IVA. Como cada concepto lleva su propia bandera, puede
+   * haber mezcla, y en ese caso hay que decirlo en vez de elegir uno.
+   */
+  const regimenIva: "con" | "sin" | "mixto" | "vacio" = useMemo(() => {
+    if (billingItems.length === 0) return "vacio"
+    const conIva = billingItems.filter((b) => b.with_iva !== false).length
+    if (conIva === billingItems.length) return "con"
+    if (conIva === 0) return "sin"
+    return "mixto"
+  }, [billingItems])
+
   if (loading) {
     return (
       <AdminLayout>
@@ -1984,6 +1998,7 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
   // Billing items computed values
   const cotizacion = billingItems.find((b) => b.type === "cotizacion") ?? null
+
   const aditivos = billingItems.filter((b) => b.type === "aditivo")
   const totalBilling = billingItems.reduce((s, b) => s + Number(b.amount || 0), 0)
   const saldoPendiente = totalBilling - spentTotal
@@ -2740,10 +2755,33 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             <Card className="bg-slate-800 border-slate-700">
               <CardHeader className="flex flex-row items-center justify-between">
                 <CardTitle className="text-slate-100">Balance General de la Obra</CardTitle>
-                <span className="text-sm font-semibold text-green-400 flex items-center gap-1.5">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Con IVA 16%
-                </span>
+                {regimenIva !== "vacio" && (
+                  <span
+                    className={`text-sm font-semibold flex items-center gap-1.5 ${
+                      regimenIva === "con"
+                        ? "text-green-400"
+                        : regimenIva === "sin"
+                          ? "text-amber-400"
+                          : "text-slate-400"
+                    }`}
+                    title={
+                      regimenIva === "mixto"
+                        ? "Hay conceptos con IVA y otros sin IVA; revísalos en Cotización y Aditivas."
+                        : undefined
+                    }
+                  >
+                    {regimenIva === "con" ? (
+                      <CheckCircle2 className="w-4 h-4" />
+                    ) : (
+                      <AlertTriangle className="w-4 h-4" />
+                    )}
+                    {regimenIva === "con"
+                      ? "Con IVA 16%"
+                      : regimenIva === "sin"
+                        ? "Sin IVA"
+                        : "IVA mixto"}
+                  </span>
+                )}
               </CardHeader>
               <CardContent>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-6">

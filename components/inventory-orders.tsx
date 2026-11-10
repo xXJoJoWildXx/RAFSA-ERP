@@ -41,7 +41,9 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState(false)
 
-  const [statusFilter, setStatusFilter] = useState<string>("all")
+  // "pendientes" agrupa pending + in_progress, que es justo lo que cuenta el
+  // card de Pendientes. Arranca ahí: es lo que requiere atención.
+  const [statusFilter, setStatusFilter] = useState<string>("pendientes")
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -156,15 +158,20 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
 
   const filtered = useMemo(() => {
     let arr = [...visibleOrders]
-    if (statusFilter !== "all") arr = arr.filter((o) => o.status === statusFilter)
+    if (statusFilter === "pendientes") {
+      arr = arr.filter((o) => o.status === "pending" || o.status === "in_progress")
+    } else if (statusFilter !== "all") {
+      arr = arr.filter((o) => o.status === statusFilter)
+    }
     return arr
   }, [visibleOrders, statusFilter])
 
+  // Se sigue contemplando "in_progress" al LEER aunque ya no se escriba:
+  // una orden vieja en ese estado debe seguir apareciendo como pendiente.
   const pendingCount = visibleOrders.filter((o) => o.status === "pending" || o.status === "in_progress").length
   const deliveredCount = visibleOrders.filter((o) => o.status === "delivered").length
   const totalCount = visibleOrders.length
   const completedCount = orders.filter((o) => o.status === "completed").length
-  const porPrepararCount = visibleOrders.filter((o) => o.status === "pending").length
 
   // ─── Create order ───
   function openCreate() {
@@ -322,10 +329,9 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
         }
         throw insErr
       }
-      // pasar a "en proceso" si estaba pendiente
-      if (detail.status === "pending") {
-        await supabase.from("inventory_orders").update({ status: "in_progress", updated_at: new Date().toISOString() }).eq("id", detail.id)
-      }
+      // La orden NO cambia de estado al subir la factura: sigue pendiente
+      // hasta que almacén la entrega. Antes pasaba a "in_progress", un
+      // estado intermedio que nadie usaba y que sólo confundía la lista.
       await logActivity({
         event_type: "inventory.invoice_uploaded",
         entity_type: "inventory.order_invoice",
@@ -333,7 +339,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
         entity_label: etiquetaOrden(detail.folio, detail.obra_name, detail.type),
         metadata: { folio: detail.folio, obra_name: detail.obra_name ?? null, is_cfdi: isCfdi, cfdi_total: cfdi?.total ?? null, matches },
       })
-      await openDetail({ ...detail, status: detail.status === "pending" ? "in_progress" : detail.status })
+      await openDetail(detail)
       await loadOrders()
       setInvNumber(""); setInvAmount(""); setInvFile(null); setCfdi(null)
       if (isCfdi && matches) {
@@ -603,24 +609,41 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
         )}
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      {/* KPIs — además de contar, filtran la tabla.
+          Almacén lleva 3: no ve las completadas, y "Por preparar" quedó
+          duplicando a "Pendientes" al desaparecer el estado "en proceso". */}
+      <div className={`grid grid-cols-2 ${role === "almacen" ? "sm:grid-cols-3" : "sm:grid-cols-4"} gap-3`}>
         {[
-          { label: "Pendientes", value: pendingCount, icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
-          { label: "Entregadas · fact. pend.", value: deliveredCount, icon: AlertTriangle, color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
-          role === "almacen"
-            ? { label: "Por preparar", value: porPrepararCount, icon: PackageCheck, color: "#22c55e", bg: "rgba(34,197,94,0.12)" }
-            : { label: "Completadas", value: completedCount, icon: CheckCircle2, color: "#22c55e", bg: "rgba(34,197,94,0.12)" },
-          { label: role === "almacen" ? "Abiertas" : "Total", value: totalCount, icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
+          { label: "Pendientes", value: pendingCount, filtro: "pendientes", icon: ClipboardList, color: "#f59e0b", bg: "rgba(245,158,11,0.12)" },
+          { label: "Entregadas · fact. pend.", value: deliveredCount, filtro: "delivered", icon: AlertTriangle, color: "#fb923c", bg: "rgba(251,146,60,0.12)" },
+          ...(role === "almacen"
+            ? []
+            : [{ label: "Completadas", value: completedCount, filtro: "completed", icon: CheckCircle2, color: "#22c55e", bg: "rgba(34,197,94,0.12)" }]),
+          { label: role === "almacen" ? "Abiertas" : "Total", value: totalCount, filtro: "all", icon: Truck, color: "#8b5cf6", bg: "rgba(139,92,246,0.12)" },
         ].map((kpi) => {
           const Icon = kpi.icon
+          const activo = statusFilter === kpi.filtro
           return (
-            <div key={kpi.label} className="rounded-xl border border-slate-700/60 bg-slate-800/50 p-4">
+            <button
+              key={kpi.label}
+              type="button"
+              onClick={() => setStatusFilter(kpi.filtro)}
+              title={`Ver ${kpi.label.toLowerCase()}`}
+              className="rounded-xl border p-4 text-left cursor-pointer transition-all duration-150 hover:-translate-y-0.5"
+              style={{
+                borderColor: activo ? kpi.color : "rgba(51,65,85,0.6)",
+                background: activo ? kpi.bg : "rgba(30,41,59,0.5)",
+                boxShadow: activo ? `0 0 0 1px ${kpi.color}40` : undefined,
+              }}
+            >
               <div className="flex items-center gap-3">
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center shrink-0" style={{ background: kpi.bg }}><Icon className="w-[18px] h-[18px]" style={{ color: kpi.color }} /></div>
-                <div className="min-w-0"><p className="text-[11px] font-medium text-slate-500 truncate">{kpi.label}</p><p className="text-lg font-bold text-slate-100">{kpi.value}</p></div>
+                <div className="min-w-0">
+                  <p className="text-[11px] font-medium truncate" style={{ color: activo ? kpi.color : "#64748b" }}>{kpi.label}</p>
+                  <p className="text-lg font-bold text-slate-100">{kpi.value}</p>
+                </div>
               </div>
-            </div>
+            </button>
           )
         })}
       </div>
@@ -630,8 +653,7 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
         <div className="group relative w-full sm:w-64">
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className={selectCls}>
             <option value="all">Todos los estados</option>
-            <option value="pending">Pendiente</option>
-            <option value="in_progress">En proceso</option>
+            <option value="pendientes">Pendiente</option>
             <option value="delivered">Entregada · factura pendiente</option>
             {role !== "almacen" && <option value="completed">Completada</option>}
           </select>

@@ -55,6 +55,8 @@ type RoleCatalogRow = {
   code: string
   name: string
   is_active: boolean
+  /** Rol exento de asistencia (Administración). */
+  attendance_exempt?: boolean | null
 }
 
 type EmployeeRoleJoinRow = {
@@ -333,6 +335,25 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   )
 
   const [rolesCatalog, setRolesCatalog] = useState<RoleCatalogRow[]>([])
+
+  // Administración = los roles marcados como exentos de asistencia en el
+  // catálogo. No se compara contra el código "administracion" a mano: así,
+  // si mañana exentan otro puesto, este contador lo incluye solo.
+  const rolAdministracion = useMemo(
+    () => rolesCatalog.find((r) => r.attendance_exempt === true) ?? null,
+    [rolesCatalog],
+  )
+  const codigosAdministracion = useMemo(
+    () => rolesCatalog.filter((r) => r.attendance_exempt === true).map((r) => r.code),
+    [rolesCatalog],
+  )
+  const esAdministracion = (e: Employee) =>
+    e.roles.some((r) => codigosAdministracion.includes(r.code))
+  const administracionCount = useMemo(
+    () => employees.filter(esAdministracion).length,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [employees, codigosAdministracion],
+  )
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -364,7 +385,7 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
     const fetchRolesCatalog = async () => {
       const { data, error } = await supabase
         .from("employee_roles_catalog")
-        .select("id, code, name, is_active")
+        .select("id, code, name, is_active, attendance_exempt")
         .eq("is_active", true)
         .order("name", { ascending: true })
 
@@ -1135,13 +1156,15 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
         <div className="flex flex-col md:flex-row md:items-center md:flex-wrap gap-3">
           {/* ── Contador del padrón ── */}
           {!loading && !error && (
-            <div className="grid grid-cols-3 items-stretch gap-2 shrink-0">
+            <div
+              className={`grid ${rolAdministracion ? "grid-cols-4" : "grid-cols-3"} items-stretch gap-2 shrink-0`}
+            >
               <button
                 type="button"
-                onClick={() => setStatusFilter("activo")}
+                onClick={() => { setStatusFilter("activo"); setRoleFilter("all") }}
                 className={`
                   group w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
-                  ${statusFilter === "activo"
+                  ${statusFilter === "activo" && roleFilter === "all"
                     ? "border-emerald-500/40 bg-emerald-500/10"
                     : "border-slate-700/60 bg-slate-800/40 hover:border-emerald-500/25"}
                 `}
@@ -1159,10 +1182,10 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
               <button
                 type="button"
-                onClick={() => setStatusFilter("inactivo")}
+                onClick={() => { setStatusFilter("inactivo"); setRoleFilter("all") }}
                 className={`
                   group w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
-                  ${statusFilter === "inactivo"
+                  ${statusFilter === "inactivo" && roleFilter === "all"
                     ? "border-red-500/40 bg-red-500/10"
                     : "border-slate-700/60 bg-slate-800/40 hover:border-red-500/25"}
                 `}
@@ -1178,12 +1201,35 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                 </p>
               </button>
 
+              {rolAdministracion && (
+                <button
+                  type="button"
+                  onClick={() => { setStatusFilter("all"); setRoleFilter(rolAdministracion.id) }}
+                  className={`
+                    group w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
+                    ${roleFilter === rolAdministracion.id
+                      ? "border-violet-500/40 bg-violet-500/10"
+                      : "border-slate-700/60 bg-slate-800/40 hover:border-violet-500/25"}
+                  `}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="w-1.5 h-1.5 rounded-full bg-violet-400" />
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Administración
+                    </span>
+                  </div>
+                  <p className="mt-0.5 text-xl font-bold leading-none text-violet-400 tabular-nums">
+                    {administracionCount}
+                  </p>
+                </button>
+              )}
+
               <button
                 type="button"
-                onClick={() => setStatusFilter("all")}
+                onClick={() => { setStatusFilter("all"); setRoleFilter("all") }}
                 className={`
                   w-full cursor-pointer rounded-xl border px-4 py-1.5 text-left transition-all
-                  ${statusFilter === "all"
+                  ${statusFilter === "all" && roleFilter === "all"
                     ? "border-[#0174bd]/50 bg-[#0174bd]/10"
                     : "border-slate-700/60 bg-slate-800/40 hover:border-[#0174bd]/30"}
                 `}
