@@ -90,8 +90,13 @@ const CONTRACT_TERMS_SCHEMA = {
         porcentaje: { type: "number", description: "Porcentaje del anticipo. 0 si el contrato no contempla anticipo." },
         monto_digitos: { type: ["number", "null"], description: "Monto del anticipo en DÍGITOS. 0 si no hay anticipo; null si no se lee." },
         monto_letras: { type: ["number", "null"], description: "Monto del anticipo escrito CON LETRA, convertido a número. 0 si no hay anticipo; null si no aparece en letra." },
+        iva_incluido: {
+          type: ["boolean", "null"],
+          description:
+            "¿El monto del anticipo YA incluye IVA? true si el contrato lo dice expresamente junto a ESA cantidad (ej. 'ya con 16% incluido', 'IVA incluido'); false si dice '+ IVA' o 'más el IVA' junto a ESA cantidad; null si no lo aclara para este concepto en particular. NO copies aquí el iva_incluido general: respóndelo sólo con lo que diga el texto de este concepto.",
+        },
       },
-      required: ["porcentaje", "monto_digitos", "monto_letras"],
+      required: ["porcentaje", "monto_digitos", "monto_letras", "iva_incluido"],
     },
     saldo: {
       type: "object",
@@ -100,8 +105,13 @@ const CONTRACT_TERMS_SCHEMA = {
         porcentaje: { type: "number", description: "Porcentaje del saldo restante. 0 si no aplica." },
         monto_digitos: { type: ["number", "null"], description: "Monto del saldo en DÍGITOS. 0 si no aplica; null si no se lee." },
         monto_letras: { type: ["number", "null"], description: "Monto del saldo CON LETRA, convertido a número. 0 si no aplica; null si no aparece en letra." },
+        iva_incluido: {
+          type: ["boolean", "null"],
+          description:
+            "¿El monto del saldo YA incluye IVA? true si el contrato lo dice expresamente junto a ESA cantidad (ej. 'ya con 16% incluido', 'IVA incluido'); false si dice '+ IVA' o 'más el IVA' junto a ESA cantidad; null si no lo aclara para este concepto en particular. NO copies aquí el iva_incluido general: respóndelo sólo con lo que diga el texto de este concepto.",
+        },
       },
-      required: ["porcentaje", "monto_digitos", "monto_letras"],
+      required: ["porcentaje", "monto_digitos", "monto_letras", "iva_incluido"],
     },
     garantia: {
       type: "object",
@@ -110,8 +120,13 @@ const CONTRACT_TERMS_SCHEMA = {
         porcentaje: { type: "number", description: "Porcentaje del fondo/retención de garantía. 0 si no aplica." },
         monto_digitos: { type: ["number", "null"], description: "Monto de la garantía en DÍGITOS. 0 si no aplica; null si no se lee." },
         monto_letras: { type: ["number", "null"], description: "Monto de la garantía CON LETRA, convertido a número. 0 si no aplica; null si no aparece en letra." },
+        iva_incluido: {
+          type: ["boolean", "null"],
+          description:
+            "¿El monto de la garantía YA incluye IVA? true si el contrato lo dice expresamente junto a ESA cantidad (ej. 'ya con 16% incluido', 'IVA incluido'); false si dice '+ IVA' o 'más el IVA' junto a ESA cantidad; null si no lo aclara para este concepto en particular. NO copies aquí el iva_incluido general: respóndelo sólo con lo que diga el texto de este concepto.",
+        },
       },
-      required: ["porcentaje", "monto_digitos", "monto_letras"],
+      required: ["porcentaje", "monto_digitos", "monto_letras", "iva_incluido"],
     },
     fecha_inicio: {
       type: ["string", "null"],
@@ -173,6 +188,8 @@ Extrae ÚNICAMENTE los términos financieros del contrato adjunto y devuélvelos
 
 Reglas GENERALES:
 - Los datos pueden estar dispersos entre cláusulas o declaraciones, no necesariamente en una tabla resumen. El formato varía mucho entre empresas.
+- El contrato puede venir ESCANEADO (fotos de las hojas) y con las páginas desordenadas. Revísalas todas y no supongas que la cláusula del monto está antes que la del anticipo.
+- Puede haber texto en MAYÚSCULAS, subrayado o en negritas; eso no cambia su significado.
 - El contrato puede llamar a las partes "LA/EL CONTRATANTE" y "LA/EL CONTRATISTA", con o sin artículo.
 
 CLIENTE (obligatorio identificar bien):
@@ -199,7 +216,16 @@ MONTOS — LEE DÍGITOS Y LETRAS POR SEPARADO (muy importante):
 - Léelas de forma independiente; NO copies una en la otra. Si una de las dos no aparece o no se alcanza a leer, pon null en ESA (no inventes).
 - NO redondees ni recalcules: transcribe lo que dice el documento. El cruce lo hace el sistema.
 - "Precio alzado", "importe total", "contraprestación" o "monto del contrato" → monto total.
-- iva_incluido = false cuando el contrato diga "más el IVA" / "+ IVA"; = true cuando diga "IVA incluido" / "incluido el Impuesto al Valor Agregado".
+
+IVA — LÉELO POR SEPARADO EN CADA CANTIDAD (error frecuente):
+- Un mismo contrato PUEDE mezclar regímenes: el monto total sin IVA y el anticipo ya con IVA. NO asumas que todas las cantidades van igual.
+- iva_incluido (el general) describe ÚNICAMENTE el monto total: false cuando la cláusula del monto diga "más el IVA" / "+ IVA" / "MÁS EL IMPUESTO AL VALOR AGREGADO"; true cuando diga "IVA incluido" / "incluido el Impuesto al Valor Agregado".
+- anticipo.iva_incluido, saldo.iva_incluido y garantia.iva_incluido describen CADA UNO su propia cantidad. Respóndelos SÓLO con lo que diga el texto pegado a esa cantidad:
+  · true  → "ya con 16% incluido", "IVA incluido", "con IVA".
+  · false → "más IVA", "+ IVA", "más el impuesto al valor agregado".
+  · null  → el contrato no lo aclara para ese concepto. NO adivines y NO copies el valor general.
+- Ejemplo real: la cláusula del monto dice "...dando un monto de 1,637,600.00 ... MÁS EL IMPUESTO AL VALOR AGREGADO" (iva_incluido = false) y más adelante el anticipo dice "LA CANTIDAD DE $1,000,000.00 ... CORRESPONDIENTES AL 52.64%, YA CON 16% INCLUIDO" (anticipo.iva_incluido = true). Son distintos y así hay que reportarlos.
+- El PORCENTAJE no cambia con el IVA: 52.64% del total es 52.64% lo midas sobre la base o sobre el total con IVA. No "corrijas" el porcentaje por el IVA.
 
 ANTICIPO / SALDO / GARANTÍA (pueden NO existir):
 - El anticipo suele ser un % del precio alzado (ej. 30%). El saldo restante es el % complementario pagado contra estimaciones (ej. 70%). El fondo/retención de garantía suele ser un % (ej. 5%) que se retiene.
@@ -416,6 +442,7 @@ Deno.serve(async (req) => {
 
 // ─── Helpers ───
 
+const IVA_RATE = 0.16
 const round2 = (n: number) => Math.round(n * 100) / 100
 
 function toNum(v: any): number | null {
@@ -469,11 +496,23 @@ function consolidateMontos(data: any): any {
       continue
     }
 
-    const calc = total !== null && total > 0 && pct > 0 ? round2((total * pct) / 100) : null
+    // El cálculo (total × %) sale en el régimen de IVA DEL TOTAL. Si este
+    // concepto viene en el otro régimen, hay que convertirlo antes de
+    // compararlo: si no, el cálculo nunca coincide con lo leído y todo
+    // queda marcado "sin consenso" por una diferencia del 16%.
+    const nodoIva = typeof node.iva_incluido === "boolean" ? node.iva_incluido : null
+    let calc = total !== null && total > 0 && pct > 0 ? round2((total * pct) / 100) : null
+    if (calc !== null && nodoIva !== null && nodoIva !== data.iva_incluido) {
+      calc = nodoIva ? round2(calc * (1 + IVA_RATE)) : round2(calc / (1 + IVA_RATE))
+    }
+
     // Prioridad: letras → dígitos → cálculo
     const vote = voteAmount([let_, dig, calc])
     node.monto = vote.value ?? 0
     node.monto_calc = calc
+    // Se conserva el régimen efectivo del concepto para que el frontend
+    // sepa si ese monto ya trae IVA o no. null = el mismo que el total.
+    node.iva_incluido_efectivo = nodoIva === null ? !!data.iva_incluido : nodoIva
     node.monto_source = vote.agreed ? "consenso" : "sin_consenso"
   }
   return data

@@ -9,6 +9,19 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Loader2, Sparkles, AlertTriangle, CheckCircle2, FileText } from "lucide-react"
 
 /* ─── Tipos del JSON que devuelve la IA (idéntico al schema de la Edge Function) ─── */
+
+/** Un concepto con monto. Cada uno puede traer su PROPIO régimen de IVA:
+ *  hay contratos donde el total va sin IVA y el anticipo ya lo incluye. */
+export type ConceptoMonto = {
+  porcentaje: number | null
+  monto: number | null
+  monto_source?: string
+  /** Lo que dijo el documento de ESTE monto. null = no lo aclara. */
+  iva_incluido?: boolean | null
+  /** Resuelto por el servidor: null del concepto → hereda el del total. */
+  iva_incluido_efectivo?: boolean
+}
+
 export interface ContractTermsExtraction {
   cliente: string | null
   ubicacion: string | null
@@ -24,9 +37,9 @@ export interface ContractTermsExtraction {
   checks?: { cuadra_suma?: boolean | null; cuadra_tasa?: boolean | null } | null
   moneda: string
   iva_incluido: boolean
-  anticipo: { porcentaje: number | null; monto: number | null; monto_source?: string }
-  saldo: { porcentaje: number | null; monto: number | null; monto_source?: string }
-  garantia: { porcentaje: number | null; monto: number | null; monto_source?: string }
+  anticipo: ConceptoMonto
+  saldo: ConceptoMonto
+  garantia: ConceptoMonto
   fecha_inicio: string | null
   fecha_termino: string | null
   confianza: number
@@ -180,15 +193,33 @@ export function ContractTermsReviewModal({
     documentoIncluyeIva: boolean,
     conIvaAlRegistrar: boolean,
   ) {
-    const ajusta = (v: number | null | undefined) => {
-      const base = documentoIncluyeIva ? sinIva(v) : (v ?? null)
-      return conIvaAlRegistrar ? conIva(base) : base
+    /**
+     * Lleva un monto al régimen pedido.
+     *
+     * Si ya está en ese régimen se devuelve TAL CUAL. Convertir a base y de
+     * vuelta redondea dos veces y mueve un centavo: un anticipo escrito como
+     * $1,000,000.00 salía $1,000,000.01. La cifra del documento se respeta.
+     */
+    const ajusta = (v: number | null | undefined, traeIva: boolean) => {
+      if (v === null || v === undefined || !Number.isFinite(Number(v))) return null
+      if (traeIva === conIvaAlRegistrar) return round2(Number(v))
+      return conIvaAlRegistrar ? conIva(v) : sinIva(v)
     }
+    /** El régimen de un concepto: el suyo si el documento lo aclara, si no
+     *  el del monto total. Es la corrección clave: antes todo usaba el
+     *  global y un anticipo "ya con IVA incluido" se inflaba otro 16%. */
+    const regimenDe = (c: ConceptoMonto | undefined) =>
+      typeof c?.iva_incluido === "boolean"
+        ? c.iva_incluido
+        : typeof c?.iva_incluido_efectivo === "boolean"
+          ? c.iva_incluido_efectivo
+          : documentoIncluyeIva
+
     return {
-      monto_total: ajusta(ext.monto_total),
-      anticipo_amount: ajusta(ext.anticipo?.monto),
-      saldo_amount: ajusta(ext.saldo?.monto),
-      garantia_amount: ajusta(ext.garantia?.monto),
+      monto_total: ajusta(ext.monto_total, documentoIncluyeIva),
+      anticipo_amount: ajusta(ext.anticipo?.monto, regimenDe(ext.anticipo)),
+      saldo_amount: ajusta(ext.saldo?.monto, regimenDe(ext.saldo)),
+      garantia_amount: ajusta(ext.garantia?.monto, regimenDe(ext.garantia)),
     }
   }
 
@@ -218,6 +249,15 @@ export function ContractTermsReviewModal({
     setError(null)
     setCotizacionChoice("replace")
   }, [extraction])
+
+  /** Régimen de IVA de un concepto: el suyo si el documento lo aclara,
+   *  si no el del monto total. */
+  const regimenConcepto = (c: ConceptoMonto | undefined): boolean =>
+    typeof c?.iva_incluido === "boolean"
+      ? c.iva_incluido
+      : typeof c?.iva_incluido_efectivo === "boolean"
+        ? c.iva_incluido_efectivo
+        : ivaIncluido
 
   /** Recalcula los montos del formulario desde el documento. */
   function recalcularMontos(documentoIncluyeIva: boolean, conIvaAlRegistrar: boolean) {
@@ -558,6 +598,54 @@ export function ContractTermsReviewModal({
               </div>
             )}
 
+            {/* ═══ El documento mezcla regímenes de IVA ═══ */}
+            {extraction && (() => {
+              const conceptos: { nombre: string; c: ConceptoMonto | undefined }[] = [
+                { nombre: "Anticipo", c: extraction.anticipo },
+                { nombre: "Saldo", c: extraction.saldo },
+                { nombre: "Fondo de garantía", c: extraction.garantia },
+              ]
+              const distintos = conceptos.filter(
+                (x) =>
+                  (x.c?.monto ?? 0) > 0 &&
+                  typeof x.c?.iva_incluido === "boolean" &&
+                  x.c.iva_incluido !== ivaIncluido,
+              )
+              if (distintos.length === 0) return null
+              return (
+                <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-1.5">
+                  <div className="flex items-start gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                    <div className="text-xs">
+                      <p className="font-semibold text-amber-300">
+                        El contrato mezcla montos con y sin IVA
+                      </p>
+                      <p className="text-slate-400 mt-0.5">
+                        Cada cantidad se convirtió con su propio régimen, no con el del
+                        monto total. Verifica que coincidan con el documento.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="rounded-md border border-amber-500/20 bg-slate-900/40 px-2.5 py-2 space-y-1">
+                    <div className="flex justify-between text-[11px]">
+                      <span className="text-slate-400">Monto total</span>
+                      <span className="text-slate-300">
+                        {ivaIncluido ? "ya con IVA" : "sin IVA (+16%)"}
+                      </span>
+                    </div>
+                    {distintos.map((x) => (
+                      <div key={x.nombre} className="flex justify-between text-[11px]">
+                        <span className="text-slate-400">{x.nombre}</span>
+                        <span className="font-semibold text-amber-300">
+                          {x.c?.iva_incluido ? "ya con IVA" : "sin IVA (+16%)"}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )
+            })()}
+
             {/* ═══ Cómo se registra: con IVA o sin él ═══ */}
             {extraction && (
               <div className="rounded-lg border border-slate-700 bg-slate-900/40 p-3 space-y-2">
@@ -684,7 +772,9 @@ export function ContractTermsReviewModal({
                   </div>
                 </div>
 
-                {/* Base → con IVA, sólo cuando hubo que escalar */}
+                {/* Base → con IVA. Cada renglón con SU régimen: un monto que
+                    el contrato ya dio con IVA no se vuelve a escalar, y se
+                    marca como tal en vez de mostrar una conversión falsa. */}
                 {!ivaIncluido && (
                   <div className="rounded-md border border-amber-500/20 bg-slate-900/40 overflow-hidden">
                     <table className="w-full text-[11px]">
@@ -697,23 +787,37 @@ export function ContractTermsReviewModal({
                       </thead>
                       <tbody>
                         {[
-                          { label: "Monto total", base: extraction.monto_total },
-                          { label: "Anticipo", base: extraction.anticipo?.monto ?? null },
-                          { label: "Saldo", base: extraction.saldo?.monto ?? null },
-                          { label: "Fondo de garantía", base: extraction.garantia?.monto ?? null },
+                          { label: "Monto total", monto: extraction.monto_total, trae: ivaIncluido },
+                          { label: "Anticipo", monto: extraction.anticipo?.monto ?? null, trae: regimenConcepto(extraction.anticipo) },
+                          { label: "Saldo", monto: extraction.saldo?.monto ?? null, trae: regimenConcepto(extraction.saldo) },
+                          { label: "Fondo de garantía", monto: extraction.garantia?.monto ?? null, trae: regimenConcepto(extraction.garantia) },
                         ]
-                          .filter((r) => (r.base ?? 0) > 0)
-                          .map((r) => (
-                            <tr key={r.label} className="border-b border-slate-700/40 last:border-0">
-                              <td className="px-2.5 py-1.5 text-slate-300">{r.label}</td>
-                              <td className="px-2.5 py-1.5 text-right text-slate-500 tabular-nums">
-                                {fmtCurrency(Number(r.base), currency)}
-                              </td>
-                              <td className="px-2.5 py-1.5 text-right font-semibold text-amber-300 tabular-nums">
-                                {fmtCurrency(Number(conIva(r.base)), currency)}
-                              </td>
-                            </tr>
-                          ))}
+                          .filter((r) => (r.monto ?? 0) > 0)
+                          .map((r) => {
+                            // `trae` dice si ESE monto ya viene con IVA.
+                            const base = r.trae ? sinIva(r.monto) : r.monto
+                            const total = r.trae ? r.monto : conIva(r.monto)
+                            return (
+                              <tr key={r.label} className="border-b border-slate-700/40 last:border-0">
+                                <td className="px-2.5 py-1.5 text-slate-300">{r.label}</td>
+                                <td className="px-2.5 py-1.5 text-right text-slate-500 tabular-nums">
+                                  {fmtCurrency(Number(base), currency)}
+                                </td>
+                                <td
+                                  className={`px-2.5 py-1.5 text-right font-semibold tabular-nums ${
+                                    r.trae ? "text-emerald-400" : "text-amber-300"
+                                  }`}
+                                >
+                                  {fmtCurrency(Number(total), currency)}
+                                  {r.trae && (
+                                    <span className="block text-[10px] font-medium text-emerald-400/80">
+                                      ya lo incluía
+                                    </span>
+                                  )}
+                                </td>
+                              </tr>
+                            )
+                          })}
                       </tbody>
                     </table>
                   </div>
