@@ -304,11 +304,16 @@ type EmployeeWorkDocumentsApiResponse = {
 
 // -------------------- Banking API --------------------
 
+/** Forma REAL de GET /api/employee-banking. Antes este tipo decía que los
+ *  campos venían al nivel superior; como se aplica con un `as`, TypeScript
+ *  nunca lo comparó contra la respuesta y el popup se abría vacío. */
 type EmployeeBankingApiResponse = {
   ok: boolean
-  bank_name: string | null
-  account_number: string | null
-  interbank_clabe: string | null
+  banking: {
+    bank_name: string | null
+    account_number: string | null
+    interbank_clabe: string | null
+  }
 }
 
 // -------------------- Helpers --------------------
@@ -1285,9 +1290,9 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     try {
       const res = await fetchEmployeeBanking(id)
       setBankingForm({
-        bank_name: res.bank_name ?? "",
-        account_number: res.account_number ?? "",
-        interbank_clabe: res.interbank_clabe ?? "",
+        bank_name: res.banking?.bank_name ?? "",
+        account_number: res.banking?.account_number ?? "",
+        interbank_clabe: res.banking?.interbank_clabe ?? "",
       })
     } catch (e: any) {
       console.error(e)
