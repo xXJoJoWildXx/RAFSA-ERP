@@ -40,6 +40,7 @@ import {
   Clock,
   ArrowLeft,
   Edit,
+  AlertTriangle,
   Building2,
   AlertCircle,
   FileText,
@@ -314,6 +315,86 @@ type EmployeeBankingApiResponse = {
     account_number: string | null
     interbank_clabe: string | null
   }
+}
+
+/**
+ * Aviso de error del popup de edición.
+ *
+ * Reemplaza al alert() del navegador, que no dice de qué dato se trata ni
+ * quién lo tiene. Cuando el choque es por un valor único muestra el valor
+ * repetido y al empleado que ya lo usa, con acceso directo a su perfil.
+ */
+function AvisoDeError({
+  error,
+  basePath,
+}: {
+  error: {
+    titulo: string
+    detalle: string
+    campo?: string
+    valor?: string
+    duenio?: { id: string; full_name: string; status: string } | null
+  }
+  basePath: string
+}) {
+  return (
+    <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-2.5">
+      <div className="flex items-start gap-2.5">
+        <div className="w-8 h-8 rounded-lg bg-red-500/15 border border-red-500/25 flex items-center justify-center shrink-0">
+          <AlertTriangle className="w-4 h-4 text-red-400" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-sm font-semibold text-red-300">{error.titulo}</p>
+          <p className="text-xs text-slate-400 mt-0.5">{error.detalle}</p>
+        </div>
+      </div>
+
+      {error.valor && (
+        <div className="rounded-md border border-red-500/20 bg-slate-900/50 px-3 py-2 space-y-1.5">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-[11px] text-slate-500 uppercase tracking-wide">
+              {error.campo}
+            </span>
+            <span className="font-mono text-sm font-semibold text-slate-100">
+              {error.valor}
+            </span>
+          </div>
+
+          {error.duenio ? (
+            <div className="flex items-center justify-between gap-3 border-t border-slate-700/60 pt-1.5">
+              <div className="min-w-0">
+                <p className="text-[11px] text-slate-500 uppercase tracking-wide">
+                  Lo tiene asignado
+                </p>
+                <p className="text-sm text-slate-200 truncate">
+                  {error.duenio.full_name}
+                  <span
+                    className={`ml-2 text-[10px] font-semibold px-1.5 py-0.5 rounded-full border ${
+                      error.duenio.status === "active"
+                        ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                        : "bg-slate-600/30 text-slate-400 border-slate-600/50"
+                    }`}
+                  >
+                    {error.duenio.status === "active" ? "Activo" : "Inactivo"}
+                  </span>
+                </p>
+              </div>
+              <Link
+                href={`${basePath}/employees/${error.duenio.id}`}
+                className="shrink-0 text-xs font-medium text-[#4da8e8] hover:text-[#4da8e8]/80 underline underline-offset-2"
+              >
+                Ver perfil
+              </Link>
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-500 border-t border-slate-700/60 pt-1.5">
+              El empleado que lo tiene no está disponible para consultarse.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // -------------------- Helpers --------------------
@@ -878,6 +959,16 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
 
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
+  /** Error del guardado, mostrado DENTRO del popup. Cuando el choque es por
+   *  un dato único (código de nómina, IMSS, correo) trae además quién lo
+   *  tiene ya, que es lo primero que uno necesita saber. */
+  const [editError, setEditError] = useState<{
+    titulo: string
+    detalle: string
+    campo?: string
+    valor?: string
+    duenio?: { id: string; full_name: string; status: string } | null
+  } | null>(null)
   const [editForm, setEditForm] = useState<EditEmployeeForm | null>(null)
 
   const [laborOpen, setLaborOpen] = useState(false)
@@ -1340,6 +1431,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
 
   const handleOpenChange = (open: boolean) => {
     setEditOpen(open)
+    setEditError(null)
     if (open) {
       initEditFormFromEmployee()
     }
@@ -1517,13 +1609,66 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [employee?.id, employee?.is_foraneo])
 
-  const handleSave = async () => {
-    if (!editForm || !id) return
-    if (!editForm.full_name.trim()) {
-      alert("El nombre completo es obligatorio.")
-      return
+  /** Campos con índice único en employees, con su nombre legible. */
+  const CAMPOS_UNICOS: { constraint: string; columna: string; etiqueta: string }[] = [
+    { constraint: "employees_payroll_code_key", columna: "payroll_code", etiqueta: "código de nómina" },
+    { constraint: "employees_imss_number_key", columna: "imss_number", etiqueta: "número de IMSS" },
+    { constraint: "employees_email_key", columna: "email", etiqueta: "correo" },
+  ]
+
+  /**
+   * Convierte un choque de unicidad (23505) en un mensaje que sirva: qué dato
+   * se repite, cuál es el valor y QUIÉN lo tiene. Antes sólo salía
+   * "No se pudo actualizar el empleado", que no dice nada accionable.
+   */
+  const describirChoque = async (err: any, valores: Record<string, string | null>) => {
+    const texto = `${err?.message ?? ""} ${err?.details ?? ""}`.toLowerCase()
+    const campo =
+      CAMPOS_UNICOS.find((c) => texto.includes(c.constraint)) ??
+      CAMPOS_UNICOS.find((c) => texto.includes(c.columna))
+
+    if (!campo) {
+      return {
+        titulo: "No se pudo guardar",
+        detalle: err?.message || "Ocurrió un error al actualizar el empleado.",
+      }
     }
 
+    const valor = valores[campo.columna] ?? ""
+    let duenio: { id: string; full_name: string; status: string } | null = null
+    if (valor) {
+      const { data } = await supabase
+        .from("employees")
+        .select("id, full_name, status")
+        .eq(campo.columna, valor)
+        .neq("id", id ?? "")
+        .limit(1)
+        .maybeSingle()
+      duenio = (data as any) ?? null
+    }
+
+    return {
+      titulo: `Ese ${campo.etiqueta} ya está en uso`,
+      detalle: `El ${campo.etiqueta} debe ser único: no puede haber dos empleados con el mismo. Cámbialo o libéralo primero del otro empleado.`,
+      campo: campo.etiqueta,
+      valor,
+      duenio,
+    }
+  }
+
+  /** Devuelve true si guardó. El popup sólo se cierra cuando es true: antes
+   *  se cerraba siempre y el usuario perdía lo que había escrito. */
+  const handleSave = async (): Promise<boolean> => {
+    if (!editForm || !id) return false
+    if (!editForm.full_name.trim()) {
+      setEditError({
+        titulo: "Falta el nombre",
+        detalle: "El nombre completo es obligatorio.",
+      })
+      return false
+    }
+
+    setEditError(null)
     setSaving(true)
 
     const payload = {
@@ -1576,9 +1721,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
         .single()
 
       if (error) {
-        console.error("Error updating employee:", error)
-        alert("No se pudo actualizar el empleado.")
-        return
+        // Un PostgrestError no se imprime con console.error(obj): sus campos
+        // no son enumerables y sale "{}". Se desarman a mano.
+        console.error("Error updating employee:", {
+          message: error.message,
+          details: (error as any).details,
+          hint: (error as any).hint,
+          code: (error as any).code,
+        })
+        if ((error as any).code === "23505") {
+          setEditError(await describirChoque(error, payload as any))
+        } else {
+          setEditError({
+            titulo: "No se pudo guardar",
+            detalle: error.message || "Ocurrió un error al actualizar el empleado.",
+          })
+        }
+        return false
       }
 
       const updatedRow = data as EmployeeRow
@@ -1607,9 +1766,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
         return next
       })
       setEditOpen(false)
+      return true
     } catch (e) {
       console.error(e)
-      alert("Ocurrió un error inesperado al actualizar el empleado.")
+      setEditError({
+        titulo: "No se pudo guardar",
+        detalle: "Ocurrió un error inesperado al actualizar el empleado.",
+      })
+      return false
     } finally {
       setSaving(false)
     }
@@ -2116,6 +2280,8 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                     Actualiza la información general del empleado.
                   </DialogDescription>
                 </DialogHeader>
+
+                {editError && <AvisoDeError error={editError} basePath={basePath} />}
 
                 {editForm && (
                   <div className="space-y-6 py-2">
@@ -3239,6 +3405,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                         open={laborOpen}
                         onOpenChange={(open) => {
                           setLaborOpen(open)
+                          setEditError(null)
                           if (open) initEditFormFromEmployee()
                         }}
                       >
@@ -3257,13 +3424,17 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                             </DialogDescription>
                           </DialogHeader>
 
+                          {editError && <AvisoDeError error={editError} basePath={basePath} />}
+
                           {editForm && (
                             <div className="space-y-4 py-2">
                               <div className="space-y-2">
                                 <Label htmlFor="payroll_code" className={labelCls}>Código de nómina</Label>
                                 <Input
                                   id="payroll_code"
-                                  className={inputCls}
+                                  className={`${inputCls} ${
+                                    editError?.campo === "código de nómina" ? "border-red-500/70" : ""
+                                  }`}
                                   placeholder="Ej. 012"
                                   value={editForm.payroll_code}
                                   onChange={(e) =>
@@ -3276,7 +3447,9 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 <Label htmlFor="imss_number" className={labelCls}>Número IMSS</Label>
                                 <Input
                                   id="imss_number"
-                                  className={inputCls}
+                                  className={`${inputCls} ${
+                                    editError?.campo === "número de IMSS" ? "border-red-500/70" : ""
+                                  }`}
                                   value={editForm.imss_number}
                                   onChange={(e) =>
                                     handleEditChange("imss_number", e.target.value)
@@ -3329,8 +3502,8 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                               type="button"
                               className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
                               onClick={async () => {
-                                await handleSave()
-                                setLaborOpen(false)
+                                const ok = await handleSave()
+                                if (ok) setLaborOpen(false)
                               }}
                               disabled={saving}
                             >
