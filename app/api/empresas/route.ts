@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server"
 import { createClient } from "@supabase/supabase-js"
 import { deleteObrasCascade } from "@/lib/serverObraDeletion"
+import { exigirRol } from "@/lib/apiAuth"
 
 // DELETE /api/empresas — body: { empresaIds: string[] } | { id: string }
 // Elimina las empresas indicadas y TODAS sus obras (con su cascada completa).
@@ -14,6 +15,11 @@ const admin = createClient(
 
 export async function DELETE(req: Request) {
   try {
+    // Borra la empresa y TODAS sus obras en cascada. Con service role el
+    // RLS no aplica: esta verificación es la única barrera.
+    const auth = await exigirRol(["admin"])
+    if (auth.error) return auth.error
+
     const body = await req.json().catch(() => ({} as any))
     const empresaIds: string[] = Array.isArray(body?.empresaIds)
       ? body.empresaIds.filter(Boolean)
@@ -43,6 +49,18 @@ export async function DELETE(req: Request) {
     if (empErr) {
       return NextResponse.json({ error: "No se pudieron eliminar las empresas.", details: empErr.message }, { status: 500 })
     }
+
+    await admin.from("activity_log").insert(
+      empresaIds.map((id) => ({
+        actor_user_id: auth.sesion.userId,
+        actor_email: auth.sesion.email,
+        event_type: "empresa.deleted",
+        entity_type: "empresa",
+        entity_id: id,
+        entity_label: null,
+        metadata: { via: "api", obras_arrastradas: obraIds.length },
+      })),
+    )
 
     return NextResponse.json({ ok: true, deletedEmpresas: empresaIds.length, deletedObras: obraIds.length })
   } catch (err: any) {

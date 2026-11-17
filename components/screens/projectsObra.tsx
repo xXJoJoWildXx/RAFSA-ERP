@@ -3,6 +3,7 @@
 import type { AppRole as UserRoleScreen } from "@/lib/permissions"
 import { useBasePath } from "@/lib/appScope"
 import { can } from "@/lib/permissions"
+import { ObraEgresosTab } from "@/components/obraEgresosTab"
 import { useAuth } from "@/lib/auth-context"
 
 import { useParams, useRouter } from "next/navigation"
@@ -38,7 +39,7 @@ import {
   LayoutDashboard,
   FolderOpen,
   CreditCard,
-  Activity,
+  Wallet,
   AlertTriangle,
   Bell,
   CalendarDays,
@@ -346,6 +347,10 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   const [savingEdit, setSavingEdit] = useState(false)
   const [statusPopoverOpen, setStatusPopoverOpen] = useState(false)
   const [savingStatus, setSavingStatus] = useState(false)
+  const { user: usuarioActual } = useAuth()
+  // La ruta /api/obras ya exige admin; esto evita enseñar el botón.
+  const puedeBorrarObra = can(usuarioActual?.role, "obras.delete")
+
   const [deleteLoading, setDeleteLoading] = useState(false)
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [deleteConfirmText, setDeleteConfirmText] = useState("")
@@ -2409,15 +2414,17 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
               <Edit className="w-4 h-4 mr-2" />
               Editar
             </Button>
-            <Button
-              variant="destructive"
-              onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true) }}
-              disabled={deleteLoading}
-              className="bg-red-500/80 hover:bg-red-500 border-0 transition-all duration-200"
-            >
-              <Trash2 className="w-4 h-4 mr-2" />
-              {deleteLoading ? "Eliminando..." : "Eliminar"}
-            </Button>
+            {puedeBorrarObra && (
+              <Button
+                variant="destructive"
+                onClick={() => { setDeleteConfirmText(""); setDeleteConfirmOpen(true) }}
+                disabled={deleteLoading}
+                className="bg-red-500/80 hover:bg-red-500 border-0 transition-all duration-200"
+              >
+                <Trash2 className="w-4 h-4 mr-2" />
+                {deleteLoading ? "Eliminando..." : "Eliminar"}
+              </Button>
+            )}
           </div>
         </div>
 
@@ -2445,7 +2452,7 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                 { value: "account",    icon: <CreditCard className="w-4 h-4" />,      label: "Estado de Cuenta" },
                 { value: "team",       icon: <Users className="w-4 h-4" />,            label: "Equipo" },
                 { value: "nominas",    icon: <DollarSign className="w-4 h-4" />,       label: "Nominas" },
-                { value: "activity",   icon: <Activity className="w-4 h-4" />,         label: "Actividad" },
+                { value: "egresos",    icon: <Wallet className="w-4 h-4" />,           label: "Egresos" },
               ].map(({ value, icon, label }) => (
                 <TabsTrigger
                   key={value}
@@ -3268,70 +3275,8 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           </TabsContent>
 
           {/* ACTIVIDAD — en desarrollo */}
-          <TabsContent value="activity">
-            <div className="min-h-[55vh] flex flex-col items-center justify-center select-none py-16">
-
-              {/* Animated icon */}
-              <div className="relative mb-8">
-                <span className="absolute inset-0 rounded-full bg-slate-400/15 animate-ping" />
-                <span className="absolute inset-3 rounded-full bg-slate-400/10 animate-ping [animation-delay:400ms]" />
-                <div className="relative w-24 h-24 rounded-full bg-gradient-to-br from-slate-900 to-slate-700 border border-slate-600 flex items-center justify-center shadow-2xl">
-                  <svg viewBox="0 0 64 64" className="w-12 h-12" fill="none" xmlns="http://www.w3.org/2000/svg">
-                    {/* Timeline vertical line */}
-                    <line x1="20" y1="10" x2="20" y2="54" stroke="#475569" strokeWidth="2" strokeLinecap="round" />
-                    {/* Dots on timeline */}
-                    <circle cx="20" cy="16" r="4" fill="#38bdf8" />
-                    <circle cx="20" cy="32" r="4" fill="#818cf8" />
-                    <circle cx="20" cy="48" r="4" fill="#34d399" opacity="0.5" />
-                    {/* Horizontal lines (log entries) */}
-                    <line x1="28" y1="16" x2="52" y2="16" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
-                    <line x1="28" y1="20" x2="44" y2="20" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
-                    <line x1="28" y1="32" x2="52" y2="32" stroke="#64748b" strokeWidth="2" strokeLinecap="round" />
-                    <line x1="28" y1="36" x2="40" y2="36" stroke="#64748b" strokeWidth="1.5" strokeLinecap="round" opacity="0.5" />
-                    <line x1="28" y1="48" x2="48" y2="48" stroke="#64748b" strokeWidth="2" strokeLinecap="round" opacity="0.4" />
-                    {/* Sparkles */}
-                    <circle cx="56" cy="10" r="1.5" fill="#38bdf8" />
-                    <circle cx="8"  cy="30" r="1"   fill="#818cf8" />
-                    <circle cx="58" cy="40" r="1"   fill="#34d399" />
-                  </svg>
-                </div>
-              </div>
-
-              {/* Label */}
-              <h2 className="text-2xl font-bold text-slate-100 mb-2 tracking-tight">Actividad de la Obra</h2>
-
-              {/* Badge */}
-              <div className="flex items-center gap-2 mb-4">
-                <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 border border-amber-500/30 px-3 py-1 text-sm font-semibold text-amber-400">
-                  <span className="w-2 h-2 rounded-full bg-amber-400 animate-pulse inline-block" />
-                  En desarrollo
-                </span>
-              </div>
-
-              {/* Description */}
-              <p className="text-slate-500 text-sm text-center max-w-sm leading-relaxed">
-                Aqui podras ver el historial completo de movimientos de la obra: documentos subidos, cambios de estatus, pagos registrados, asignaciones de equipo y mas.
-              </p>
-
-              {/* Shimmer bar */}
-              <div className="mt-8 w-40 h-1 bg-slate-700 rounded-full overflow-hidden">
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    background: "linear-gradient(90deg, #93c5fd 0%, #2563eb 50%, #93c5fd 100%)",
-                    backgroundSize: "200% 100%",
-                    animation: "shimmer 2s ease-in-out infinite",
-                  }}
-                />
-              </div>
-
-              <style>{`
-                @keyframes shimmer {
-                  0%   { background-position: 200% center; }
-                  100% { background-position: -200% center; }
-                }
-              `}</style>
-            </div>
+          <TabsContent value="egresos" className="space-y-6">
+            {obra && <ObraEgresosTab obraId={obra.id} />}
           </TabsContent>
         </Tabs>
       </div>

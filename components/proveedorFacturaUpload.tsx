@@ -1,8 +1,9 @@
 "use client"
 
-import { useCallback, useMemo, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
-  AlertTriangle, CheckCircle2, FileCode2, FileText, Loader2, Upload, X,
+  AlertTriangle, Building2, CheckCircle2, FileCode2, FileText, Loader2,
+  Plus, Upload, X,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import {
@@ -15,6 +16,32 @@ const BUCKET = "proveedores-docs"
 
 const money = (n: number, moneda = "MXN") =>
   new Intl.NumberFormat("es-MX", { style: "currency", currency: moneda }).format(n)
+
+type EntidadPropia = {
+  id: string
+  rfc: string
+  nombre_corto: string | null
+  razon_social: string
+}
+
+/**
+ * Adivina el nombre corto a partir de la razón social:
+ * "REVESTIMIENTOS INDUSTRIALES AVR S.A. DE C.V." → "AVR"
+ * Es solo una propuesta; el usuario la puede cambiar antes de guardar.
+ */
+function sugerirNombreCorto(razon: string | null): string {
+  if (!razon) return ""
+  const limpio = razon
+    .replace(/\b(S\.?A\.?|S\.? DE R\.?L\.?|DE C\.?V\.?|S\.?C\.?|S\.?A\.?P\.?I\.?)\b/gi, " ")
+    .replace(/[.,]/g, " ")
+    .trim()
+  const partes = limpio.split(/\s+/).filter(Boolean)
+  if (partes.length === 0) return ""
+  const ultima = partes[partes.length - 1]
+  // Un acrónimo al final suele ser justo como le dicen a la empresa.
+  if (/^[A-ZÁÉÍÓÚÑ]{2,5}$/.test(ultima)) return ultima
+  return partes[0].slice(0, 12)
+}
 
 /** La Fecha del CFDI viene sin zona; solo la mostramos. */
 function fechaCorta(iso: string | null): string {
@@ -56,12 +83,53 @@ export function ProveedorFacturaUpload({
   const [guardando, setGuardando] = useState(false)
   const [errorGuardar, setErrorGuardar] = useState<string | null>(null)
 
+  const [entidades, setEntidades] = useState<EntidadPropia[]>([])
+  const [agregandoEntidad, setAgregandoEntidad] = useState(false)
+  const [nombreCorto, setNombreCorto] = useState("")
+  const [guardandoEntidad, setGuardandoEntidad] = useState(false)
+
   const xmlRef = useRef<HTMLInputElement>(null)
   const pdfRef = useRef<HTMLInputElement>(null)
+
+  const cargarEntidades = useCallback(async () => {
+    const { data, error } = await supabase
+      .from("proveedores_entidades_propias")
+      .select("id, rfc, nombre_corto, razon_social")
+      .eq("is_active", true)
+    if (error) console.error("[proveedores] entidades propias:", detalleError(error))
+    setEntidades((data as EntidadPropia[]) ?? [])
+  }, [])
+
+  useEffect(() => { if (open) void cargarEntidades() }, [open, cargarEntidades])
+
+  // ¿A cuál de nuestras razones sociales viene dirigida esta factura?
+  const entidadDetectada = useMemo(
+    () => (cfdi ? entidades.find(e => e.rfc === cfdi.rfc_receptor) ?? null : null),
+    [cfdi, entidades])
+
+  const receptorDesconocido = !!cfdi && !entidadDetectada
+
+  const registrarEntidad = useCallback(async () => {
+    if (!cfdi) return
+    setGuardandoEntidad(true); setErrorGuardar(null)
+    const { error } = await supabase.from("proveedores_entidades_propias").insert({
+      rfc: cfdi.rfc_receptor,
+      razon_social: cfdi.nombre_receptor ?? cfdi.rfc_receptor,
+      nombre_corto: nombreCorto.trim() || null,
+    })
+    setGuardandoEntidad(false)
+    if (error) {
+      setErrorGuardar(`No se pudo agregar la razón social: ${detalleError(error)}`)
+      return
+    }
+    setAgregandoEntidad(false)
+    await cargarEntidades()
+  }, [cfdi, nombreCorto, cargarEntidades])
 
   const limpiar = useCallback(() => {
     setXmlFile(null); setPdfFile(null); setCfdi(null)
     setErrorLectura(null); setErrorGuardar(null); setVencimiento("")
+    setAgregandoEntidad(false); setNombreCorto("")
     if (xmlRef.current) xmlRef.current.value = ""
     if (pdfRef.current) pdfRef.current.value = ""
   }, [])
@@ -79,6 +147,8 @@ export function ProveedorFacturaUpload({
       const texto = await file.text()
       const leido = parseCFDI(texto)
       setCfdi(leido)
+      setAgregandoEntidad(false)
+      setNombreCorto(sugerirNombreCorto(leido.nombre_receptor))
       // Default razonable: 30 días desde la fecha de la factura. Se cambia abajo.
       setVencimiento(sumaDias(leido.fecha, 30))
     } catch (e: any) {
@@ -202,12 +272,91 @@ export function ProveedorFacturaUpload({
                 </div>
 
                 <div className="flex flex-wrap gap-x-5 gap-y-1 mt-3 pt-3 border-t border-slate-700/60 text-[11px] text-slate-500">
-                  <span>Para <span className="text-slate-300">{cfdi.nombre_receptor ?? cfdi.rfc_receptor}</span></span>
+                  <span>
+                    Para{" "}
+                    <span className={entidadDetectada ? "text-emerald-400" : "text-amber-400"}>
+                      {entidadDetectada
+                        ? (entidadDetectada.nombre_corto || entidadDetectada.razon_social)
+                        : (cfdi.nombre_receptor ?? cfdi.rfc_receptor)}
+                    </span>
+                  </span>
                   {cfdi.metodo_pago && <span>Método <span className="text-slate-300">{cfdi.metodo_pago}</span></span>}
                   <span>{cfdi.conceptos.length} concepto{cfdi.conceptos.length === 1 ? "" : "s"}</span>
                   {cfdi.moneda !== "MXN" && <span className="text-amber-400">{cfdi.moneda} · TC {cfdi.tipo_cambio}</span>}
                 </div>
               </div>
+
+              {receptorDesconocido && (
+                <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+                  <div className="flex items-start gap-2.5">
+                    <Building2 className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs leading-relaxed text-amber-100">
+                        Esta factura viene dirigida a{" "}
+                        <span className="font-semibold">{cfdi.nombre_receptor ?? "(sin nombre)"}</span>
+                        {" "}· {cfdi.rfc_receptor},{" "}
+                        {entidades.length === 0
+                          ? "y todavía no tienes ninguna razón social propia registrada."
+                          : "que no es ninguna de tus razones sociales."}
+                      </p>
+                      <p className="text-[11px] text-amber-200/70 mt-1 leading-relaxed">
+                        Si de verdad es una empresa tuya, agrégala y el sistema la va a reconocer
+                        sola de aquí en adelante. Si no, revisa que sea el XML correcto: puede que
+                        el proveedor haya facturado al RFC equivocado.
+                      </p>
+
+                      {!agregandoEntidad ? (
+                        <button
+                          type="button"
+                          onClick={() => setAgregandoEntidad(true)}
+                          disabled={guardando}
+                          className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40
+                                     px-2.5 py-1 text-[11px] font-medium text-amber-200
+                                     hover:bg-amber-500/15 transition-colors"
+                        >
+                          <Plus className="w-3 h-3" />
+                          Es una empresa mía, agregarla
+                        </button>
+                      ) : (
+                        <div className="mt-2.5 flex items-end gap-2 flex-wrap">
+                          <div>
+                            <label className="text-[10px] uppercase tracking-wide text-amber-200/70">
+                              Nombre corto
+                            </label>
+                            <input
+                              value={nombreCorto}
+                              onChange={(e) => setNombreCorto(e.target.value)}
+                              disabled={guardandoEntidad}
+                              placeholder="RAF"
+                              className="block w-32 mt-1 rounded-lg bg-slate-900/60 border border-amber-500/30
+                                         px-2.5 py-1 text-xs text-amber-50 placeholder:text-amber-200/30
+                                         focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                            />
+                          </div>
+                          <Button
+                            onClick={() => void registrarEntidad()}
+                            disabled={guardandoEntidad}
+                            className="h-7 text-xs text-white"
+                            style={{ background: "#b45309" }}
+                          >
+                            {guardandoEntidad
+                              ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              : "Agregar"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            onClick={() => setAgregandoEntidad(false)}
+                            disabled={guardandoEntidad}
+                            className="h-7 text-xs text-amber-200/70 hover:text-amber-100 hover:bg-amber-500/10"
+                          >
+                            Cancelar
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {cfdi.avisos.map((a, i) => (
                 <Aviso key={i} tono="warning">{a}</Aviso>

@@ -17,6 +17,8 @@ import {
 } from "@/components/ui/dialog"
 import { Building2, Plus, ChevronRight, Loader2, FolderOpen, Pencil, Trash2, X, AlertTriangle, ChevronDown, FileText, FileSpreadsheet, CheckSquare } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { useAuth } from "@/lib/auth-context"
+import { can } from "@/lib/permissions"
 import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa } from "@/lib/edcPdf"
 import { generateEDCExcel } from "@/lib/edcExcel"
@@ -36,6 +38,9 @@ export function ProjectsScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   const [error, setError]         = useState<string | null>(null)
 
   const [editMode, setEditMode]   = useState(false)
+  const { user } = useAuth()
+  // La ruta /api/empresas ya exige admin; esto evita enseñar el botón.
+  const puedeBorrar = can(user?.role, "empresas.delete")
   const [selected, setSelected]   = useState<Set<string>>(new Set())
   const [deleting, setDeleting]   = useState(false)
 
@@ -280,7 +285,9 @@ export function ProjectsScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                 <h1 className="text-2xl font-bold text-slate-100">Empresas</h1>
                 <p className="text-slate-400 text-sm mt-1">
                   {editMode
-                    ? "Selecciona las empresas que deseas eliminar o edita su información"
+                    ? (puedeBorrar
+                        ? "Selecciona las empresas que deseas eliminar o edita su información"
+                        : "Edita la información de las empresas")
                     : edcMode
                     ? "Selecciona las empresas a incluir en el Estado de Cuenta"
                     : "Selecciona una empresa para ver y gestionar sus obras"}
@@ -336,10 +343,12 @@ export function ProjectsScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                   <Button variant="outline" onClick={exitEditMode} disabled={deleting} className={btnOutline}>
                     <X className="w-4 h-4 mr-2" />Cancelar
                   </Button>
-                  <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
-                    <Trash2 className="w-4 h-4 mr-2" />
-                    {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
-                  </Button>
+                  {puedeBorrar && (
+                    <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
+                    </Button>
+                  )}
                 </div>
               )}
             </div>

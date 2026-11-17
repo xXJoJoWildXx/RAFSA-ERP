@@ -38,6 +38,12 @@ export type Capability =
   | "suppliers.invoices.delete"
   /** Borrar un envío a obra. Regresa el material al almacén. */
   | "suppliers.shipments.delete"
+  // ── Obras y empresas ──
+  /** Borrar una obra: arrastra en cascada estimaciones, facturas, nóminas,
+   *  asistencia, documentos y estado de cuenta. Sólo admin. */
+  | "obras.delete"
+  /** Borrar una empresa, con TODAS sus obras detrás. Sólo admin. */
+  | "empresas.delete"
   // ── Documentos de obra ──
   /** Eliminar un documento de la obra (contrato, cotización, etc.).
    *  Es de oficina: el director de obra no borra el contrato. */
@@ -61,6 +67,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   // Administración: ve el inventario pero no lo toca. El catálogo de
   // artículos lo mantiene almacén.
   user: [
+    "obras.delete",
+    "empresas.delete",
     "inventory.products.create",
     "inventory.products.edit",
     "inventory.products.delete",
@@ -73,6 +81,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   ],
 
   almacen: [
+    "obras.delete",
+    "empresas.delete",
     "payments.delete.anyMonth",
     "suppliers.invoices.delete",
     "suppliers.shipments.delete",
@@ -86,6 +96,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   ],
 
   worker: [
+    "obras.delete",
+    "empresas.delete",
     "payments.delete.anyMonth",
     "suppliers.invoices.delete",
     "suppliers.shipments.delete",
