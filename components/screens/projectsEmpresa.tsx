@@ -27,6 +27,8 @@ import {
 } from "@/components/ui/dialog"
 import { Search, Plus, MapPin, ChevronRight, Building2, ArrowLeft, Loader2, FileText, FileSpreadsheet, X, CheckSquare, Pencil, Trash2, AlertTriangle } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { useAuth } from "@/lib/auth-context"
+import { can } from "@/lib/permissions"
 import { logActivity } from "@/lib/activityLog"
 import { generateEDCPdf, type EDCEmpresa, type EDCObra } from "@/lib/edcPdf"
 import { generateEDCExcel } from "@/lib/edcExcel"
@@ -121,6 +123,9 @@ export function EmpresaObrasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
   // ── Modo edición (selección para eliminar obras) ──
   const [editMode, setEditMode]                   = useState(false)
+  const { user } = useAuth()
+  // La ruta /api/obras ya exige admin; esto evita enseñar el botón.
+  const puedeBorrar = can(user?.role, "obras.delete")
   const [selected, setSelected]                   = useState<Set<string>>(new Set())
   const [deleting, setDeleting]                   = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen]   = useState(false)
@@ -402,10 +407,12 @@ export function EmpresaObrasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                   <Button variant="outline" onClick={exitEditMode} disabled={deleting} className={btnOutline}>
                     <X className="w-4 h-4 mr-2" />Cancelar
                   </Button>
-                  <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
+{puedeBorrar && (
+                                    <Button variant="destructive" onClick={openDeleteDialog} disabled={selected.size === 0 || deleting}>
                     <Trash2 className="w-4 h-4 mr-2" />
                     {`Eliminar${selected.size > 0 ? ` (${selected.size})` : ""}`}
                   </Button>
+                  )}
                 </div>
               ) : (
                 <div className="flex gap-2">
@@ -550,7 +557,7 @@ export function EmpresaObrasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           )}
 
           {/* ── Floating Delete Action Bar ── */}
-          {editMode && (
+          {editMode && puedeBorrar && (
             <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 flex items-center gap-3 px-5 py-3 rounded-2xl border border-red-600/40 shadow-2xl shadow-black/50"
               style={{ background: "linear-gradient(135deg, #2d1515 0%, #1e0e0e 100%)" }}>
               <CheckSquare className="w-5 h-5 text-red-400 shrink-0" />
