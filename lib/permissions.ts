@@ -32,6 +32,12 @@ export type Capability =
   /** Borrar pagos y movimientos registrados en meses anteriores.
    *  Sin esta capacidad, sólo se puede tocar lo registrado este mes. */
   | "payments.delete.anyMonth"
+  // ── Proveedores ──
+  /** Borrar una factura de proveedor. Revierte inventario y tira los
+   *  recordatorios: no es captura, es corrección. */
+  | "suppliers.invoices.delete"
+  /** Borrar un envío a obra. Regresa el material al almacén. */
+  | "suppliers.shipments.delete"
   // ── Documentos de obra ──
   /** Eliminar un documento de la obra (contrato, cotización, etc.).
    *  Es de oficina: el director de obra no borra el contrato. */
@@ -61,10 +67,15 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
     "inventory.products.import",
     // Cierre de mes: lo registrado en meses pasados ya no se toca
     "payments.delete.anyMonth",
+    // Captura facturas, pero corregir un error borrando es de admin
+    "suppliers.invoices.delete",
+    "suppliers.shipments.delete",
   ],
 
   almacen: [
     "payments.delete.anyMonth",
+    "suppliers.invoices.delete",
+    "suppliers.shipments.delete",
     "obra.documents.delete",
     "projects.view",
     "employees.view",
@@ -76,6 +87,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
 
   worker: [
     "payments.delete.anyMonth",
+    "suppliers.invoices.delete",
+    "suppliers.shipments.delete",
     "obra.documents.delete",
     "inventory.view",
     "inventory.products.create",

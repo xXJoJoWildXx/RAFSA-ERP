@@ -1,536 +1,299 @@
 "use client"
 
-import type { AppRole as UserRoleScreen } from "@/lib/permissions"
-import { useBasePath } from "@/lib/appScope"
-
-import { useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { useParams, useRouter } from "next/navigation"
+import {
+  AlertTriangle, ArrowLeft, Banknote, Boxes, Building2, FileText, Loader2,
+  Mail, Phone, Wrench,
+} from "lucide-react"
+import type { AppRole as UserRoleScreen } from "@/lib/permissions"
 import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
-import { Badge } from "@/components/ui/badge"
-import {
-  ArrowLeft,
-  Layers,
-  Wrench,
-  Phone,
-  Mail,
-  Plus,
-  Pencil,
-  Trash2,
-  Save,
-  X,
-  Package,
-  DollarSign,
-  FileText,
-} from "lucide-react"
+import { supabase } from "@/lib/supabaseClient"
+import { useBasePath } from "@/lib/appScope"
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-type Categoria = "plataformas" | "refacciones"
-type Condicion = "credito" | "contado"
-
-type Supplier = {
-  id:            string
-  name:          string
-  category:      Categoria
-  contact_phone: string
-  contact_email: string
-  conditions:    Condicion
-  status:        "activo" | "inactivo"
+type Proveedor = {
+  id: string
+  rfc: string
+  razon_social: string
+  nombre_comercial: string | null
+  categoria: string
+  contacto_nombre: string | null
+  contacto_telefono: string | null
+  contacto_email: string | null
+  condiciones_pago: string | null
+  dias_credito: number | null
+  notas: string | null
+  is_active: boolean
 }
 
-type Product = {
-  id:          string
-  supplier_id: string
-  name:        string
-  description: string
-  cost:        number
+type Factura = {
+  id: string
+  folio_completo: string
+  fecha: string | null
+  fecha_vencimiento: string | null
+  total: number
+  saldo: number
+  estado_pago: string
+  estado_vencimiento: string
+  status: string
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const SUPPLIERS: Supplier[] = [
-  { id: "s1", name: "Plataformex SA de CV",               category: "plataformas", contact_phone: "81-2345-6789", contact_email: "contacto@plataformex.com",  conditions: "credito", status: "activo"   },
-  { id: "s2", name: "Andamios Regio",                     category: "plataformas", contact_phone: "81-9876-5432", contact_email: "ventas@andamiosregio.com",   conditions: "contado", status: "activo"   },
-  { id: "s3", name: "Refacciones Industriales del Norte", category: "refacciones", contact_phone: "81-1111-2222", contact_email: "pedidos@rinnorte.com",       conditions: "credito", status: "activo"   },
-  { id: "s4", name: "Ferretería El Constructor",          category: "refacciones", contact_phone: "81-3333-4444", contact_email: "ventas@elconstructor.com",   conditions: "contado", status: "activo"   },
-  { id: "s5", name: "Suministros Varios SA",              category: "refacciones", contact_phone: "81-5555-6666", contact_email: "info@suministrosvarios.com", conditions: "contado", status: "inactivo" },
-]
-
-const INITIAL_PRODUCTS: Product[] = [
-  { id: "pr1",  supplier_id: "s1", name: "Plataforma tijera 8m",      description: "Capacidad 300 kg, altura de trabajo 8 m, eléctrica",                 cost: 7200  },
-  { id: "pr2",  supplier_id: "s1", name: "Plataforma tijera 10m",     description: "Capacidad 350 kg, altura de trabajo 10 m, eléctrica",                cost: 8500  },
-  { id: "pr3",  supplier_id: "s1", name: "Plataforma articulada 14m", description: "Pluma articulada 360°, diesel, altura 14 m",                         cost: 12000 },
-  { id: "pr4",  supplier_id: "s2", name: "Andamio colgante 6m",       description: "Acero galvanizado, carga máx. 250 kg, incluye arnés",                 cost: 5500  },
-  { id: "pr5",  supplier_id: "s2", name: "Andamio modular 4m",        description: "Sistema modular, rápido ensamble, capacidad 200 kg",                  cost: 3800  },
-  { id: "pr6",  supplier_id: "s2", name: "Andamio tubular",           description: "Tubería galvanizada, altura configurable hasta 6 m",                  cost: 2900  },
-  { id: "pr7",  supplier_id: "s3", name: "Consumibles soldadura MIG", description: "Alambre ER70S-6 0.9 mm, carrete 15 kg",                              cost: 1540  },
-  { id: "pr8",  supplier_id: "s3", name: 'Disco de corte 7"',         description: 'Disco abrasivo 7"x1/8"x7/8", metal, pack x25',                       cost: 640   },
-  { id: "pr9",  supplier_id: "s3", name: "Guantes industriales",      description: "Guante de carnaza, talla L, resistente a cortes, par",                cost: 90    },
-  { id: "pr10", supplier_id: "s3", name: "Careta de soldar",          description: "Careta fotosensible automática DIN 9-13, protección UV",              cost: 850   },
-  { id: "pr11", supplier_id: "s4", name: 'Varilla corrugada 3/8"',    description: 'Varilla de acero al carbono 3/8" (9.5 mm), 12 m',                    cost: 220   },
-  { id: "pr12", supplier_id: "s4", name: "Cemento Portland 50 kg",    description: "Cemento gris tipo I, costal 50 kg, resistencia 33 MPa",               cost: 225   },
-  { id: "pr13", supplier_id: "s4", name: "Tabla de madera 2x4",       description: 'Tabla pino 2"x4"x8\', cepillada, para cimbra',                       cost: 85    },
-  { id: "pr14", supplier_id: "s5", name: "Cinta de aislar",           description: "Cinta aislante eléctrica PVC, 19 mm x 20 m, negra",                  cost: 18    },
-  { id: "pr15", supplier_id: "s5", name: "Silicón estructural",       description: "Silicón neutro transparente, tubo 300 ml, uso exterior",              cost: 95    },
-]
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function fmt(n: number) {
-  return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN", maximumFractionDigits: 0 }).format(n)
+type Producto = {
+  id: string
+  codigo: string | null
+  descripcion: string
+  kind: string
+  unidad: string | null
+  stock: number
+  last_price: number | null
+  avg_price: number | null
 }
 
-// ─── Product Form ─────────────────────────────────────────────────────────────
+const money = (n: number | null) =>
+  n == null ? "—" : new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(n)
 
-type ProductFormData = { name: string; description: string; cost: string }
-const emptyProductForm: ProductFormData = { name: "", description: "", cost: "" }
+const fecha = (s: string | null) =>
+  s ? new Date(s.length <= 10 ? `${s}T12:00:00` : s)
+        .toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })
+    : "—"
 
-type ProductFormProps = {
-  mode:     "add" | "edit"
-  initial?: ProductFormData
-  isPlat:   boolean
-  onSave:   (d: ProductFormData) => void
-  onCancel: () => void
+const detalle = (e: any) =>
+  [e?.message, e?.details, e?.hint, e?.code].filter(Boolean).join(" · ") || String(e)
+
+const VENC_CLS: Record<string, string> = {
+  pagada:     "bg-emerald-500/15 text-emerald-400",
+  vencida:    "bg-red-500/15 text-red-400",
+  vence_hoy:  "bg-amber-500/15 text-amber-400",
+  por_vencer: "bg-amber-500/15 text-amber-400",
+  en_tiempo:  "bg-slate-600/40 text-slate-400",
+  sin_fecha:  "bg-slate-600/40 text-slate-400",
 }
-
-function ProductForm({ mode, initial, isPlat, onSave, onCancel }: ProductFormProps) {
-  const [form, setForm] = useState<ProductFormData>(initial ?? emptyProductForm)
-  const accent = isPlat ? "#0174bd" : "#a855f7"
-
-  const inputCls =
-    "w-full bg-slate-900/70 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 " +
-    "placeholder:text-slate-600 outline-none focus:border-[#0174bd]/70 focus:ring-1 focus:ring-[#0174bd]/30 transition-all duration-150"
-
-  const set = (k: keyof ProductFormData, v: string) => setForm(f => ({ ...f, [k]: v }))
-
-  const canSave = form.name.trim() !== "" && form.cost.trim() !== "" && !isNaN(Number(form.cost))
-
-  return (
-    <div
-      className="rounded-xl p-4 flex flex-col gap-3"
-      style={{
-        background: "linear-gradient(135deg, #162032 0%, #101828 100%)",
-        border: `1px solid ${isPlat ? "rgba(1,116,189,0.35)" : "rgba(168,85,247,0.3)"}`,
-        boxShadow: `0 0 20px ${isPlat ? "rgba(1,116,189,0.07)" : "rgba(168,85,247,0.07)"}`,
-      }}
-    >
-      {/* Form header */}
-      <div className="flex items-center gap-2">
-        <div
-          className="p-1.5 rounded-lg"
-          style={{ background: isPlat ? "rgba(1,116,189,0.15)" : "rgba(168,85,247,0.12)" }}
-        >
-          {mode === "add"
-            ? <Plus   className={`w-3.5 h-3.5 ${isPlat ? "text-[#4da8e8]" : "text-purple-400"}`} />
-            : <Pencil className={`w-3.5 h-3.5 ${isPlat ? "text-[#4da8e8]" : "text-purple-400"}`} />
-          }
-        </div>
-        <p className="text-sm font-semibold text-slate-200">
-          {mode === "add" ? "Nuevo producto" : "Editar producto"}
-        </p>
-      </div>
-
-      {/* Fields */}
-      <div className="grid grid-cols-1 gap-3">
-        <div className="grid grid-cols-3 gap-3">
-          <div className="col-span-2">
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-              Nombre *
-            </label>
-            <input
-              className={inputCls}
-              placeholder="Ej. Plataforma tijera 10m"
-              value={form.name}
-              onChange={e => set("name", e.target.value)}
-            />
-          </div>
-          <div>
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-              Costo (MXN) *
-            </label>
-            <input
-              className={inputCls}
-              placeholder="0"
-              type="number"
-              min="0"
-              value={form.cost}
-              onChange={e => set("cost", e.target.value)}
-            />
-          </div>
-        </div>
-
-        <div>
-          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1.5">
-            Descripción
-          </label>
-          <textarea
-            className={`${inputCls} resize-none`}
-            rows={2}
-            placeholder="Descripción del producto, especificaciones..."
-            value={form.description}
-            onChange={e => set("description", e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* Actions */}
-      <div className="flex gap-2">
-        <Button
-          size="sm"
-          disabled={!canSave}
-          className="cursor-pointer text-white transition-all duration-200 disabled:opacity-40"
-          style={{ background: canSave ? accent : undefined }}
-          onClick={() => canSave && onSave(form)}
-        >
-          <Save className="w-3.5 h-3.5 mr-1.5" />
-          {mode === "add" ? "Agregar" : "Guardar"}
-        </Button>
-        <Button
-          size="sm"
-          className="cursor-pointer bg-transparent border border-slate-700 text-slate-400 hover:text-slate-200 hover:border-slate-600 hover:bg-slate-800/40 transition-all duration-200"
-          onClick={onCancel}
-        >
-          <X className="w-3.5 h-3.5 mr-1" />Cancelar
-        </Button>
-      </div>
-    </div>
-  )
+const VENC_TXT: Record<string, string> = {
+  pagada: "Pagada", vencida: "Vencida", vence_hoy: "Vence hoy",
+  por_vencer: "Por vencer", en_tiempo: "En tiempo", sin_fecha: "Sin fecha",
 }
-
-// ─── Product Row ──────────────────────────────────────────────────────────────
-
-type ProductRowProps = {
-  p:        Product
-  isPlat:   boolean
-  onEdit:   (p: Product) => void
-  onDelete: (id: string) => void
-}
-
-function ProductRow({ p, isPlat, onEdit, onDelete }: ProductRowProps) {
-  return (
-    <div
-      className="group flex items-start gap-4 px-4 py-3.5 rounded-xl transition-all duration-150"
-      style={{ background: "rgba(15,23,42,0.4)" }}
-      onMouseEnter={e => (e.currentTarget.style.background = "rgba(1,116,189,0.04)")}
-      onMouseLeave={e => (e.currentTarget.style.background = "rgba(15,23,42,0.4)")}
-    >
-      {/* Icon */}
-      <div
-        className="p-2 rounded-lg shrink-0 mt-0.5"
-        style={{
-          background: isPlat ? "rgba(1,116,189,0.12)" : "rgba(168,85,247,0.1)",
-          border:     isPlat ? "1px solid rgba(1,116,189,0.18)" : "1px solid rgba(168,85,247,0.18)",
-        }}
-      >
-        <Package className={`w-3.5 h-3.5 ${isPlat ? "text-[#4da8e8]" : "text-purple-400"}`} />
-      </div>
-
-      {/* Content */}
-      <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-slate-200 leading-tight">{p.name}</p>
-        {p.description && (
-          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{p.description}</p>
-        )}
-      </div>
-
-      {/* Cost */}
-      <div className="shrink-0 text-right">
-        <p className="text-base font-bold text-slate-100">{fmt(p.cost)}</p>
-        <p className="text-[10px] text-slate-600 mt-0.5">por unidad</p>
-      </div>
-
-      {/* Actions */}
-      <div className="shrink-0 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-150">
-        <button
-          onClick={() => onEdit(p)}
-          className="cursor-pointer p-1.5 rounded-lg text-slate-500 hover:text-[#4da8e8] hover:bg-[#0174bd]/10 transition-all duration-150"
-          title="Editar"
-        >
-          <Pencil className="w-3.5 h-3.5" />
-        </button>
-        <button
-          onClick={() => onDelete(p.id)}
-          className="cursor-pointer p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 transition-all duration-150"
-          title="Eliminar"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function ProveedorDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
+  const params = useParams()
+  const router = useRouter()
   const basePath = useBasePath()
-  const params   = useParams()
-  const router   = useRouter()
-  const supplierId = params.supplierId as string
+  const id = String(params?.supplierId ?? "")
 
-  const supplier = SUPPLIERS.find(s => s.id === supplierId)
+  const [proveedor, setProveedor] = useState<Proveedor | null>(null)
+  const [facturas, setFacturas] = useState<Factura[]>([])
+  const [productos, setProductos] = useState<Producto[]>([])
+  const [cargando, setCargando] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const [products,   setProducts]   = useState<Product[]>(INITIAL_PRODUCTS)
-  const [showAdd,    setShowAdd]    = useState(false)
-  const [editingId,  setEditingId]  = useState<string | null>(null)
+  const cargar = useCallback(async () => {
+    if (!id) return
+    setError(null)
+    const [pRes, fRes, prRes] = await Promise.all([
+      supabase.from("proveedores").select("*").eq("id", id).maybeSingle(),
+      supabase.from("proveedores_facturas_pago_v").select("*")
+        .eq("proveedor_id", id).order("fecha", { ascending: false }),
+      supabase.from("proveedores_productos")
+        .select("id, codigo, descripcion, kind, unidad, stock, last_price, avg_price")
+        .eq("proveedor_id", id).order("descripcion"),
+    ])
+    if (pRes.error) setError(`No se pudo cargar el proveedor: ${detalle(pRes.error)}`)
+    setProveedor((pRes.data as Proveedor) ?? null)
+    setFacturas((fRes.data as Factura[]) ?? [])
+    setProductos((prRes.data as Producto[]) ?? [])
+    setCargando(false)
+  }, [id])
 
-  if (!supplier) {
-    return (
-      <RoleGuard allowed={allowed}>
-        <AdminLayout>
-          <div className="flex flex-col items-center justify-center min-h-[40vh] gap-4">
-            <p className="text-slate-400">Proveedor no encontrado.</p>
-            <Button onClick={() => router.push(`${basePath}/proveedores`)} className="cursor-pointer">
-              <ArrowLeft className="w-4 h-4 mr-2" />Volver
-            </Button>
-          </div>
-        </AdminLayout>
-      </RoleGuard>
-    )
-  }
+  useEffect(() => { void cargar() }, [cargar])
 
-  const isPlat          = supplier.category === "plataformas"
-  const supplierProducts = products.filter(p => p.supplier_id === supplierId)
-  const totalCatalog     = supplierProducts.length
-  const avgCost          = totalCatalog > 0
-    ? supplierProducts.reduce((s, p) => s + p.cost, 0) / totalCatalog
-    : 0
+  const totales = useMemo(() => ({
+    comprado: facturas.reduce((s, f) => s + Number(f.total ?? 0), 0),
+    saldo: facturas.filter(f => f.estado_pago !== "pagada")
+                   .reduce((s, f) => s + Number(f.saldo ?? 0), 0),
+    vencidas: facturas.filter(f => f.estado_vencimiento === "vencida").length,
+  }), [facturas])
 
-  function handleAdd(data: ProductFormData) {
-    const newP: Product = {
-      id:          `pr${Date.now()}`,
-      supplier_id: supplierId,
-      name:        data.name,
-      description: data.description,
-      cost:        Number(data.cost),
-    }
-    setProducts(prev => [newP, ...prev])
-    setShowAdd(false)
-  }
-
-  function handleSaveEdit(id: string, data: ProductFormData) {
-    setProducts(prev =>
-      prev.map(p => p.id === id
-        ? { ...p, name: data.name, description: data.description, cost: Number(data.cost) }
-        : p
-      )
-    )
-    setEditingId(null)
-  }
-
-  function handleDelete(id: string) {
-    setProducts(prev => prev.filter(p => p.id !== id))
-  }
-
-  function startEdit(p: Product) {
-    setEditingId(p.id)
-    setShowAdd(false)
-  }
-
-  const Icon = isPlat ? Layers : Wrench
+  const rentas = productos.filter(p => p.kind === "rental")
+  const articulos = productos.filter(p => p.kind !== "rental")
 
   return (
     <RoleGuard allowed={allowed}>
       <AdminLayout>
-        <div className="space-y-6">
+        <div className="space-y-5">
+          <Button variant="ghost" onClick={() => router.push(`${basePath}/proveedores`)}
+            className="text-slate-400 hover:text-slate-200 hover:bg-slate-700/60 -ml-2">
+            <ArrowLeft className="w-4 h-4 mr-1.5" />Proveedores
+          </Button>
 
-          {/* ── Back ── */}
-          <button
-            onClick={() => router.push(`${basePath}/proveedores`)}
-            className="cursor-pointer flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 transition-colors duration-150"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Proveedores
-          </button>
+          {cargando ? (
+            <div className="py-20 text-center"><Loader2 className="w-5 h-5 animate-spin text-slate-500 mx-auto" /></div>
+          ) : !proveedor ? (
+            <div className="rounded-2xl border border-slate-700 bg-slate-800 py-16 text-center">
+              <Building2 className="w-7 h-7 text-slate-700 mx-auto mb-2" />
+              <p className="text-sm text-slate-500">Este proveedor no existe o fue eliminado.</p>
+            </div>
+          ) : (
+            <>
+              {/* ── ficha ── */}
+              <div className="rounded-2xl p-6"
+                style={{
+                  background: "linear-gradient(135deg, #0f2a4a 0%, #0a1929 50%, #0d1f35 100%)",
+                  border: "1px solid rgba(1,116,189,0.2)",
+                }}>
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div className="min-w-0">
+                    <h1 className="text-2xl font-bold text-white">
+                      {proveedor.nombre_comercial || proveedor.razon_social}
+                    </h1>
+                    <p className="text-slate-400 text-sm mt-0.5">{proveedor.razon_social}</p>
+                    <p className="text-slate-500 text-xs mt-0.5">{proveedor.rfc}</p>
 
-          {/* ── Supplier header ── */}
-          <div
-            className="rounded-2xl p-6"
-            style={{
-              background: isPlat
-                ? "linear-gradient(135deg, #0f2a4a 0%, #0a1929 50%, #0d1f35 100%)"
-                : "linear-gradient(135deg, #1e1030 0%, #120a22 50%, #180f2e 100%)",
-              border:    isPlat ? "1px solid rgba(1,116,189,0.2)" : "1px solid rgba(168,85,247,0.2)",
-              boxShadow: isPlat ? "0 0 40px rgba(1,116,189,0.07)" : "0 0 40px rgba(168,85,247,0.06)",
-            }}
-          >
-            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
-              {/* Left: identity */}
-              <div className="flex items-start gap-4">
-                <div
-                  className="p-3 rounded-xl shrink-0"
-                  style={{
-                    background: isPlat ? "rgba(1,116,189,0.15)"  : "rgba(168,85,247,0.12)",
-                    border:     isPlat ? "1px solid rgba(1,116,189,0.25)" : "1px solid rgba(168,85,247,0.2)",
-                  }}
-                >
-                  <Icon className={`w-6 h-6 ${isPlat ? "text-[#4da8e8]" : "text-purple-400"}`} />
+                    <div className="flex items-center gap-4 mt-3 flex-wrap">
+                      {proveedor.contacto_nombre && (
+                        <span className="text-xs text-slate-400">{proveedor.contacto_nombre}</span>
+                      )}
+                      {proveedor.contacto_telefono && (
+                        <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                          <Phone className="w-3 h-3 text-slate-600" />{proveedor.contacto_telefono}
+                        </span>
+                      )}
+                      {proveedor.contacto_email && (
+                        <span className="text-xs text-slate-400 flex items-center gap-1.5">
+                          <Mail className="w-3 h-3 text-slate-600" />{proveedor.contacto_email}
+                        </span>
+                      )}
+                      {proveedor.dias_credito != null && (
+                        <span className="text-xs text-slate-400">{proveedor.dias_credito} días de crédito</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <h1 className="text-xl font-bold text-white">{supplier.name}</h1>
-                    <Badge className={supplier.status === "activo"
-                      ? "bg-green-900/40 text-green-400 border border-green-600/30"
-                      : "bg-slate-700/60 text-slate-500 border border-slate-600/40"
-                    }>
-                      {supplier.status === "activo" ? "Activo" : "Inactivo"}
-                    </Badge>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-4 mt-2">
-                    <span className="flex items-center gap-1.5 text-xs text-slate-400">
-                      <Phone className="w-3 h-3 text-slate-500" />
-                      {supplier.contact_phone}
-                    </span>
-                    <span className="flex items-center gap-1.5 text-xs text-slate-400">
-                      <Mail className="w-3 h-3 text-slate-500" />
-                      {supplier.contact_email}
-                    </span>
-                    <Badge className={supplier.conditions === "credito"
-                      ? "bg-indigo-900/40 text-indigo-400 border border-indigo-600/30"
-                      : "bg-slate-700/60 text-slate-400 border border-slate-600/40"
-                    }>
-                      {supplier.conditions === "credito" ? "Crédito" : "Contado"}
-                    </Badge>
-                  </div>
+
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-5 pt-4 border-t border-slate-700/40">
+                  <Metrica etiqueta="Comprado" valor={money(totales.comprado)} />
+                  <Metrica etiqueta="Saldo" valor={money(totales.saldo)}
+                    color={totales.saldo > 0 ? "#f59e0b" : "#10b981"} />
+                  <Metrica etiqueta="Facturas" valor={String(facturas.length)} />
+                  <Metrica etiqueta="Vencidas" valor={String(totales.vencidas)}
+                    color={totales.vencidas > 0 ? "#ef4444" : undefined} />
                 </div>
               </div>
 
-              {/* Right: quick stats */}
-              <div className="flex gap-4 shrink-0">
-                <div className="text-center">
-                  <p className="text-2xl font-bold text-slate-100">{totalCatalog}</p>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">Productos</p>
+              {error && (
+                <div className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 flex items-start gap-2.5">
+                  <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                  <p className="text-xs text-red-200">{error}</p>
                 </div>
-                <div
-                  className="w-px"
-                  style={{ background: "rgba(148,163,184,0.12)" }}
-                />
-                <div className="text-center">
-                  <p className="text-2xl font-bold text-slate-100">{fmt(avgCost)}</p>
-                  <p className="text-[10px] text-slate-500 uppercase tracking-wider mt-0.5">Costo promedio</p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ── Products section ── */}
-          <div
-            className="rounded-2xl overflow-hidden"
-            style={{
-              background: "linear-gradient(135deg, #1e293b 0%, #172030 100%)",
-              border: "1px solid rgba(148,163,184,0.08)",
-              boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
-            }}
-          >
-            {/* Section header */}
-            <div
-              className="flex items-center justify-between px-6 py-4"
-              style={{ borderBottom: "1px solid rgba(148,163,184,0.08)" }}
-            >
-              <div className="flex items-center gap-2.5">
-                <div
-                  className="p-1.5 rounded-lg"
-                  style={{
-                    background: isPlat ? "rgba(1,116,189,0.15)"  : "rgba(168,85,247,0.12)",
-                    border:     isPlat ? "1px solid rgba(1,116,189,0.2)" : "1px solid rgba(168,85,247,0.18)",
-                  }}
-                >
-                  <FileText className={`w-4 h-4 ${isPlat ? "text-[#4da8e8]" : "text-purple-400"}`} />
-                </div>
-                <div>
-                  <p className="text-sm font-semibold text-slate-200">Catálogo de productos</p>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    {totalCatalog} producto{totalCatalog !== 1 ? "s" : ""} registrado{totalCatalog !== 1 ? "s" : ""}
-                  </p>
-                </div>
-              </div>
-              <Button
-                size="sm"
-                onClick={() => { setShowAdd(v => !v); setEditingId(null) }}
-                className="cursor-pointer text-slate-300 bg-transparent border border-slate-600 hover:text-slate-100 hover:border-slate-500 hover:bg-slate-700/40 transition-all duration-200"
-              >
-                {showAdd
-                  ? <><X    className="w-3.5 h-3.5 mr-1.5" />Cancelar</>
-                  : <><Plus className="w-3.5 h-3.5 mr-1.5" />Agregar producto</>
-                }
-              </Button>
-            </div>
-
-            {/* Products list */}
-            <div className="p-4 flex flex-col gap-2">
-
-              {/* Add form — always at top */}
-              {showAdd && (
-                <ProductForm
-                  mode="add"
-                  isPlat={isPlat}
-                  onSave={handleAdd}
-                  onCancel={() => setShowAdd(false)}
-                />
               )}
 
-              {/* Product rows */}
-              {supplierProducts.length === 0 && !showAdd && (
-                <div className="py-16 flex flex-col items-center gap-3">
-                  <div
-                    className="p-4 rounded-full"
-                    style={{ background: "rgba(148,163,184,0.06)" }}
-                  >
-                    <Package className="w-8 h-8 text-slate-600" />
+              {/* ── facturas ── */}
+              <Seccion titulo="Facturas" icono={FileText} vacio="Este proveedor no tiene facturas cargadas."
+                hayAlgo={facturas.length > 0}>
+                <div className="divide-y divide-slate-700/60">
+                  {facturas.map(f => (
+                    <div key={f.id} className="px-4 py-2.5 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm text-slate-200">{f.folio_completo}</span>
+                          <span className={`rounded-md px-1.5 py-0.5 text-[10px] font-medium ${VENC_CLS[f.estado_vencimiento] ?? VENC_CLS.sin_fecha}`}>
+                            {VENC_TXT[f.estado_vencimiento] ?? f.estado_vencimiento}
+                          </span>
+                          {f.status === "por_revisar" && (
+                            <span className="rounded-md px-1.5 py-0.5 text-[10px] font-medium bg-[#0174bd]/15 text-[#4da8e8]">
+                              Por revisar
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          {fecha(f.fecha)}
+                          {f.fecha_vencimiento && <> · vence {fecha(f.fecha_vencimiento)}</>}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm text-slate-200 tabular-nums">{money(f.total)}</p>
+                        {Number(f.saldo) > 0 && (
+                          <p className="text-[10px] text-amber-400 tabular-nums">Resta {money(f.saldo)}</p>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Seccion>
+
+              {/* ── lo que surte ── */}
+              <Seccion titulo="Productos que surte" icono={Boxes}
+                vacio="Todavía no se le ha procesado ninguna factura con productos."
+                hayAlgo={articulos.length > 0}>
+                <div className="divide-y divide-slate-700/60">
+                  {articulos.map(p => (
+                    <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm text-slate-200 leading-snug">{p.descripcion}</p>
+                        <p className="text-[10px] text-slate-500">
+                          {p.codigo ?? "sin código"}{p.unidad && <> · {p.unidad}</>}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-xs text-slate-300 tabular-nums">{money(p.last_price)}</p>
+                        <p className="text-[10px] text-slate-500 tabular-nums">
+                          {Number(p.stock)} en almacén
+                        </p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </Seccion>
+
+              {rentas.length > 0 && (
+                <Seccion titulo="Máquinas que renta" icono={Wrench} vacio="" hayAlgo>
+                  <div className="divide-y divide-slate-700/60">
+                    {rentas.map(p => (
+                      <div key={p.id} className="px-4 py-2.5 flex items-center gap-3">
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-slate-200 leading-snug">{p.descripcion}</p>
+                          <p className="text-[10px] text-slate-500">{p.codigo ?? "sin número interno"}</p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="text-xs text-slate-300 tabular-nums">{money(p.last_price)}</p>
+                          <p className="text-[10px] text-slate-500">por periodo</p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <p className="text-sm text-slate-500">Sin productos registrados</p>
-                  <button
-                    onClick={() => setShowAdd(true)}
-                    className="cursor-pointer text-xs text-[#4da8e8] hover:text-[#4da8e8]/80 transition-colors"
-                  >
-                    + Agregar el primer producto
-                  </button>
-                </div>
+                </Seccion>
               )}
-
-              {supplierProducts.map(p =>
-                editingId === p.id ? (
-                  <ProductForm
-                    key={p.id}
-                    mode="edit"
-                    isPlat={isPlat}
-                    initial={{ name: p.name, description: p.description, cost: String(p.cost) }}
-                    onSave={data => handleSaveEdit(p.id, data)}
-                    onCancel={() => setEditingId(null)}
-                  />
-                ) : (
-                  <ProductRow
-                    key={p.id}
-                    p={p}
-                    isPlat={isPlat}
-                    onEdit={startEdit}
-                    onDelete={handleDelete}
-                  />
-                )
-              )}
-
-              {/* Summary footer */}
-              {supplierProducts.length > 0 && (
-                <div
-                  className="flex items-center justify-between px-4 py-3 mt-1 rounded-xl"
-                  style={{ background: "rgba(15,23,42,0.5)", border: "1px solid rgba(148,163,184,0.06)" }}
-                >
-                  <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                    <DollarSign className="w-3.5 h-3.5" />
-                    Suma del catálogo
-                  </div>
-                  <p className="text-base font-bold text-slate-200">
-                    {fmt(supplierProducts.reduce((s, p) => s + p.cost, 0))}
-                  </p>
-                </div>
-              )}
-            </div>
-          </div>
-
+            </>
+          )}
         </div>
       </AdminLayout>
     </RoleGuard>
+  )
+}
+
+function Metrica({ etiqueta, valor, color }: { etiqueta: string; valor: string; color?: string }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-slate-500">{etiqueta}</p>
+      <p className="text-lg font-semibold mt-0.5 tabular-nums" style={{ color: color ?? "#e2e8f0" }}>{valor}</p>
+    </div>
+  )
+}
+
+function Seccion({ titulo, icono: Icono, vacio, hayAlgo, children }: {
+  titulo: string
+  icono: typeof Banknote
+  vacio: string
+  hayAlgo: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-700 bg-slate-800 overflow-hidden">
+      <div className="px-4 py-2.5 bg-slate-900/60 border-b border-slate-700 flex items-center gap-2">
+        <Icono className="w-3.5 h-3.5 text-slate-500" />
+        <p className="text-xs font-semibold text-slate-300">{titulo}</p>
+      </div>
+      {hayAlgo ? children : <p className="py-10 text-center text-xs text-slate-500">{vacio}</p>}
+    </div>
   )
 }

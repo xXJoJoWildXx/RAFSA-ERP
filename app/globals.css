@@ -162,3 +162,46 @@ input[type="date"]::-webkit-calendar-picker-indicator {
 input[type="date"]::-webkit-calendar-picker-indicator:hover {
   opacity: 1;
 }
+
+/* ───────────────────────────────────────────────────────────
+   Cursor en todo lo que se puede clickear
+
+   Los navegadores le dan cursor "default" a <button>, y Tailwind no
+   lo cambia. En vez de ir poniendo cursor-pointer clase por clase en
+   cientos de elementos (y olvidarlo en los siguientes), se resuelve
+   aquí para toda la app, incluidos los componentes de shadcn.
+
+   Si un elemento necesita otro cursor, su propia clase gana: esto es
+   una sola regla de especificidad baja.
+   ─────────────────────────────────────────────────────────── */
+button,
+summary,
+select,
+[role="button"],
+[role="tab"],
+[role="option"],
+[role="menuitem"],
+[role="menuitemcheckbox"],
+[role="menuitemradio"],
+[role="switch"],
+[role="checkbox"],
+[role="radio"],
+label[for],
+input[type="checkbox"],
+input[type="radio"],
+input[type="file"],
+input[type="range"],
+input[type="submit"],
+input[type="reset"],
+input[type="color"] {
+  cursor: pointer;
+}
+
+/* Lo deshabilitado no invita a darle click */
+button:disabled,
+select:disabled,
+input:disabled,
+[aria-disabled="true"],
+[data-disabled] {
+  cursor: not-allowed;
+}
