@@ -16,6 +16,13 @@ export type ActivityEventType =
   | "inventory.order_delivered" | "inventory.order_completed"
   | "inventory.invoice_uploaded"
   | "document.uploaded" | "document.deleted"
+  // Proveedores. Los cuatro últimos los genera el job de pg_cron, no un usuario.
+  | "proveedor.factura_subida" | "proveedor.envio_confirmado"
+  | "proveedor.pago_registrado" | "proveedor.pago_eliminado"
+  | "proveedor.factura_pagada" | "proveedor.factura_por_vencer"
+  | "proveedor.factura_vence_hoy" | "proveedor.factura_vencida"
+  | "proveedor.factura_eliminada" | "proveedor.envio_eliminado"
+  | "proveedor.renta_asignada" | "proveedor.renta_devuelta"
 
 export async function logActivity(params: {
   event_type: ActivityEventType
@@ -49,6 +56,7 @@ export function formatEventType(event_type: string): string {
     "employee.updated":              "Empleado actualizado",
     "employee.salary_updated":       "Salario de empleado actualizado",
     "employee.document_uploaded":    "Documento de empleado subido",
+    "employee.viatics_updated":      "Viáticos actualizados",
     "empresa.created":               "Empresa creada",
     "empresa.deleted":               "Empresa eliminada",
     "empresa.updated":               "Empresa actualizada",
@@ -56,6 +64,7 @@ export function formatEventType(event_type: string): string {
     "obra.deleted":                  "Obra eliminada",
     "obra.status_changed":           "Estatus de obra cambiado",
     "obra.updated":                  "Obra actualizada",
+    "obra.completed":                "Obra completada",
     "team.member_added":             "Miembro agregado al equipo",
     "team.member_removed":           "Miembro removido del equipo",
     "team.director_assigned":        "Director de obra asignado",
@@ -67,6 +76,8 @@ export function formatEventType(event_type: string): string {
     "billing.aditivo_added":         "Aditivo agregado",
     "billing.aditivo_updated":       "Aditivo actualizado",
     "billing.aditivo_deleted":       "Aditivo eliminado",
+    "billing.financials_registered": "Financieros registrados",
+    "billing.financials_deleted":    "Financieros eliminados",
     "inventory.order_created":       "Orden creada",
     "inventory.order_deleted":       "Orden eliminada",
     "inventory.order_delivered":     "Orden entregada",
@@ -74,20 +85,67 @@ export function formatEventType(event_type: string): string {
     "inventory.invoice_uploaded":    "Factura de orden subida",
     "document.uploaded":             "Documento subido",
     "document.deleted":              "Documento eliminado",
+    "proveedor.factura_subida":      "Factura de proveedor subida",
+    "proveedor.envio_confirmado":    "Envío a obra confirmado",
+    "proveedor.pago_registrado":     "Pago a proveedor registrado",
+    "proveedor.pago_eliminado":      "Pago a proveedor eliminado",
+    "proveedor.factura_pagada":      "Factura de proveedor liquidada",
+    "proveedor.factura_por_vencer":  "Factura por vencer",
+    "proveedor.factura_vence_hoy":   "Factura vence hoy",
+    "proveedor.factura_vencida":     "Factura vencida",
+    "proveedor.factura_eliminada":   "Factura de proveedor eliminada",
+    "proveedor.envio_eliminado":     "Envío a obra eliminado",
+    "proveedor.renta_asignada":      "Renta asignada a obra",
+    "proveedor.renta_devuelta":      "Renta devuelta",
   }
   return map[event_type] ?? event_type
+}
+
+/* ───────────────────────────────────────────
+   Tono del evento
+   Lo usa el toast para elegir color e icono. Separado de la etiqueta
+   porque el mismo tono sirve para eventos que todavía no existen.
+   ─────────────────────────────────────────── */
+export type ActivityTone = "info" | "success" | "warning" | "danger"
+
+export function activityTone(event_type: string): ActivityTone {
+  const explicitos: Record<string, ActivityTone> = {
+    "proveedor.factura_vencida":    "danger",
+    "proveedor.factura_vence_hoy":  "warning",
+    "proveedor.factura_por_vencer": "warning",
+    "proveedor.factura_pagada":     "success",
+    "proveedor.pago_registrado":    "success",
+    "proveedor.pago_eliminado":     "danger",
+    "proveedor.envio_confirmado":   "success",
+    "proveedor.factura_eliminada":  "danger",
+    "proveedor.envio_eliminado":    "danger",
+    "proveedor.renta_asignada":     "success",
+    "proveedor.renta_devuelta":     "info",
+    "obra.completed":               "success",
+    "inventory.order_delivered":    "success",
+    "inventory.order_completed":    "success",
+  }
+  if (explicitos[event_type]) return explicitos[event_type]
+
+  if (/(\.deleted|_deleted|_removed)$/.test(event_type)) return "danger"
+  if (/(\.created|_created|_registered|_added|_uploaded|\.uploaded|_subida)$/.test(event_type)) return "success"
+  return "info"
 }
 
 export function entityBadgeClass(entity_type: string): string {
   const t = entity_type.split(".")[0]
   const m: Record<string, string> = {
-    employee: "bg-blue-500/15 text-blue-400",
-    obra:     "bg-green-500/15 text-green-400",
-    empresa:  "bg-purple-500/15 text-purple-400",
-    team:     "bg-amber-500/15 text-amber-400",
-    billing:  "bg-emerald-500/15 text-emerald-400",
-    inventory: "bg-cyan-500/15 text-cyan-400",
-    document: "bg-slate-600/40 text-slate-400",
+    employee:            "bg-blue-500/15 text-blue-400",
+    obra:                "bg-green-500/15 text-green-400",
+    empresa:             "bg-purple-500/15 text-purple-400",
+    team:                "bg-amber-500/15 text-amber-400",
+    billing:             "bg-emerald-500/15 text-emerald-400",
+    inventory:           "bg-cyan-500/15 text-cyan-400",
+    document:            "bg-slate-600/40 text-slate-400",
+    proveedores_factura: "bg-orange-500/15 text-orange-400",
+    proveedores_envio:   "bg-orange-500/15 text-orange-400",
+    proveedores_renta:   "bg-orange-500/15 text-orange-400",
+    proveedor:           "bg-orange-500/15 text-orange-400",
   }
   return m[t] ?? "bg-slate-600/40 text-slate-400"
 }

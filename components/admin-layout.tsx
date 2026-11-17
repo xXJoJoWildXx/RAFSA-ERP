@@ -37,6 +37,7 @@ import { useState, useEffect, useCallback, useMemo } from "react"
 import { cn } from "@/lib/utils"
 import { supabase } from "@/lib/supabaseClient"
 import { formatEventType, timeAgo } from "@/lib/activityLog"
+import { useActivityStream } from "@/components/activityToastProvider"
 
 /* ───────────────────────────────────────────
    Navigation Config (badges are fetched live)
@@ -138,6 +139,8 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
   })
   const [recentActivities, setRecentActivities] = useState<any[]>([])
   const [recentCount, setRecentCount] = useState(0)
+  // El stream vive en el layout raíz para que sobreviva a las navegaciones.
+  const { lastEventAt } = useActivityStream()
 
   useEffect(() => {
     setMounted(true)
@@ -199,23 +202,17 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
       fetchRecentActivities()
     }, 60_000)
 
-    // Real-time subscription: re-fetch on any new activity_log INSERT
-    const channel = supabase
-      .channel("activity_log_realtime")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "activity_log" },
-        () => {
-          fetchRecentActivities()
-        }
-      )
-      .subscribe()
-
     return () => {
       clearInterval(interval)
-      supabase.removeChannel(channel)
     }
   }, [fetchBadgeCounts, fetchRecentActivities])
+
+  // Actividad nueva en vivo: el provider avisa y aquí solo refrescamos
+  // la campanita. El primer valor (0) no dispara nada.
+  useEffect(() => {
+    if (lastEventAt === 0) return
+    fetchRecentActivities()
+  }, [lastEventAt, fetchRecentActivities])
 
   const initials =
     user?.email
