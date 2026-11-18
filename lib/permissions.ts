@@ -44,6 +44,13 @@ export type Capability =
   | "obras.delete"
   /** Borrar una empresa, con TODAS sus obras detrás. Sólo admin. */
   | "empresas.delete"
+  // ── Nómina ──
+  /** La pestaña de Administración: horas extra del personal de oficina.
+   *  Es información de sueldos, no de captura diaria. */
+  | "nomina.administracion.view"
+  /** Escribir el aguinaldo calculado en los expedientes. La base también
+   *  lo exige: aguinaldo_aplicar() rechaza a quien no sea admin. */
+  | "nomina.aguinaldo.apply"
   // ── Documentos de obra ──
   /** Eliminar un documento de la obra (contrato, cotización, etc.).
    *  Es de oficina: el director de obra no borra el contrato. */
@@ -67,6 +74,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   // Administración: ve el inventario pero no lo toca. El catálogo de
   // artículos lo mantiene almacén.
   user: [
+    "nomina.administracion.view",
     "obras.delete",
     "empresas.delete",
     "inventory.products.create",
@@ -81,6 +89,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   ],
 
   almacen: [
+    "nomina.administracion.view",
+    "nomina.aguinaldo.apply",
     "obras.delete",
     "empresas.delete",
     "payments.delete.anyMonth",
@@ -96,6 +106,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   ],
 
   worker: [
+    "nomina.administracion.view",
+    "nomina.aguinaldo.apply",
     "obras.delete",
     "empresas.delete",
     "payments.delete.anyMonth",
