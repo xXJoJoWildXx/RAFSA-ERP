@@ -53,7 +53,10 @@ import { listRecentPeriods, fmtDateDisplay } from "@/lib/payroll/weeks"
 import { generatePayrollReportPdf } from "@/lib/payroll/report"
 import { generatePayrollReportXlsx } from "@/lib/payroll/reportXlsx"
 import { AdminAttendance } from "@/components/adminAttendance"
+import { useAuth } from "@/lib/auth-context"
+import { can } from "@/lib/permissions"
 import { AdminOvertimeCard } from "@/components/adminOvertimeCard"
+import { AguinaldoCalculoPanel } from "@/components/aguinaldoCalculoPanel"
 import type { ReconLine, ReconResult } from "@/lib/payroll/types"
 
 function fmtCurrency(n: number | null | undefined): string {
@@ -93,6 +96,17 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   const [tab, setTab] = useState<"dispersion" | "asistencia" | "administracion">(
     "dispersion",
   )
+
+  const { user: usuarioActual } = useAuth()
+  const verAdministracion = can(usuarioActual?.role, "nomina.administracion.view")
+  const numPestanas = verAdministracion ? 3 : 2
+  const indicePestana = tab === "asistencia" ? 1 : tab === "administracion" ? 2 : 0
+
+  // Si el rol cambia (o alguien llega con la pestaña ya activa), no dejarlo
+  // parado en una pestaña que no le toca.
+  useEffect(() => {
+    if (!verAdministracion && tab === "administracion") setTab("dispersion")
+  }, [verAdministracion, tab])
   // Qué documento se concilia. El aguinaldo no usa semana ni asistencia.
   const [kind, setKind] = useState<ReconKindUI>("nomina")
   const esAguinaldo = kind === "aguinaldo"
@@ -354,18 +368,13 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           </div>
 
           {/* Pestañas */}
-          <div className="relative inline-grid grid-cols-3 p-1 rounded-xl bg-slate-800 border border-slate-700/60">
+          <div className={`relative inline-grid ${verAdministracion ? "grid-cols-3" : "grid-cols-2"} p-1 rounded-xl bg-slate-800 border border-slate-700/60`}>
             {/* Rectángulo azul deslizante */}
             <span
               className="absolute top-1 bottom-1 left-1 rounded-lg bg-[#0174bd] shadow-[0_2px_8px_rgba(1,116,189,0.4)] transition-transform duration-300 ease-out"
               style={{
-                width: "calc((100% - 8px) / 3)",
-                transform:
-                  tab === "asistencia"
-                    ? "translateX(100%)"
-                    : tab === "administracion"
-                      ? "translateX(200%)"
-                      : "translateX(0)",
+                width: `calc((100% - 8px) / ${numPestanas})`,
+                transform: `translateX(${indicePestana * 100}%)`,
               }}
             />
             <TabBtn active={tab === "dispersion"} onClick={() => setTab("dispersion")} icon={<FileSpreadsheet className="w-4 h-4" />}>
@@ -374,9 +383,11 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             <TabBtn active={tab === "asistencia"} onClick={() => setTab("asistencia")} icon={<ClipboardCheck className="w-4 h-4" />}>
               Tomar asistencia
             </TabBtn>
-            <TabBtn active={tab === "administracion"} onClick={() => setTab("administracion")} icon={<Clock className="w-4 h-4" />}>
-              Administración
-            </TabBtn>
+            {verAdministracion && (
+              <TabBtn active={tab === "administracion"} onClick={() => setTab("administracion")} icon={<Clock className="w-4 h-4" />}>
+                Administración
+              </TabBtn>
+            )}
           </div>
 
           {/* Se mantiene montado (solo oculto) para no perder lo capturado al cambiar de pestaña */}
@@ -384,12 +395,18 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             <AdminAttendance />
           </div>
 
-          <div className={tab === "administracion" ? "" : "hidden"}>
-            <AdminOvertimeCard variant="panel" />
-          </div>
+          {verAdministracion && (
+            <div className={tab === "administracion" ? "" : "hidden"}>
+              <AdminOvertimeCard variant="panel" />
+            </div>
+          )}
 
           {tab === "dispersion" && (
           <>
+
+          {/* El aguinaldo del ERP se calcula aquí antes de conciliarlo contra
+              el documento de la contadora. */}
+          {esAguinaldo && <AguinaldoCalculoPanel />}
 
           {/* Controles */}
           <div className="rounded-2xl border border-slate-700/60 bg-slate-800 p-5">
