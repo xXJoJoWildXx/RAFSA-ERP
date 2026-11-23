@@ -28,6 +28,9 @@ export type Capability =
   | "inventory.orders.view"
   | "inventory.orders.create"
   | "inventory.orders.delete"
+  /** Descargar el reporte de órdenes del periodo: gasto por obra y consumo
+   *  de artículos. Es información de costos, no de operación de almacén. */
+  | "inventory.orders.report"
   // ── Estado de cuenta ──
   /** Borrar pagos y movimientos registrados en meses anteriores.
    *  Sin esta capacidad, sólo se puede tocar lo registrado este mes. */
@@ -91,6 +94,8 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   almacen: [
     "nomina.administracion.view",
     "nomina.aguinaldo.apply",
+    // Surte las órdenes; el gasto por obra es información de oficina
+    "inventory.orders.report",
     "obras.delete",
     "empresas.delete",
     "payments.delete.anyMonth",
@@ -122,6 +127,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
     "inventory.orders.view",
     "inventory.orders.create",
     "inventory.orders.delete",
+    "inventory.orders.report",
     "projects.view",
     "employees.view",
     "nomina.view",

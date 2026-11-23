@@ -130,6 +130,23 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
     () => buildNavigation(basePath, user?.role),
     [basePath, user?.role],
   )
+
+  /**
+   * Una sección sigue activa dentro de sus subpáginas: el tab de Órdenes de
+   * Inventario, el detalle de una obra o el expediente de un empleado no son
+   * otra sección, son la misma más adentro. Comparando la ruta exacta, la
+   * navegación se apagaba en cuanto se entraba a cualquiera de ellas.
+   *
+   * El Dashboard es la excepción: su href es la raíz del panel, así que por
+   * prefijo se encendería en todas; ése sí va por coincidencia exacta.
+   */
+  const esSeccionActiva = useCallback(
+    (href: string) => {
+      if (href === basePath) return pathname === basePath || pathname === `${basePath}/`
+      return pathname === href || pathname.startsWith(`${href}/`)
+    },
+    [pathname, basePath],
+  )
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [mounted, setMounted] = useState(false)
   const [searchFocused, setSearchFocused] = useState(false)
@@ -483,7 +500,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             <div className="space-y-1">
               {navigation.map((item, index) => {
                 const Icon = item.icon
-                const isActive = pathname === item.href
+                const isActive = esSeccionActiva(item.href)
 
                 return (
                   <Link
@@ -638,7 +655,7 @@ export function AdminLayout({ children }: { children: React.ReactNode }) {
             {/* Page title + breadcrumb */}
             <div className="flex-1 lg:flex-none flex items-center gap-3">
               <h2 className="hidden lg:block text-[15px] font-semibold text-slate-200 tracking-tight">
-                {navigation.find((n) => n.href === pathname)?.name || "RAFSA ERP"}
+                {navigation.find((n) => esSeccionActiva(n.href))?.name || "RAFSA ERP"}
               </h2>
               <span className="hidden lg:block text-[10px] font-medium text-[#4da8e8] bg-[#0174bd]/15 border border-[#0174bd]/20 px-2 py-0.5 rounded-full">
                 {panelBadge}

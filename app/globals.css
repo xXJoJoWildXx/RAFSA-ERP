@@ -153,6 +153,24 @@
   }
 }
 
+/* ───────────────────────────────────────────────────────────
+   Brinco corto al activarse un control
+
+   Para que se vea CUÁL botón se eligió, no sólo que cambió de color.
+   Se usa con animate-[rafsa-pop_260ms_ease-out] en el elemento activo.
+   ─────────────────────────────────────────────────────────── */
+@keyframes rafsa-pop {
+  0% {
+    transform: scale(0.94);
+  }
+  60% {
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(1) brightness(2);
   cursor: pointer;
