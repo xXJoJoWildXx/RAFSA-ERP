@@ -9,13 +9,15 @@ import { Badge } from "@/components/ui/badge"
 import { Input } from "@/components/ui/input"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { generatePickingListPdf } from "@/lib/pickingListPdf"
+import { InventoryOrdersReportModal } from "@/components/inventoryOrdersReportModal"
+import { can } from "@/lib/permissions"
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table"
 import {
   ClipboardList, Eye, Upload, CheckCircle2, XCircle, Loader2, Search,
   Trash2, FileText, Truck, Download, AlertTriangle, FileCheck2, PackageCheck, FileCode2,
-  Info, X, ChevronDown, Building2, HardHat, Printer,
+  Info, X, ChevronDown, Building2, HardHat, Printer, FileBarChart2,
 } from "lucide-react"
 import {
   InventoryProduct, InventoryOrder, OrderItem, OrderInvoice, CfdiData,
@@ -44,6 +46,10 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
   // "pendientes" agrupa pending + in_progress, que es justo lo que cuenta el
   // card de Pendientes. Arranca ahí: es lo que requiere atención.
   const [statusFilter, setStatusFilter] = useState<string>("pendientes")
+
+  // Reporte del periodo (lo descarga oficina, no almacén)
+  const puedeReportar = can(user?.role, "inventory.orders.report")
+  const [reportOpen, setReportOpen] = useState(false)
 
   // Create dialog
   const [createOpen, setCreateOpen] = useState(false)
@@ -597,8 +603,19 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
             {esSolicitante ? "Genera salidas a obra con la cantidad a surtir; almacén prepara el pedido, sube la factura y confirma la entrega." : "Recibe las órdenes, prepara el pedido, sube la factura y confirma la entrega a obra."}
           </p>
         </div>
-        {(esSolicitante || headerRight) && (
+        {(esSolicitante || puedeReportar || headerRight) && (
           <div className="flex items-center gap-2 flex-wrap sm:justify-end">
+            {puedeReportar && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="cursor-pointer border-slate-600 bg-slate-800/60 text-slate-200 hover:bg-slate-700 hover:text-white"
+                onClick={() => setReportOpen(true)}
+                title="Reporte del periodo: gasto por obra y artículos más utilizados"
+              >
+                <FileBarChart2 className="w-4 h-4 mr-1.5" /> Reporte
+              </Button>
+            )}
             {esSolicitante && (
               <Button size="sm" className="cursor-pointer bg-violet-600 hover:bg-violet-700 text-white" onClick={() => openCreate()}>
                 <Truck className="w-4 h-4 mr-1.5" /> Nueva salida a obra
@@ -995,6 +1012,11 @@ export function InventoryOrders({ role, headerRight }: { role: "admin" | "user" 
           )}
         </DialogContent>
       </Dialog>
+
+      {/* ─── Reporte de órdenes del periodo ─── */}
+      {puedeReportar && reportOpen && (
+        <InventoryOrdersReportModal open={reportOpen} onClose={() => setReportOpen(false)} notify={notify} />
+      )}
 
       {/* ─── Confirmación propia (sustituye window.confirm) ─── */}
       <Dialog open={!!confirmState} onOpenChange={(v) => { if (!v) resolveConfirm(false) }}>
