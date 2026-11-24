@@ -15,6 +15,7 @@ export type ActivityEventType =
   | "inventory.order_created" | "inventory.order_deleted"
   | "inventory.order_delivered" | "inventory.order_completed"
   | "inventory.invoice_uploaded"
+  | "inventory.product_created" | "inventory.product_updated"
   | "document.uploaded" | "document.deleted"
   // Proveedores. Los cuatro últimos los genera el job de pg_cron, no un usuario.
   | "proveedor.factura_subida" | "proveedor.envio_confirmado"
@@ -84,6 +85,8 @@ export function formatEventType(event_type: string): string {
     "inventory.order_delivered":     "Orden entregada",
     "inventory.order_completed":     "Orden completada",
     "inventory.invoice_uploaded":    "Factura de orden subida",
+    "inventory.product_created":     "Producto nuevo inventario",
+    "inventory.product_updated":     "Producto de inventario actualizado",
     "document.uploaded":             "Documento subido",
     "document.deleted":              "Documento eliminado",
     "proveedor.factura_subida":      "Factura de proveedor subida",
@@ -125,6 +128,7 @@ export function activityTone(event_type: string): ActivityTone {
     "obra.completed":               "success",
     "inventory.order_delivered":    "success",
     "inventory.order_completed":    "success",
+    "inventory.product_created":    "success",
     // La descarta el sistema porque nadie la resolvió: es un aviso, no un logro
     "bajada.auto_descartada":       "warning",
   }

@@ -214,7 +214,7 @@ export function InventarioScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             p_valid_until: validUntil, p_note: "Edición de producto",
           })
         }
-        await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.product", entity_id: editingItem.id, entity_label: base.descripcion, metadata: { action: "updated" } })
+        await logActivity({ event_type: "inventory.product_updated", entity_type: "inventory.product", entity_id: editingItem.id, entity_label: base.descripcion, metadata: { action: "updated" } })
       } else {
         const { data: created, error } = await supabase
           .from("inventory_products")
@@ -228,7 +228,7 @@ export function InventarioScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             p_valid_until: validUntil, p_note: "Alta de producto", p_source: "manual",
           })
         }
-        await logActivity({ event_type: "document.uploaded" as any, entity_type: "inventory.product", entity_id: created?.id, entity_label: base.descripcion, metadata: { action: "created" } })
+        await logActivity({ event_type: "inventory.product_created", entity_type: "inventory.product", entity_id: created?.id, entity_label: base.descripcion, metadata: { action: "created" } })
       }
       setFormOpen(false)
       await loadData()

@@ -69,6 +69,12 @@ import type { DateRange } from "react-day-picker"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { formatTenure, tenurePaused } from "@/lib/employeeTenure"
+import {
+  cargarPeriodos,
+  fueRecontratado,
+  formatPeriodo,
+  type EmploymentPeriod,
+} from "@/lib/employmentPeriods"
 import { upcomingOccurrences, mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 // -------------------- Tipos reales de la DB --------------------
@@ -967,6 +973,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
 
   const [fileViewer, setFileViewer] = useState<{ url: string; name: string; isPdf: boolean } | null>(null)
 
+  /* ── Periodos de contratación ──
+     Tramos en los que el empleado ha estado contratado. Si hay más de uno
+     fue recontratado, y el perfil cambia de "Fecha de contratación" a
+     "Rangos de contratación". Los mantiene el trigger en la base. */
+  const [periodos, setPeriodos] = useState<EmploymentPeriod[]>([])
+  const recontratado = fueRecontratado(periodos)
+
+  /* ── Reactivación ──
+     El switch de la pill abre este popup, que pide la fecha de la nueva
+     contratación. La fecha de baja no se pregunta: la guardó el trigger el
+     día en que se marcó inactivo al trabajador. */
+  const esInactivo = (employee?.statusRaw || "").toLowerCase() === "inactive"
+  const [reactivarOpen, setReactivarOpen] = useState(false)
+  const [reactivarFecha, setReactivarFecha] = useState("")
+  const [reactivarError, setReactivarError] = useState<string | null>(null)
+  const [reactivando, setReactivando] = useState(false)
+
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
   /** Error del guardado, mostrado DENTRO del popup. Cuando el choque es por
@@ -1203,6 +1226,8 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
         }
 
         setEmployee(mapped)
+
+        cargarPeriodos(mapped.id).then(setPeriodos)
 
         setBankingForm({
           bank_name: mapped.bank_name ?? "",
@@ -1668,6 +1693,100 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     }
   }
 
+  /** Abre el popup de recontratación con la fecha de hoy ya puesta, que es
+   *  el caso normal: se reactiva a alguien el día que vuelve. */
+  const abrirReactivar = () => {
+    setReactivarFecha(mexicoTodayISO())
+    setReactivarError(null)
+    setReactivarOpen(true)
+  }
+
+  /**
+   * Reactiva al empleado con una fecha de contratación nueva.
+   *
+   * La fecha se escribe en dos campos a propósito:
+   *   · hire_date        → es la que muestra la card del directorio
+   *   · tenure_started_on → arranca el periodo nuevo, sin borrar lo acumulado
+   *
+   * El trigger de la base cierra el tramo anterior y abre el nuevo solo.
+   */
+  const handleReactivar = async () => {
+    if (!employee || !id) return
+
+    if (!reactivarFecha) {
+      setReactivarError("Captura la fecha de la nueva contratación.")
+      return
+    }
+    if (reactivarFecha > mexicoTodayISO()) {
+      setReactivarError("La fecha de contratación no puede ser futura.")
+      return
+    }
+    // No puede arrancar antes de que terminara el tramo anterior.
+    const ultimoCierre = periodos
+      .map((p) => p.ended_on)
+      .filter((f): f is string => !!f)
+      .sort()
+      .pop()
+    if (ultimoCierre && reactivarFecha < ultimoCierre) {
+      setReactivarError(
+        `La fecha no puede ser anterior a la baja previa (${formatDate(ultimoCierre)}).`,
+      )
+      return
+    }
+
+    setReactivarError(null)
+    setReactivando(true)
+    try {
+      const { data, error } = await supabase
+        .from("employees")
+        .update({
+          status: "active",
+          hire_date: reactivarFecha,
+          tenure_started_on: reactivarFecha,
+        })
+        .eq("id", id)
+        .select("*")
+        .single()
+
+      if (error) {
+        console.error("Error reactivando empleado:", {
+          message: error.message,
+          details: (error as any).details,
+          hint: (error as any).hint,
+          code: (error as any).code,
+        })
+        setReactivarError(error.message || "No se pudo reactivar al empleado.")
+        return
+      }
+
+      await logActivity({
+        event_type: "employee.status_changed",
+        entity_type: "employee",
+        entity_id: id,
+        entity_label: `${employee.name}: Inactivo → Activo`,
+        metadata: {
+          employee_name: employee.name,
+          from_status: "inactive",
+          to_status: "active",
+          rehire_date: reactivarFecha,
+        },
+      })
+
+      setEmployee((prev) => {
+        const next = mapRowToDetail(data as EmployeeRow)
+        next.roles = prev?.roles || []
+        return next
+      })
+      setPeriodos(await cargarPeriodos(id))
+      setReactivarOpen(false)
+    } catch (e) {
+      console.error(e)
+      setReactivarError("Ocurrió un error inesperado al reactivar al empleado.")
+    } finally {
+      setReactivando(false)
+    }
+  }
+
   /** Devuelve true si guardó. El popup sólo se cierra cuando es true: antes
    *  se cerraba siempre y el usuario perdía lo que había escrito. */
   const handleSave = async (): Promise<boolean> => {
@@ -1771,6 +1890,8 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             to_status: estatusNuevo,
           },
         })
+        // El trigger abrió o cerró un tramo: hay que releerlos.
+        setPeriodos(await cargarPeriodos(id))
       }
 
       setEmployee((prev) => {
@@ -2353,10 +2474,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                             <SelectValue placeholder="Selecciona un estatus" />
                           </SelectTrigger>
                           <SelectContent className={selectContentCls}>
-                            <SelectItem value="active">Activo</SelectItem>
+                            {/* Reactivar desde aquí se saltaría la captura de
+                                la fecha de recontratación, así que se cierra
+                                la puerta y se manda al switch de la pill. */}
+                            <SelectItem value="active" disabled={esInactivo}>
+                              Activo
+                            </SelectItem>
                             <SelectItem value="inactive">Inactivo</SelectItem>
                           </SelectContent>
                         </Select>
+
+                        {esInactivo && (
+                          <p className="text-[11px] leading-snug text-slate-500">
+                            Para reactivarlo usa el switch junto a la pill
+                            &ldquo;Inactivo&rdquo;: ahí se captura la fecha de la
+                            nueva contratación.
+                          </p>
+                        )}
 
                         {/* Aviso solo si el empleado tiene cuenta de acceso */}
                         {employee.user_id && (
@@ -2445,6 +2579,18 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                       className={inputCls}
                       value={deleteConfirmText}
                       onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      // Con la palabra ya escrita, Enter vale lo mismo que el
+                      // clic: no hay que soltar el teclado para confirmar.
+                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                        if (
+                          e.key === "Enter" &&
+                          !deleting &&
+                          deleteConfirmText.trim().toUpperCase() === "ELIMINAR"
+                        ) {
+                          e.preventDefault()
+                          handleDeleteEmployee()
+                        }
+                      }}
                       placeholder='Escribe "ELIMINAR"'
                       autoComplete="off"
                     />
@@ -2478,6 +2624,101 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             </Dialog>
           </div>
         </div>
+
+        {/* ── Recontratación ──
+            Lo abre el switch de la pill de estatus. Sólo pide la fecha de
+            entrada: la de salida ya quedó guardada el día que se marcó
+            inactivo al trabajador. */}
+        <Dialog
+          open={reactivarOpen}
+          onOpenChange={(abierto: boolean) => {
+            if (!reactivando) setReactivarOpen(abierto)
+          }}
+        >
+          <DialogContent className="sm:max-w-md bg-slate-800 border-slate-700 text-slate-100">
+            <DialogHeader>
+              <DialogTitle className="text-slate-100 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Reactivar a {employee?.name}
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Captura la fecha en que vuelve a entrar. A partir de ella se
+                reanuda el conteo de su antigüedad, y es la que verás en su
+                card del directorio.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="reactivar_fecha" className={labelCls}>
+                  Fecha de nueva contratación
+                </Label>
+                <Input
+                  id="reactivar_fecha"
+                  type="date"
+                  max={mexicoTodayISO()}
+                  value={reactivarFecha}
+                  onChange={(e) => {
+                    setReactivarFecha(e.target.value)
+                    setReactivarError(null)
+                  }}
+                  className="bg-slate-900/60 border-slate-700 text-slate-100"
+                />
+              </div>
+
+              {/* Lo que ya trabajó no se pierde: se le dice, porque es la
+                  duda natural al reactivar a alguien. */}
+              {periodos.length > 0 && (
+                <div className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 text-xs text-slate-400">
+                  <p className="font-medium text-slate-300 mb-1.5">
+                    Historial en la empresa
+                  </p>
+                  <ul className="space-y-0.5">
+                    {periodos.map((p) => (
+                      <li key={p.id}>{formatPeriodo(p)}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-slate-500">
+                    Su antigüedad acumulada ({employee?.tenure}) se conserva:
+                    el tiempo nuevo se suma al anterior.
+                  </p>
+                </div>
+              )}
+
+              {reactivarError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{reactivarError}</span>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setReactivarOpen(false)}
+                disabled={reactivando}
+                className="border-slate-600 text-slate-300 hover:bg-slate-700/60"
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleReactivar}
+                disabled={reactivando || !reactivarFecha}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                {reactivando ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Reactivando...
+                  </>
+                ) : (
+                  "Reactivar empleado"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={rolesDialogOpen} onOpenChange={setRolesDialogOpen}>
           <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
@@ -2778,9 +3019,48 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                   <h3 className="font-semibold text-slate-100 text-xl">
                     {employee.name}
                   </h3>
-                  <Badge className={getStatusColor(employee.statusUi)}>
-                    {employee.statusUi}
-                  </Badge>
+                  {/* Pill de estatus. Cuando el empleado está inactivo trae
+                      un switch para reactivarlo de un clic: abre el popup que
+                      pide la fecha de la nueva contratación. Si está activo
+                      la pill es sólo informativa y la baja se sigue haciendo
+                      desde "Editar perfil", como antes. */}
+                  <div className="flex justify-center">
+                    <Badge
+                      className={`${getStatusColor(employee.statusUi)} ${
+                        employee.statusUi === "Inactivo" ? "gap-2 pr-1.5" : ""
+                      }`}
+                    >
+                      {employee.statusUi}
+
+                      {employee.statusUi === "Inactivo" && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={false}
+                          aria-label="Reactivar empleado"
+                          title="Reactivar empleado: se te pedirá la fecha de la nueva contratación"
+                          onClick={abrirReactivar}
+                          className="
+                            group relative inline-flex h-4 w-7 flex-shrink-0 cursor-pointer
+                            items-center rounded-full border border-slate-500/40
+                            bg-slate-600/60 transition-colors duration-200
+                            hover:border-emerald-500/50 hover:bg-emerald-500/30
+                            focus-visible:outline-none focus-visible:ring-2
+                            focus-visible:ring-emerald-500/60 focus-visible:ring-offset-1
+                            focus-visible:ring-offset-slate-900
+                          "
+                        >
+                          <span
+                            className="
+                              pointer-events-none inline-block h-3 w-3 translate-x-0.5
+                              rounded-full bg-slate-300 shadow transition-all duration-200
+                              group-hover:translate-x-3.5 group-hover:bg-emerald-300
+                            "
+                          />
+                        </button>
+                      )}
+                    </Badge>
+                  </div>
 
                   {/* Estado de la cuenta de acceso al ERP. Solo aplica a
                       empleados con cuenta vinculada (p. ej. directores de obra).
@@ -2872,17 +3152,54 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
-                    <span className="text-slate-400">
-                      Fecha de contratación: {formatDate(employee.joinDate)}
-                    </span>
-                  </div>
+                  {/* Un empleado recontratado tiene más de un tramo, así que
+                      una sola fecha de contratación miente. En ese caso se
+                      listan todos los rangos; en el caso normal se deja la
+                      línea de siempre. */}
+                  {recontratado ? (
+                    <div className="flex items-start gap-3 text-sm">
+                      <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0 mt-0.5" />
+                      <div className="text-slate-400">
+                        <span>Rangos de contratación:</span>
+                        <ul className="mt-1 space-y-0.5">
+                          {periodos.map((p) => (
+                            <li key={p.id} className="flex items-center gap-1.5">
+                              <span
+                                className={
+                                  p.ended_on
+                                    ? "text-slate-300"
+                                    : "text-emerald-400 font-medium"
+                                }
+                              >
+                                {formatPeriodo(p)}
+                              </span>
+                              {p.reconstruido && (
+                                <span
+                                  className="text-[10px] text-slate-500"
+                                  title="Tramo deducido de la antigüedad acumulada antes de que se registraran los periodos. Fechas aproximadas."
+                                >
+                                  aprox.
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 text-sm">
+                      <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                      <span className="text-slate-400">
+                        Fecha de contratación: {formatDate(employee.joinDate)}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-3 text-sm">
                     <Clock className="w-4 h-4 text-slate-500 flex-shrink-0" />
                     <span className="text-slate-400">
-                      Tiempo contratado: {employee.tenure}
+                      {recontratado ? "Tiempo total contratado" : "Tiempo contratado"}:{" "}
+                      {employee.tenure}
                       {employee.tenurePaused && (
                         <span
                           className="ml-1.5 text-amber-400/90"

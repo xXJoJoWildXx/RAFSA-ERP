@@ -27,6 +27,7 @@ import {
   Package,
   Activity,
   Wallet,
+  TrendingUp,
 } from "lucide-react"
 import Link from "next/link"
 import Image from "next/image"
@@ -60,6 +61,8 @@ const SECCIONES: { name: string; path: string; icon: typeof LayoutDashboard; bad
   { name: "Proveedores",  path: "/proveedores",  icon: Truck,           badgeKey: null,        cap: "suppliers.view" },
   { name: "Inventario",   path: "/inventario",   icon: Package,         badgeKey: null,        cap: "inventory.view" },
   { name: "Actividades",  path: "/activities",   icon: Activity,        badgeKey: null,        cap: "activities.view" },
+  // Al final y sólo para admin: es el resultado de la empresa
+  { name: "Finanzas",     path: "/finanzas",     icon: TrendingUp,      badgeKey: null,        cap: "finanzas.view" },
 ]
 
 function buildNavigation(basePath: string, role: string | null | undefined): NavItem[] {
