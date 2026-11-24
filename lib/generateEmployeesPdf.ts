@@ -55,6 +55,7 @@ const MATRIX_DATOS = [
   { key: "real_salary", short: "Sdo" },
   { key: "overtime", short: "HEx" },
   { key: "aguinaldo", short: "Agui" },
+  { key: "infonavit", short: "Info" },
   { key: "bank_name", short: "Bco" },
   { key: "account_number", short: "Cta" },
   { key: "clabe", short: "CLB" },
@@ -119,8 +120,15 @@ function drawFooter(doc: Doc, page: number, generatedAt: string): void {
 }
 
 /** Cuadrito de estado: verde si está capturado, rojo si falta. */
-function statusMark(doc: Doc, x: number, y: number, ok: boolean): void {
+function statusMark(doc: Doc, x: number, y: number, ok: boolean, info = false): void {
   const s = 2.6
+  if (!ok && info) {
+    // Informativo sin capturar: no es un faltante, es un dato que no aplica
+    doc.setDrawColor(...MUTED)
+    doc.setLineWidth(0.4)
+    doc.line(x - s / 2, y, x + s / 2, y)
+    return
+  }
   if (ok) {
     doc.setFillColor(...GREEN)
     doc.roundedRect(x - s / 2, y - s / 2, s, s, 0.6, 0.6, "F")
@@ -361,7 +369,7 @@ function drawMatrix(
 
     const faltan = cols.filter((c) => {
       const it = itemByKey(a, c.key)
-      return it ? !it.ok : false
+      return it ? !it.ok && !it.info : false
     }).length
 
     doc.setFont("helvetica", faltan > 0 ? "bold" : "normal")
@@ -372,7 +380,7 @@ function drawMatrix(
     cols.forEach((c, i) => {
       const it = itemByKey(a, c.key)
       if (!it) return
-      statusMark(doc, ML + NAME_W + colW * i + colW / 2, y + 2.7, it.ok)
+      statusMark(doc, ML + NAME_W + colW * i + colW / 2, y + 2.7, it.ok, it.info)
     })
 
     doc.setFont("helvetica", "bold")
@@ -402,6 +410,9 @@ function drawMatrix(
     doc.text("Capturado", ML + 5, y + 1)
     statusMark(doc, ML + 30, y, false)
     doc.text("Falta por capturar", ML + 33.5, y + 1)
+    // El guion marca lo informativo: se reporta, pero no cuenta como faltante
+    statusMark(doc, ML + 70, y, false, true)
+    doc.text("Informativo: no cuenta como faltante", ML + 73.5, y + 1)
   }
 }
 
@@ -471,7 +482,7 @@ function drawEmployeeCard(doc: Doc, a: EmployeeAudit, y: number, index: number):
       cy += LH + 0.6
 
       for (const it of g.items) {
-        statusMark(doc, col.x + 1.3, cy - 1, it.ok)
+        statusMark(doc, col.x + 1.3, cy - 1, it.ok, it.info)
 
         doc.setFont("helvetica", "normal")
         doc.setFontSize(6.8)
@@ -479,8 +490,8 @@ function drawEmployeeCard(doc: Doc, a: EmployeeAudit, y: number, index: number):
         const labelTxt = fit(doc, it.label, 36, 6.8)
         doc.text(labelTxt, col.x + 4, cy)
 
-        doc.setFont("helvetica", it.ok ? "normal" : "bold")
-        doc.setTextColor(...(it.ok ? INK : RED))
+        doc.setFont("helvetica", it.ok || it.info ? "normal" : "bold")
+        doc.setTextColor(...(it.ok ? INK : it.info ? MUTED : RED))
         doc.text(fit(doc, it.value, COL_W - 44, 6.8), col.x + 42, cy)
 
         cy += LH
@@ -612,7 +623,7 @@ export async function generateEmployeesPdf(sources: EmployeeAuditSource[]): Prom
       activos,
       MATRIX_DATOS,
       "Matriz de datos del empleado",
-      "Foto / Nacimiento / RFC / NSS / Ingreso / Rol / Código de nómina / Sueldo / Hora extra / Aguinaldo / Banco / Cuenta / CLABE",
+      "Foto / Nacimiento / RFC / NSS / Ingreso / Rol / Código de nómina / Sueldo / Hora extra / Aguinaldo / Infonavit / Banco / Cuenta / CLABE",
       generatedAt,
       pageRef,
     )

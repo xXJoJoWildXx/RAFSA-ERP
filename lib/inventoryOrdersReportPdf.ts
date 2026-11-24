@@ -111,7 +111,9 @@ export async function generateInventoryOrdersReportPdf(rep: ReporteOrdenes): Pro
       const alto = altoMarca / LOGO.h
       const ancho = alto * LOGO.ratio
       // Centrada en la banda: (BANDA - altoMarca) / 2
-      doc.addImage(logo, "PNG", ML - LOGO.x0 * ancho, 6 - LOGO.y0 * alto, ancho, alto)
+      // alias + compresión: sin ellos jsPDF guarda el PNG sin comprimir y
+      // una vez por página, y el documento se iba a varios MB.
+      doc.addImage(logo, "PNG", ML - LOGO.x0 * ancho, 6 - LOGO.y0 * alto, ancho, alto, "rafsa-logo", "FAST")
     } else {
       // Sin logo (archivo movido o fetch bloqueado) el documento no se queda sin firma
       doc.setFont("helvetica", "bold")

@@ -816,7 +816,7 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           .select(
             `
             id, full_name, status, photo_url, birth_date, rfc, imss_number,
-            hire_date, payroll_code, real_salary, overtime_hour_cost, aguinaldo_amount,
+            hire_date, payroll_code, real_salary, overtime_hour_cost, aguinaldo_amount, infonavit_amount,
             bonus_amount, viatics_amount, bank_name, account_number,
             interbank_clabe, is_foraneo, residence_location, phone
           `,
@@ -876,6 +876,7 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
         real_salary: e.real_salary,
         overtime_hour_cost: e.overtime_hour_cost,
         aguinaldo_amount: e.aguinaldo_amount,
+        infonavit_amount: e.infonavit_amount,
         bonus_amount: e.bonus_amount,
         viatics_amount: e.viatics_amount,
         bank_name: e.bank_name,

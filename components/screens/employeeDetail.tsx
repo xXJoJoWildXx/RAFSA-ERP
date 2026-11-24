@@ -93,6 +93,7 @@ type EmployeeRow = {
   overtime_hour_cost: number | string
   viatics_amount: number | string
   aguinaldo_amount: number | string
+  infonavit_amount: number | string
   bank_name: string | null
   account_number: string | null
   interbank_clabe: string | null
@@ -169,6 +170,7 @@ type EmployeeDetail = {
   overtime_hour_cost: number
   viatics_amount: number
   aguinaldo_amount: number
+  infonavit_amount: number
   bank_name: string | null
   account_number: string | null
   interbank_clabe: string | null
@@ -201,6 +203,7 @@ type EditEmployeeForm = {
   overtime_hour_cost: string
   viatics_amount: string
   aguinaldo_amount: string
+  infonavit_amount: string
 }
 
 type BankingForm = {
@@ -219,6 +222,7 @@ type EmployeeSalaryHistoryRow = {
   overtime_hour_cost: number
   viatics_amount: number
   aguinaldo_amount: number
+  infonavit_amount: number
   valid_from: string
   valid_to: string | null
   changed_by: string | null
@@ -526,6 +530,10 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     row.aguinaldo_amount !== null && row.aguinaldo_amount !== undefined
       ? Number(row.aguinaldo_amount)
       : 0
+  const infonavit =
+    row.infonavit_amount !== null && row.infonavit_amount !== undefined
+      ? Number(row.infonavit_amount)
+      : 0
 
   return {
     id: row.id,
@@ -548,6 +556,7 @@ function mapRowToDetail(row: EmployeeRow): EmployeeDetail {
     overtime_hour_cost: overtime,
     viatics_amount: viatics,
     aguinaldo_amount: aguinaldo,
+    infonavit_amount: infonavit,
     bank_name: row.bank_name ?? null,
     account_number: row.account_number ?? null,
     interbank_clabe: row.interbank_clabe ?? null,
@@ -655,6 +664,7 @@ async function updateEmployeeSalaryHistory(args: {
   overtime_hour_cost: number
   viatics_amount: number
   aguinaldo_amount: number
+  infonavit_amount: number
   authUserId?: string | null
   change_reason?: string | null
 }) {
@@ -1131,6 +1141,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             aguinaldo_amount,
           viatics_amount,
             aguinaldo_amount,
+            infonavit_amount,
             bank_name,
             account_number,
             interbank_clabe,
@@ -1426,6 +1437,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
       overtime_hour_cost: employee.overtime_hour_cost?.toString() ?? "0",
       viatics_amount: employee.viatics_amount?.toString() ?? "0",
       aguinaldo_amount: employee.aguinaldo_amount?.toString() ?? "0",
+      infonavit_amount: employee.infonavit_amount?.toString() ?? "0",
     })
   }
 
@@ -1710,6 +1722,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
           bonus_amount,
           overtime_hour_cost,
           aguinaldo_amount,
+          infonavit_amount,
           viatics_amount,
           bank_name,
           account_number,
@@ -1792,6 +1805,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
         overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
         viatics_amount: Number(editForm.viatics_amount) || 0,
         aguinaldo_amount: Number(editForm.aguinaldo_amount) || 0,
+        infonavit_amount: Number(editForm.infonavit_amount) || 0,
         authUserId: currentAuthUserId,
         change_reason: null,
       })
@@ -1823,6 +1837,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             overtime_hour_cost: Number(editForm.overtime_hour_cost) || 0,
             viatics_amount: Number(editForm.viatics_amount) || 0,
             aguinaldo_amount: Number(editForm.aguinaldo_amount) || 0,
+            infonavit_amount: Number(editForm.infonavit_amount) || 0,
           },
         })
       }
@@ -2584,6 +2599,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                           <th className="py-3 pr-4 font-semibold text-slate-300">Hora extra</th>
                           <th className="py-3 pr-4 font-semibold text-slate-300">Viáticos</th>
                           <th className="py-3 pr-4 font-semibold text-slate-300">Aguinaldo</th>
+                          <th className="py-3 pr-4 font-semibold text-slate-300">Infonavit</th>
                           <th className="py-3 pr-0 font-semibold text-slate-300">Modificado por</th>
                         </tr>
                       </thead>
@@ -2607,6 +2623,9 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                             </td>
                             <td className="py-3 pr-4 font-medium text-slate-100">
                               {formatMoneyMXN(row.aguinaldo_amount)}
+                            </td>
+                            <td className="py-3 pr-4 font-medium text-slate-100">
+                              {formatMoneyMXN(row.infonavit_amount)}
                             </td>
                             <td className="py-3 pr-0 text-slate-400">
                               {row.changed_by_name || "No registrado"}
@@ -3327,6 +3346,25 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                     }
                                   />
                                 </div>
+
+                                <div className="space-y-2">
+                                  <Label htmlFor="infonavit_amount" className={labelCls}>
+                                    Infonavit (MXN)
+                                  </Label>
+                                  <Input
+                                    id="infonavit_amount"
+                                    type="number"
+                                    step="0.01"
+                                    className={inputCls}
+                                    value={editForm.infonavit_amount}
+                                    onChange={(e) =>
+                                      handleEditChange("infonavit_amount", e.target.value)
+                                    }
+                                  />
+                                  <p className="text-[11px] text-slate-500">
+                                    Sólo se registra; todavía no descuenta en la nómina.
+                                  </p>
+                                </div>
                               </div>
                             )}
 
@@ -3388,6 +3426,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                           <p className="text-slate-400">Aguinaldo</p>
                           <p className="font-medium text-slate-100 text-xl">
                             {formatMoneyMXN(employee.aguinaldo_amount)}
+                          </p>
+                        </div>
+
+                        <div className="space-y-1">
+                          <p className="text-slate-400">Infonavit</p>
+                          <p className="font-medium text-slate-100 text-xl">
+                            {formatMoneyMXN(employee.infonavit_amount)}
                           </p>
                         </div>
                       </div>

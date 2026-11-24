@@ -19,6 +19,62 @@ export type EDCPago = {
   concept: "deposit" | "advance" | "retention" | "return"
   date: string | null
   amount: number
+  /** Método de pago y referencia bancaria, si se capturaron */
+  method: string | null
+  reference: string | null
+  /** Folio de factura escrito a mano en el movimiento (así se registraba antes) */
+  invoiceNumber: string | null
+  note: string | null
+  /** true cuando el cobro cuelga de una factura del ERP */
+  linkedToFactura: boolean
+}
+
+const CONCEPTO_PAGO: Record<string, string> = {
+  deposit: "Depósito",
+  advance: "Anticipo",
+  retention: "Retención",
+  return: "Devolución",
+}
+
+/**
+ * Cobros que no cuelgan de ninguna factura del ERP.
+ *
+ * Antes de que existieran estimaciones y facturas, los cobros se capturaban
+ * sueltos en el estado de cuenta de la obra. Esos registros se conservaron al
+ * migrar, así que una obra puede tener cobros que ninguna estimación explica:
+ * sin imprimirlos, la suma de PAGADO no llega al "Cobrado" del resumen.
+ */
+export function pagosSinFactura(obra: EDCObra): EDCPago[] {
+  return obra.pagos.filter((p) => !p.linkedToFactura)
+}
+
+/** Importe con signo: una devolución resta, igual que en el "Cobrado". */
+export function montoPago(p: EDCPago): number {
+  return p.concept === "return" ? -Number(p.amount || 0) : Number(p.amount || 0)
+}
+
+/** El método se guarda en clave; en el documento va en español, como en pantalla. */
+const METODO_PAGO: Record<string, string> = {
+  transfer: "Transferencia",
+  cash: "Efectivo",
+  check: "Cheque",
+  other: "Otro",
+}
+
+/** Fecha · concepto · método · referencia · nota, con lo que haya. */
+export function descripcionPago(p: EDCPago): string {
+  const partes: string[] = []
+  if (p.date) {
+    const d = new Date(p.date.length === 10 ? `${p.date}T00:00:00` : p.date)
+    partes.push(d.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }))
+  }
+  // El depósito es el caso normal y el bloque ya se llama "PAGOS": nombrarlo
+  // en cada renglón sólo gasta el ancho de la columna.
+  if (p.concept !== "deposit") partes.push(CONCEPTO_PAGO[p.concept] ?? p.concept)
+  if (p.method) partes.push(METODO_PAGO[p.method] ?? p.method)
+  if (p.reference && p.reference !== "0") partes.push(`Ref. ${p.reference}`)
+  if (p.note) partes.push(p.note)
+  return partes.join(" · ")
 }
 
 export type EDCEstimacion = {
@@ -226,7 +282,7 @@ function drawDocHeader(doc: jsPDF, W: number, date: Date, logo: string | null, s
     if (logo) {
       const h = 16
       const w = h * (1748 / 1241)
-      doc.addImage(logo, "PNG", MARGIN, 6, w, h)
+      doc.addImage(logo, "PNG", MARGIN, 6, w, h, "rafsa-logo", "FAST")
     } else {
       doc.setFont("helvetica", "bold"); doc.setFontSize(16); txt(doc, BLUE_DK)
       doc.text("RAFSA", MARGIN, 18)
@@ -246,7 +302,7 @@ function drawDocHeader(doc: jsPDF, W: number, date: Date, logo: string | null, s
   if (logo) {
     const h = 38
     const w = h * (1748 / 1241)
-    doc.addImage(logo, "PNG", MARGIN, 4, w, h)
+    doc.addImage(logo, "PNG", MARGIN, 4, w, h, "rafsa-logo", "FAST")
   } else {
     doc.setFont("helvetica", "bold"); doc.setFontSize(36); txt(doc, BLUE_DK)
     doc.text("RAFSA", MARGIN, 30)
@@ -562,6 +618,8 @@ type EstRow = {
   facAmt: number | null
   facPaid: number
   facStatus: string | null
+  /** Cobro suelto: no es trabajo estimado, sólo aporta a la columna PAGADO. */
+  esPago?: boolean
 }
 
 function contractStripHeight(obra: EDCObra): number {
@@ -597,6 +655,14 @@ function drawObraDetail(doc: jsPDF, y: number, obra: EDCObra, newPage: () => num
     label: "Aditiva", desc: ad.description, isAnticipo: false,
     monto: ad.amount, retencion: 0, amortizacion: 0, neto: ad.amount,
     facNum: ad.facturaNumber, facAmt: ad.facturaAmount, facPaid: ad.facturaPaid, facStatus: ad.facturaStatus,
+  }))
+  // Cobros capturados sueltos, de cuando no había estimaciones ni facturas.
+  // Sin ellos la columna PAGADO no llega al "Cobrado" del resumen.
+  const pagoRows: EstRow[] = pagosSinFactura(obra).map((pg) => ({
+    label: "Pago", desc: descripcionPago(pg), isAnticipo: false,
+    monto: 0, retencion: 0, amortizacion: 0, neto: 0,
+    facNum: pg.invoiceNumber, facAmt: null, facPaid: montoPago(pg), facStatus: null,
+    esPago: true,
   }))
 
   // Asegurar que quepa cabecera + franja + encabezado tabla + 1 fila
@@ -648,10 +714,21 @@ function drawObraDetail(doc: jsPDF, y: number, obra: EDCObra, newPage: () => num
     }
   }
 
+  // ── Cobros sin estimación — van tras la última aditiva, con su espacio ──
+  if (pagoRows.length > 0) {
+    if (y + 4.8 + rowH > bottom) {
+      y = newPage()
+      y = drawObraBar(doc, y, W, obra, true)
+      y = drawEstHeader(doc, y, cols)
+    }
+    y = drawSpacerRow(doc, y, cols, rEnd, "PAGOS REGISTRADOS SIN ESTIMACIÓN")
+    pagoRows.forEach(drawRow)
+  }
+
   // ── Fondo de garantía (solo si aplica) — separado por otro espaciador ──
   const hasGarantia = obra.garantiaAmount > 0 || obra.garantiaPct > 0
   if (hasGarantia) {
-    const hadContent = estRows.length > 0 || aditRows.length > 0
+    const hadContent = estRows.length > 0 || aditRows.length > 0 || pagoRows.length > 0
     if (y + 4.5 + rowH > bottom) {
       y = newPage()
       y = drawObraBar(doc, y, W, obra, true)
@@ -769,6 +846,14 @@ function drawEstHeader(doc: jsPDF, y: number, cols: EstCols): number {
   return y + h
 }
 
+/** Recorta midiendo el ancho real, no contando caracteres. */
+function truncW(doc: jsPDF, text: string, maxW: number): string {
+  if (doc.getTextWidth(text) <= maxW) return text
+  let t = text
+  while (t.length > 1 && doc.getTextWidth(t + "...") > maxW) t = t.slice(0, -1)
+  return t + "..."
+}
+
 function drawEstRow(doc: jsPDF, y: number, cols: EstCols, row: EstRow, index: number, rowH: number, rEnd: number) {
   const contentW = rEnd - MARGIN
   if (index % 2 === 1) { fill(doc, { r: 248, g: 249, b: 250 }); doc.rect(MARGIN, y, contentW, rowH, "F") }
@@ -787,10 +872,20 @@ function drawEstRow(doc: jsPDF, y: number, cols: EstCols, row: EstRow, index: nu
 
   // Descripción
   doc.setFont("helvetica", "normal"); doc.setFontSize(6.8); txt(doc, INK)
-  doc.text(trunc(row.desc, Math.floor(cols.desc.w / 1.5)), cols.desc.x + 2, baseY)
+  doc.text(
+    row.esPago ? truncW(doc, row.desc, cols.desc.w - 4) : trunc(row.desc, Math.floor(cols.desc.w / 1.5)),
+    cols.desc.x + 2,
+    baseY,
+  )
 
-  // Monto
-  doc.text(fmtNum(row.monto), cols.monto.x + cols.monto.w - 2, baseY, { align: "right" })
+  // Monto — un cobro suelto no es trabajo estimado: no lleva monto ni neto
+  if (row.esPago) {
+    txt(doc, LITE)
+    doc.text("—", cols.monto.x + cols.monto.w - 2, baseY, { align: "right" })
+    txt(doc, INK)
+  } else {
+    doc.text(fmtNum(row.monto), cols.monto.x + cols.monto.w - 2, baseY, { align: "right" })
+  }
 
   // Amortización (solo cantidad)
   txt(doc, row.amortizacion > 0 ? RED_DED : LITE)
@@ -801,8 +896,8 @@ function drawEstRow(doc: jsPDF, y: number, cols: EstCols, row: EstRow, index: nu
   doc.text(row.retencion > 0 ? fmtNum(row.retencion) : "—", cols.retencion.x + cols.retencion.w - 2, baseY, { align: "right" })
 
   // Neto a facturar
-  doc.setFont("helvetica", "bold"); txt(doc, INK)
-  doc.text(fmtNum(row.neto), cols.neto.x + cols.neto.w - 2, baseY, { align: "right" })
+  doc.setFont("helvetica", "bold"); txt(doc, row.esPago ? LITE : INK)
+  doc.text(row.esPago ? "—" : fmtNum(row.neto), cols.neto.x + cols.neto.w - 2, baseY, { align: "right" })
 
   // Factura (número + estado)
   if (row.facNum) {
@@ -826,13 +921,17 @@ function drawEstRow(doc: jsPDF, y: number, cols: EstCols, row: EstRow, index: nu
 }
 
 /** Fila espaciadora delgada y vacía dentro de la misma tabla (separa estimaciones de aditivas). */
-function drawSpacerRow(doc: jsPDF, y: number, cols: EstCols, rEnd: number): number {
-  const h = 3.4
+function drawSpacerRow(doc: jsPDF, y: number, cols: EstCols, rEnd: number, label?: string): number {
+  const h = label ? 4.8 : 3.4
   fill(doc, { r: 242, g: 244, b: 246 })
   doc.rect(MARGIN, y, rEnd - MARGIN, h, "F")
   stroke(doc, RULE); doc.setLineWidth(0.1)
   ;[cols.est.x, cols.desc.x, cols.monto.x, cols.amortizacion.x, cols.retencion.x, cols.neto.x, cols.fac.x, cols.facturado.x, cols.pagado.x, rEnd].forEach((vx) => doc.line(vx, y, vx, y + h))
   doc.line(MARGIN, y + h, rEnd, y + h)
+  if (label) {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(5.4); txt(doc, MID)
+    doc.text(label, cols.desc.x + 2, y + 3.3)
+  }
   return y + h
 }
 

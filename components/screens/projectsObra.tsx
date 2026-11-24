@@ -1530,7 +1530,12 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
       const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
       const salida = emp.next_bajada_date as string
       const reingreso = (emp.next_reingreso_date as string | null) ?? null
-      // Evita duplicar por asignación + fecha de salida
+      // Esta consulta sólo evita el insert en el caso normal. NO es la
+      // garantía: entre el select y el insert no hay nada, y esta función
+      // corre en paralelo consigo misma (al abrir la obra y otra vez por la
+      // suscripción realtime), así que dos corridas leían "no existe" y las
+      // dos insertaban. Quien arbitra es el índice único
+      // (assignment_id, bajada_date); aquí sólo se ignora su violación.
       const { data: existing } = await supabase
         .from("bajada_notifications")
         .select("id")
@@ -1538,13 +1543,17 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
         .eq("bajada_date", salida)
         .limit(1)
       if (!existing || existing.length === 0) {
-        await supabase.from("bajada_notifications").insert({
+        const { error: insErr } = await supabase.from("bajada_notifications").insert({
           obra_id: obraId,
           assignment_id: a.id,
           employee_id: a.employee_id,
           bajada_date: salida,
           reingreso_date: reingreso,
         })
+        // 23505 = la otra corrida ganó. No es un error que nadie deba ver.
+        if (insErr && insErr.code !== "23505") {
+          console.error("No se pudo crear la notificación de bajada:", insErr.message)
+        }
       }
     }
 

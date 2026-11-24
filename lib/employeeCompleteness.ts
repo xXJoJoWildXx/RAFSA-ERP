@@ -26,6 +26,7 @@ export type EmployeeAuditSource = {
   real_salary: number | string | null
   overtime_hour_cost: number | string | null
   aguinaldo_amount: number | string | null
+  infonavit_amount: number | string | null
   bonus_amount: number | string | null
   viatics_amount: number | string | null
 
@@ -52,6 +53,14 @@ export type CheckItem = {
   ok: boolean
   /** Lo capturado, para poder verificarlo de un vistazo */
   value: string
+  /**
+   * Informativo: se muestra pero no cuenta para la completitud.
+   *
+   * Hay datos que sólo aplican a algunos trabajadores —el Infonavit lo tiene
+   * quien tiene crédito— y exigirlos a todos marcaría como incompleto a quien
+   * simplemente no lo trae. Se reporta el valor sin castigar el porcentaje.
+   */
+  info?: boolean
 }
 
 export type CheckGroup = {
@@ -158,6 +167,8 @@ export function buildEmployeeAudit(src: EmployeeAuditSource): EmployeeAudit {
     { key: "real_salary", short: "Sdo", label: "Sueldo real", ...money(src.real_salary) },
     { key: "overtime", short: "H.Ex", label: "Costo de hora extra", ...money(src.overtime_hour_cost) },
     { key: "aguinaldo", short: "Agui", label: "Aguinaldo", ...money(src.aguinaldo_amount) },
+    // Sólo captura: no descuenta en nómina y no exige a todos
+    { key: "infonavit", short: "Info", label: "Infonavit", ...money(src.infonavit_amount), info: true },
   ]
 
   // La residencia sólo se exige a los foráneos
@@ -204,8 +215,8 @@ export function buildEmployeeAudit(src: EmployeeAuditSource): EmployeeAudit {
     { key: "expediente", label: "Expediente de documentos", items: expediente, okCount: 0, total: 0 },
   ].map((g) => ({
     ...g,
-    okCount: g.items.filter((i) => i.ok).length,
-    total: g.items.length,
+    okCount: g.items.filter((i) => i.ok && !i.info).length,
+    total: g.items.filter((i) => !i.info).length,
   }))
 
   const okCount = groups.reduce((s, g) => s + g.okCount, 0)
@@ -254,7 +265,7 @@ export function missingRanking(
   for (const a of activos) {
     for (const g of a.groups) {
       for (const i of g.items) {
-        if (i.ok) continue
+        if (i.ok || i.info) continue
         const k = `${g.key}:${i.key}`
         const prev = acc.get(k)
         if (prev) prev.count += 1
