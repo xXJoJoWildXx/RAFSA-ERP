@@ -60,6 +60,7 @@ export function formatEventType(event_type: string): string {
     "empresa.created":               "Empresa creada",
     "empresa.deleted":               "Empresa eliminada",
     "empresa.updated":               "Empresa actualizada",
+    "bajada.auto_descartada":        "Bajada descartada automáticamente",
     "obra.created":                  "Obra creada",
     "obra.deleted":                  "Obra eliminada",
     "obra.status_changed":           "Estatus de obra cambiado",
@@ -124,6 +125,8 @@ export function activityTone(event_type: string): ActivityTone {
     "obra.completed":               "success",
     "inventory.order_delivered":    "success",
     "inventory.order_completed":    "success",
+    // La descarta el sistema porque nadie la resolvió: es un aviso, no un logro
+    "bajada.auto_descartada":       "warning",
   }
   if (explicitos[event_type]) return explicitos[event_type]
 
@@ -139,6 +142,7 @@ export function entityBadgeClass(entity_type: string): string {
     obra:                "bg-green-500/15 text-green-400",
     empresa:             "bg-purple-500/15 text-purple-400",
     team:                "bg-amber-500/15 text-amber-400",
+    bajada:              "bg-amber-500/15 text-amber-400",
     billing:             "bg-emerald-500/15 text-emerald-400",
     inventory:           "bg-cyan-500/15 text-cyan-400",
     document:            "bg-slate-600/40 text-slate-400",

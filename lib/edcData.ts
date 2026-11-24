@@ -49,7 +49,7 @@ export async function fetchEDCObras(obraIds: string[]): Promise<Record<string, E
       .in("obra_id", obraIds),
     supabase
       .from("obra_state_accounts")
-      .select("obra_id, amount, concept, date")
+      .select("obra_id, amount, concept, date, method, bank_ref, note, invoice_number, factura_id")
       .in("obra_id", obraIds)
       .order("date", { ascending: true }),
   ])
@@ -98,14 +98,35 @@ export async function fetchEDCObras(obraIds: string[]): Promise<Record<string, E
   })
 
   // ── Cobros (state accounts): neto + lista de movimientos ──
-  type AccRow = { obra_id: string; amount: number | null; concept: Concept; date: string | null }
+  type AccRow = {
+    obra_id: string
+    amount: number | null
+    concept: Concept
+    date: string | null
+    method: string | null
+    bank_ref: string | null
+    note: string | null
+    invoice_number: string | null
+    factura_id: string | null
+  }
   const spentMap: Record<string, number> = {}
   const pagosMap: Record<string, EDCPago[]> = {}
   ;((accRes.data as AccRow[] | null) || []).forEach((a) => {
     const sign = a.concept === "return" ? -1 : 1
     spentMap[a.obra_id] = (spentMap[a.obra_id] || 0) + sign * Number(a.amount || 0)
     if (!pagosMap[a.obra_id]) pagosMap[a.obra_id] = []
-    pagosMap[a.obra_id].push({ concept: a.concept, date: a.date, amount: Number(a.amount || 0) })
+    pagosMap[a.obra_id].push({
+      concept: a.concept,
+      date: a.date,
+      amount: Number(a.amount || 0),
+      method: a.method,
+      reference: a.bank_ref,
+      invoiceNumber: a.invoice_number,
+      note: a.note,
+      // Los cobros viejos se capturaron sueltos: no apuntan a ninguna factura.
+      // Ésa es la marca que los distingue de los que sí tienen estimación.
+      linkedToFactura: !!a.factura_id,
+    })
   })
 
   // ── Obras (meta + contrato) ──

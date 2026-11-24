@@ -12,6 +12,7 @@
  */
 
 import type { EDCEmpresa, EDCObra } from "@/lib/edcPdf"
+import { pagosSinFactura, montoPago, descripcionPago } from "@/lib/edcPdf"
 
 const MONEY = '"$"#,##0.00'
 
@@ -353,16 +354,18 @@ function buildDetalle(
       const drawRow = (opts: {
         label: string; desc: string; isAnt?: boolean; monto: number; amort: number; ret: number; neto: number;
         facNum: string | null; facStatus: string | null; facAmt: number | null; facPaid: number
+        /** Cobro suelto: sólo aporta a PAGADO, no es trabajo estimado */
+        esPago?: boolean
       }) => {
         const bg = alt ? C.rowAlt : C.white
         alt = !alt
         const row = ws.getRow(r)
         const lc = row.getCell(1); lc.value = opts.label; lc.font = { bold: true, size: 8.5, color: { argb: opts.isAnt ? C.blue : C.ink } }; lc.alignment = { horizontal: "center" }; fillCell(lc, bg); borderAll(lc)
         const dc = row.getCell(2); dc.value = opts.desc; dc.font = { size: 8.5, color: { argb: C.ink } }; fillCell(dc, bg); borderAll(dc)
-        moneyCell(row, 3, opts.monto, false, C.ink, bg)
+        moneyCell(row, 3, opts.esPago ? null : opts.monto, false, C.ink, bg)
         moneyCell(row, 4, opts.amort > 0 ? opts.amort : null, false, C.red, bg)
         moneyCell(row, 5, opts.ret > 0 ? opts.ret : null, false, C.red, bg)
-        moneyCell(row, 6, opts.neto, true, C.ink, bg)
+        moneyCell(row, 6, opts.esPago ? null : opts.neto, true, C.ink, bg)
         const fc = row.getCell(7); fc.value = opts.facNum ?? "Sin factura"; fc.font = { size: 8.5, color: { argb: opts.facNum ? C.ink : "FF9AA0A6" } }; fillCell(fc, bg); borderAll(fc)
         const sc = row.getCell(8); sc.value = facLabel(opts.facStatus); sc.font = { size: 8, bold: true, color: { argb: facArgb(opts.facStatus) } }; sc.alignment = { horizontal: "left" }; fillCell(sc, bg); borderAll(sc)
         moneyCell(row, 9, opts.facAmt, false, C.ink, bg)
@@ -397,6 +400,26 @@ function buildDetalle(
         r++
         obra.aditivas.forEach((ad) =>
           drawRow({ label: "Aditiva", desc: ad.description, monto: ad.amount, amort: 0, ret: 0, neto: ad.amount, facNum: ad.facturaNumber, facStatus: ad.facturaStatus, facAmt: ad.facturaAmount, facPaid: ad.facturaPaid }))
+      }
+
+      // Cobros capturados sueltos, de cuando no había estimaciones ni facturas.
+      // Sin ellos la columna PAGADO no llega al "Cobrado" del resumen.
+      const pagosPrevios = pagosSinFactura(obra)
+      if (pagosPrevios.length > 0) {
+        ws.mergeCells(r, 1, r, LASTCOL)
+        const ph = ws.getCell(r, 1)
+        ph.value = "PAGOS REGISTRADOS SIN ESTIMACIÓN"
+        ph.font = { bold: true, size: 8, color: { argb: C.blueDk } }
+        fillCell(ph, C.graySub)
+        borderAll(ph)
+        ph.alignment = { horizontal: "left", indent: 1 }
+        r++
+        pagosPrevios.forEach((pg) =>
+          drawRow({
+            label: "Pago", desc: descripcionPago(pg), monto: 0, amort: 0, ret: 0, neto: 0,
+            facNum: pg.invoiceNumber, facStatus: null, facAmt: null, facPaid: montoPago(pg),
+            esPago: true,
+          }))
       }
 
       // Fondo de garantía (si aplica)
