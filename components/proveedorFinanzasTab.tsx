@@ -5,6 +5,7 @@ import {
   AlertTriangle, BarChart2, Building2, Loader2, Package, Truck, Wrench,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 
 type Egreso = {
   obra_id: string
@@ -64,6 +65,11 @@ export function ProveedorFinanzasTab() {
   }, [])
 
   useEffect(() => { void cargar() }, [cargar])
+
+  /* Varias personas trabajan Proveedores a la vez. Esto vuelve a
+     consultar en cuanto alguien más registra un pago, procesa una
+     factura o manda material, sin esperar a que se recargue. */
+  useRealtimeRefresco("proveedores-finanzas", TABLAS_PROVEEDORES.finanzas, cargar)
 
   /* ── cuentas por pagar ── */
   const porPagar = useMemo(() => {

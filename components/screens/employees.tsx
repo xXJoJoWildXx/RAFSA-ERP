@@ -35,6 +35,7 @@ import { logActivity } from "@/lib/activityLog"
 import { generateEmployeesPdf } from "@/lib/generateEmployeesPdf"
 import type { EmployeeAuditSource } from "@/lib/employeeCompleteness"
 import { formatTenure, normalizeName } from "@/lib/employeeTenure"
+import { mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 // ----- Tipos que reflejan la DB real -----
 
@@ -476,10 +477,17 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           })
         })
 
+        /* Sólo las asignaciones VIGENTES. Esta consulta traía todas, abiertas
+           y cerradas, así que un trabajador dado de baja seguía contando la
+           obra de la que ya salió. assigned_to no nulo y en el pasado o en el
+           día = ya terminó; una fecha futura es una salida programada y la
+           persona sigue en la obra. */
+        const hoy = mexicoTodayISO()
         const { data: assignData, error: assignError } = await supabase
           .from("obra_assignments")
           .select("employee_id, obra_id, obras(status)")
           .in("employee_id", employeeIds)
+          .or(`assigned_to.is.null,assigned_to.gt.${hoy}`)
 
         if (assignError) {
           console.error("Error fetching obra_assignments:", stringifyAnyError(assignError))
@@ -488,7 +496,16 @@ export function EmployeesScreen({ allowed }: { allowed: UserRoleScreen[] }) {
         const assignments = (assignData || []) as ObraAssignmentWithObra[]
         const projectsMap: Record<string, number> = {}
 
+        /* Un trabajador dado de baja no cuenta obras, pase lo que pase con
+           la fecha de cierre de su asignación. */
+        const inactivos = new Set(
+          rows
+            .filter((r) => (r.status || "").toLowerCase() !== "active")
+            .map((r) => r.id),
+        )
+
         assignments.forEach((a) => {
+          if (inactivos.has(a.employee_id)) return
           const raw = a.obras
           let status: string | null = null
 

@@ -1543,6 +1543,11 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
           interbank_clabe: mapped.interbank_clabe ?? "",
         })
 
+        /* Sólo las asignaciones VIGENTES. Antes traía todas, abiertas y
+           cerradas, así que el perfil de un trabajador dado de baja seguía
+           mostrando la obra de la que ya salió. Una fecha futura sí se
+           incluye: es una salida programada y la persona sigue ahí. */
+        const hoyAsignaciones = mexicoTodayISO()
         const { data: assignData, error: assignError } = await supabase
           .from("obra_assignments")
           .select(
@@ -1557,13 +1562,19 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
           `,
           )
           .eq("employee_id", id)
+          .or(`assigned_to.is.null,assigned_to.gt.${hoyAsignaciones}`)
 
         if (assignError) {
           console.error("Error fetching obra_assignments:", assignError)
         } else {
           const rows = (assignData || []) as ObraAssignmentWithObra[]
 
-          const mappedProjects: AssignedObra[] = rows
+          /* Un trabajador dado de baja no está en ninguna obra, pase lo que
+             pase con la fecha de cierre de su asignación. */
+            const estaDeBaja =
+              (mapped.statusRaw || "").toLowerCase() !== "active"
+
+          const mappedProjects: AssignedObra[] = (estaDeBaja ? [] : rows)
             .map((row) => {
               const raw = row.obras
               let obra: ObraRow | null = null

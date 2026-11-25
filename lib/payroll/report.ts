@@ -40,7 +40,12 @@ export function generatePayrollReportPdf(result: ReconResult): void {
   const cols = [
     { key: "codigo", label: "Código", x: margin, w: 16, align: "left" as const },
     { key: "nombre", label: "Empleado", x: margin + 16, w: 62, align: "left" as const },
-    { key: "cuenta", label: "Cuenta bancaria", x: margin + 78, w: 58, align: "left" as const },
+    // Medido a 7.5 pt: una CLABE de 18 dígitos ocupa 26.2 mm y los nombres
+    // de banco más largos de uso común ("BANCO DEL BAJIO") 23.6 mm. Se
+    // reparten los 58 mm que antes tenía la columna combinada dejando
+    // holgura a la cuenta, que es el dato que NO puede salir cortado.
+    { key: "banco", label: "Banco", x: margin + 78, w: 27, align: "left" as const },
+    { key: "cuenta", label: "Cuenta", x: margin + 105, w: 31, align: "left" as const },
     { key: "real", label: "Sueldo total", x: margin + 136, w: 38, align: "right" as const },
     { key: "fiscal", label: "A depositar", x: margin + 174, w: 38, align: "right" as const },
     { key: "efectivo", label: "Efectivo", x: margin + 212, w: 40, align: "right" as const },
@@ -149,8 +154,10 @@ export function generatePayrollReportPdf(result: ReconResult): void {
         doc.setFillColor(245, 247, 250)
         doc.rect(margin, y - 3.6, tableRight - margin, 6.4, "F")
       }
-      const cuenta =
-        [r.bank_name, r.account_number || r.interbank_clabe].filter(Boolean).join(" ") || "—"
+      // Banco y cuenta van en columnas aparte: así se leen de corrido al
+      // capturar la dispersión en el portal del banco.
+      const banco = r.bank_name || "—"
+      const cuenta = r.account_number || r.interbank_clabe || "—"
       const nombre = r.employee_name_erp || r.employee_name_raw || "—"
 
       doc.setTextColor(...ink)
@@ -158,16 +165,17 @@ export function generatePayrollReportPdf(result: ReconResult): void {
       doc.text(doc.splitTextToSize(nombre, cols[1].w - 2)[0] || nombre, cols[1].x, y)
       doc.setTextColor(...muted)
       doc.setFontSize(7.5)
-      doc.text(doc.splitTextToSize(cuenta, cols[2].w - 2)[0] || cuenta, cols[2].x, y)
+      doc.text(doc.splitTextToSize(banco, cols[2].w - 2)[0] || banco, cols[2].x, y)
+      doc.text(doc.splitTextToSize(cuenta, cols[3].w - 2)[0] || cuenta, cols[3].x, y)
       doc.setFontSize(8.5)
       doc.setTextColor(...ink)
 
-      doc.text(r.real_total != null ? money(r.real_total) : "pend.", cols[3].x + cols[3].w, y, { align: "right" })
-      doc.text(money(r.fiscal_neto), cols[4].x + cols[4].w, y, { align: "right" })
+      doc.text(r.real_total != null ? money(r.real_total) : "pend.", cols[4].x + cols[4].w, y, { align: "right" })
+      doc.text(money(r.fiscal_neto), cols[5].x + cols[5].w, y, { align: "right" })
       doc.setFont("helvetica", "bold")
       doc.text(
         r.real_total != null ? money(r.efectivo) : "—",
-        cols[5].x + cols[5].w,
+        cols[6].x + cols[6].w,
         y,
         { align: "right" },
       )
@@ -186,9 +194,9 @@ export function generatePayrollReportPdf(result: ReconResult): void {
     doc.setFont("helvetica", "bold")
     doc.setTextColor(...ink)
     doc.text("Subtotal", cols[2].x, y + 3)
-    doc.text(money(gReal), cols[3].x + cols[3].w, y + 3, { align: "right" })
-    doc.text(money(gFiscal), cols[4].x + cols[4].w, y + 3, { align: "right" })
-    doc.text(money(gEfectivo), cols[5].x + cols[5].w, y + 3, { align: "right" })
+    doc.text(money(gReal), cols[4].x + cols[4].w, y + 3, { align: "right" })
+    doc.text(money(gFiscal), cols[5].x + cols[5].w, y + 3, { align: "right" })
+    doc.text(money(gEfectivo), cols[6].x + cols[6].w, y + 3, { align: "right" })
     doc.setFont("helvetica", "normal")
     y += 12
   }
@@ -204,9 +212,9 @@ export function generatePayrollReportPdf(result: ReconResult): void {
   doc.setFont("helvetica", "bold")
   doc.setFontSize(9)
   doc.text("TOTAL GENERAL", cols[0].x + 2, y + 7.5)
-  doc.text(`Real: ${money(result.totals.real)}`, cols[3].x + cols[3].w, y + 7.5, { align: "right" })
-  doc.text(`Depósito: ${money(result.totals.fiscal)}`, cols[4].x + cols[4].w, y + 7.5, { align: "right" })
-  doc.text(`Efectivo: ${money(result.totals.efectivo)}`, cols[5].x + cols[5].w, y + 7.5, { align: "right" })
+  doc.text(`Real: ${money(result.totals.real)}`, cols[4].x + cols[4].w, y + 7.5, { align: "right" })
+  doc.text(`Depósito: ${money(result.totals.fiscal)}`, cols[5].x + cols[5].w, y + 7.5, { align: "right" })
+  doc.text(`Efectivo: ${money(result.totals.efectivo)}`, cols[6].x + cols[6].w, y + 7.5, { align: "right" })
 
   // Pie
   const pages = doc.getNumberOfPages()
