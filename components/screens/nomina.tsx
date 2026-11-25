@@ -6,6 +6,9 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
+import { PayrollVacacionesModal } from "@/components/payrollVacacionesModal"
+import { BotonesDescarga } from "@/components/botonesDescarga"
+import { redondear } from "@/lib/payroll/vacaciones"
 import { Input } from "@/components/ui/input"
 import { Badge } from "@/components/ui/badge"
 import {
@@ -46,7 +49,7 @@ import {
   Trash2,
   BadgeCheck,
   ClipboardCheck,
-  Clock,
+  Clock, CalendarCheck,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
 import { listRecentPeriods, fmtDateDisplay } from "@/lib/payroll/weeks"
@@ -58,6 +61,7 @@ import { can } from "@/lib/permissions"
 import { AdminOvertimeCard } from "@/components/adminOvertimeCard"
 import { AguinaldoCalculoPanel } from "@/components/aguinaldoCalculoPanel"
 import type { ReconLine, ReconResult } from "@/lib/payroll/types"
+import type { VacacionesEnNomina } from "@/lib/payroll/types"
 
 function fmtCurrency(n: number | null | undefined): string {
   if (n == null || Number.isNaN(n)) return "—"
@@ -119,6 +123,9 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
   const [saving, setSaving] = useState(false)
   const [savedId, setSavedId] = useState<string | null>(null)
+
+  /* Vacaciones agregadas a mano sobre la corrida conciliada. */
+  const [vacacionesOpen, setVacacionesOpen] = useState(false)
 
   const [history, setHistory] = useState<RunRow[]>([])
   const [loadingHistory, setLoadingHistory] = useState(false)
@@ -182,6 +189,79 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
     if (!file || processing) return
     setResult(null)
     await runReconcile({ file })
+  }
+
+  /**
+   * Agrega el pago de vacaciones al renglón de un trabajador.
+   *
+   * No es un renglón aparte: el dinero entra a real_total, y como el
+   * efectivo es (real_total − depósito fiscal), el pago cae completo en
+   * efectivo. Eso es correcto: las vacaciones no vienen en el documento de
+   * la contadora, así que se entregan en efectivo igual que la diferencia
+   * del sueldo. El desglose queda guardado aparte para poder explicarlo.
+   */
+  function agregarVacaciones(employeeId: string, v: VacacionesEnNomina) {
+    setResult((prev) => {
+      if (!prev) return prev
+
+      const lines = prev.lines.map((l) => {
+        if (l.employee_id !== employeeId) return l
+
+        // Si ya traía vacaciones se reemplazan, no se acumulan.
+        const base = redondear((l.real_total ?? 0) - (l.vacaciones?.total ?? 0))
+        const real = redondear(base + v.total)
+        return {
+          ...l,
+          real_total: real,
+          efectivo: redondear(real - (l.fiscal_neto ?? 0)),
+          vacaciones: v,
+        }
+      })
+
+      return {
+        ...prev,
+        lines,
+        totals: {
+          real: redondear(lines.reduce((acc, l) => acc + (l.real_total ?? 0), 0)),
+          fiscal: prev.totals.fiscal,
+          efectivo: redondear(
+            lines
+              .filter((l) => l.real_total != null)
+              .reduce((acc, l) => acc + (l.efectivo ?? 0), 0),
+          ),
+        },
+      }
+    })
+  }
+
+  /** Quita las vacaciones de un renglón y deja el sueldo como estaba. */
+  function quitarVacaciones(employeeId: string) {
+    setResult((prev) => {
+      if (!prev) return prev
+      const lines = prev.lines.map((l) => {
+        if (l.employee_id !== employeeId || !l.vacaciones) return l
+        const real = redondear((l.real_total ?? 0) - l.vacaciones.total)
+        return {
+          ...l,
+          real_total: real,
+          efectivo: redondear(real - (l.fiscal_neto ?? 0)),
+          vacaciones: null,
+        }
+      })
+      return {
+        ...prev,
+        lines,
+        totals: {
+          real: redondear(lines.reduce((acc, l) => acc + (l.real_total ?? 0), 0)),
+          fiscal: prev.totals.fiscal,
+          efectivo: redondear(
+            lines
+              .filter((l) => l.real_total != null)
+              .reduce((acc, l) => acc + (l.efectivo ?? 0), 0),
+          ),
+        },
+      }
+    })
   }
 
   async function handleSave() {
@@ -295,6 +375,24 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
       interbank_clabe: l.interbank_clabe,
       match_status: l.match_status,
       flags: [],
+      /* Se reconstruye el desglose guardado, si no el reporte de una corrida
+         vieja saldría con el monto correcto pero sin decir de dónde salió.
+         El salario diario no se guarda: se deduce del importe y los días. */
+      vacaciones:
+        l.vacaciones_dias != null && Number(l.vacaciones_dias) > 0
+          ? {
+              anios: 0,
+              aniversario: null,
+              dias: Number(l.vacaciones_dias),
+              salario_diario:
+                Number(l.vacaciones_importe || 0) / Number(l.vacaciones_dias),
+              importe: Number(l.vacaciones_importe) || 0,
+              prima: Number(l.prima_vacacional) || 0,
+              total:
+                (Number(l.vacaciones_importe) || 0) +
+                (Number(l.prima_vacacional) || 0),
+            }
+          : null,
     }))
     const asResult: ReconResult = {
       kind: run.kind === "aguinaldo" ? "aguinaldo" : "nomina",
@@ -517,6 +615,27 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                 <SummaryCard label="Empleados en documento" value={String(result.counts.total - result.counts.sin_fiscal)} tone="blue" />
               </div>
 
+              <PayrollVacacionesModal
+                open={vacacionesOpen}
+                onOpenChange={setVacacionesOpen}
+                corte={result.week_end}
+                yaConVacaciones={
+                  new Set(
+                    result.lines
+                      .filter((l) => l.vacaciones && l.employee_id)
+                      .map((l) => l.employee_id as string),
+                  )
+                }
+                empleadosEnCorrida={
+                  new Set(
+                    result.lines
+                      .map((l) => l.employee_id)
+                      .filter((id): id is string => !!id),
+                  )
+                }
+                onAgregar={agregarVacaciones}
+              />
+
               <div className="flex flex-wrap items-center gap-3 text-sm">
                 {cuadre === true && (
                   <span className="flex items-center gap-1.5 text-emerald-400">
@@ -541,6 +660,33 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                 )}
 
                 <div className="ml-auto flex items-center gap-2">
+                  {/* Descarga de la corrida en pantalla, con el mismo botón
+                      que se desdobla en PDF y Excel del resto de la app. */}
+                  <BotonesDescarga
+                    etiqueta="Descargar"
+                    onDescargar={async (formato) => {
+                      if (formato === "pdf") generatePayrollReportPdf(result)
+                      else await generatePayrollReportXlsx(result)
+                    }}
+                    tituloPdf="Descargar la corrida en PDF"
+                    tituloExcel="Descargar la corrida en Excel"
+                  />
+
+                  {/* Vacaciones sólo tienen sentido en la nómina semanal: la
+                      corrida de aguinaldo es otro documento. */}
+                  {!esAguinaldo && (
+                    <Button
+                      onClick={() => setVacacionesOpen(true)}
+                      disabled={!!savedId}
+                      variant="outline"
+                      className="cursor-pointer border-slate-600 bg-slate-800/80 text-slate-300
+                                 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500
+                                 disabled:opacity-40 h-9"
+                    >
+                      <CalendarCheck className="w-4 h-4 mr-2" />
+                      Añadir vacaciones
+                    </Button>
+                  )}
                   <Button
                     onClick={handleSave}
                     disabled={saving || !!savedId}
@@ -553,20 +699,6 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                     ) : (
                       <><Save className="w-4 h-4 mr-2" />Guardar corrida</>
                     )}
-                  </Button>
-                  <Button
-                    onClick={() => generatePayrollReportPdf(result)}
-                    variant="outline"
-                    className="cursor-pointer border-slate-300 text-slate-900 hover:bg-slate-100 h-9"
-                  >
-                    <FileDown className="w-4 h-4 mr-2" />PDF
-                  </Button>
-                  <Button
-                    onClick={() => generatePayrollReportXlsx(result)}
-                    variant="outline"
-                    className="cursor-pointer border-emerald-300 text-emerald-700 hover:bg-emerald-50 h-9"
-                  >
-                    <FileSpreadsheet className="w-4 h-4 mr-2" />Excel
                   </Button>
                 </div>
               </div>
@@ -620,6 +752,24 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                                 <TableCell className="text-slate-400 text-xs">{r.departamento_raw || "—"}</TableCell>
                                 <TableCell className="text-right text-sm text-slate-200">
                                   {r.real_total != null ? fmtCurrency(r.real_total) : <span className="text-amber-400">pendiente</span>}
+                                  {/* Un sueldo más alto de lo normal necesita
+                                      explicación en la misma línea. */}
+                                  {r.vacaciones && (
+                                    <span className="block text-[11px] text-[#4da8e8]">
+                                      incluye {r.vacaciones.dias} días de vacaciones + prima:{" "}
+                                      {fmtCurrency(r.vacaciones.total)}
+                                      <button
+                                        type="button"
+                                        onClick={() => r.employee_id && quitarVacaciones(r.employee_id)}
+                                        disabled={!!savedId}
+                                        title="Quitar las vacaciones de este renglón"
+                                        className="ml-1.5 text-slate-500 hover:text-red-400 disabled:opacity-40
+                                                   disabled:hover:text-slate-500 cursor-pointer"
+                                      >
+                                        quitar
+                                      </button>
+                                    </span>
+                                  )}
                                 </TableCell>
                                 <TableCell className="text-right text-sm text-sky-300">{fmtCurrency(r.fiscal_neto)}</TableCell>
                                 <TableCell className="text-right text-sm font-semibold">
@@ -710,8 +860,11 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                         </TableCell>
                         <TableCell>
                           <div className="flex items-center justify-end gap-1">
+                            {/* Hover en tinto, pero aclarado: el #9b1c1c del
+                                botón sobre este fondo da 1.8:1 de contraste y
+                                el icono casi desaparecería al pasar el cursor. */}
                             <Button size="sm" variant="ghost" onClick={() => downloadRunReport(r.id, "pdf")}
-                              className="h-7 cursor-pointer text-slate-400 hover:text-slate-100" title="Descargar PDF">
+                              className="h-7 cursor-pointer text-slate-400 hover:text-[#c0392b]" title="Descargar PDF">
                               <FileDown className="w-4 h-4" />
                             </Button>
                             <Button size="sm" variant="ghost" onClick={() => downloadRunReport(r.id, "xlsx")}

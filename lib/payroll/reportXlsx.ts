@@ -227,6 +227,9 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
     { header: "A depositar", width: 16 },
     { header: "Efectivo", width: 16 },
     { header: "Estatus", width: 16 },
+    { header: "Días vacaciones", width: 16 },
+    { header: "Importe vacaciones", width: 19 },
+    { header: "Prima vacacional", width: 18 },
   ]
   ws2.columns = DET_COLS.map((c) => ({ width: c.width }))
 
@@ -268,6 +271,21 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
       if (l.real_total != null) { ec.value = Number(l.efectivo); ec.numFmt = MONEY_FMT } else { ec.value = "—" }
       ec.alignment = { horizontal: "right" }
       row.getCell(9).value = STATUS_LABEL[l.match_status] ?? l.match_status
+
+      // Desglose de vacaciones. Va al final para no mover las columnas que
+      // la gente ya conoce; vacío cuando el renglón no las trae.
+      if (l.vacaciones) {
+        row.getCell(10).value = l.vacaciones.dias
+        row.getCell(10).alignment = { horizontal: "right" }
+        const vi = row.getCell(11)
+        vi.value = Number(l.vacaciones.importe)
+        vi.numFmt = MONEY_FMT
+        vi.alignment = { horizontal: "right" }
+        const pv = row.getCell(12)
+        pv.value = Number(l.vacaciones.prima)
+        pv.numFmt = MONEY_FMT
+        pv.alignment = { horizontal: "right" }
+      }
 
       tReal += l.real_total ?? 0
       tFiscal += l.fiscal_neto ?? 0

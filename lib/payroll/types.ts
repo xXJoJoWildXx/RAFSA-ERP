@@ -50,6 +50,22 @@ export type ReconLine = {
   interbank_clabe: string | null
   match_status: ReconStatus
   flags: string[]
+  /** Vacaciones pagadas en esta corrida. real_total y efectivo YA la incluyen;
+   *  esto es el desglose para el documento y para la base. */
+  vacaciones?: VacacionesEnNomina | null
+}
+
+/** Desglose del pago de vacaciones agregado a un renglón de la nómina. */
+export type VacacionesEnNomina = {
+  /** Años cumplidos desde la ÚLTIMA contratación (al recontratado no se le suma). */
+  anios: number
+  /** Aniversario que se está pagando. Es la llave del registro de cobro. */
+  aniversario: string | null
+  dias: number
+  salario_diario: number
+  importe: number
+  prima: number
+  total: number
 }
 
 /** Resultado completo de la conciliación (preview, antes de guardar). */
