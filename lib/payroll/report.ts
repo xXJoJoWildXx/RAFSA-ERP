@@ -150,9 +150,10 @@ export function generatePayrollReportPdf(result: ReconResult): void {
     let i = 0
     for (const r of rows) {
       ensureSpace(groupName, sub)
+      const altoFila = r.vacaciones ? 9.4 : 6.4
       if (i % 2 === 0) {
         doc.setFillColor(245, 247, 250)
-        doc.rect(margin, y - 3.6, tableRight - margin, 6.4, "F")
+        doc.rect(margin, y - 3.6, tableRight - margin, altoFila, "F")
       }
       // Banco y cuenta van en columnas aparte: así se leen de corrido al
       // capturar la dispersión en el portal del banco.
@@ -163,6 +164,18 @@ export function generatePayrollReportPdf(result: ReconResult): void {
       doc.setTextColor(...ink)
       doc.text(r.codigo || "—", cols[0].x, y)
       doc.text(doc.splitTextToSize(nombre, cols[1].w - 2)[0] || nombre, cols[1].x, y)
+      // El renglón trae más dinero que el sueldo de la semana: se dice por qué.
+      if (r.vacaciones) {
+        doc.setFontSize(6.5)
+        doc.setTextColor(1, 116, 189)
+        doc.text(
+          `+ ${r.vacaciones.dias} d vacaciones y prima: ${money(r.vacaciones.total)}`,
+          cols[1].x,
+          y + 2.8,
+        )
+        doc.setFontSize(8.5)
+        doc.setTextColor(...ink)
+      }
       doc.setTextColor(...muted)
       doc.setFontSize(7.5)
       doc.text(doc.splitTextToSize(banco, cols[2].w - 2)[0] || banco, cols[2].x, y)
@@ -184,7 +197,7 @@ export function generatePayrollReportPdf(result: ReconResult): void {
       gReal += r.real_total ?? 0
       gFiscal += r.fiscal_neto ?? 0
       if (r.real_total != null) gEfectivo += r.efectivo ?? 0
-      y += 6.4
+      y += altoFila
       i++
     }
 

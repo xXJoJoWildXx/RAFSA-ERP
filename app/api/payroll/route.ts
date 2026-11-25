@@ -72,6 +72,12 @@ export async function POST(req: Request) {
       bank_name: l.bank_name,
       account_number: l.account_number,
       interbank_clabe: l.interbank_clabe,
+      // Desglose de vacaciones. real_total y efectivo ya lo traen sumado;
+      // esto queda para poder explicar meses después por qué ese renglón
+      // trae más dinero que el sueldo de la semana.
+      vacaciones_dias: l.vacaciones?.dias ?? null,
+      vacaciones_importe: l.vacaciones?.importe ?? null,
+      prima_vacacional: l.vacaciones?.prima ?? null,
       match_status:
         l.match_status === "matched" ? l.match_status : "unmatched",
       note:
@@ -89,6 +95,48 @@ export async function POST(req: Request) {
         { error: "No se pudieron guardar las líneas.", details: linesErr.message },
         { status: 500 },
       )
+    }
+
+    /* Registro de vacaciones cobradas.
+       Se escribe AQUÍ y no al agregarlas en la pantalla: hasta que la corrida
+       se guarda, el pago no existe. El índice único por (empleado,
+       aniversario) es lo que impide pagar dos veces el mismo periodo; si por
+       lo que sea ya hay renglón, se deja el que estaba. */
+    const vacacionesRows = body.lines
+      .filter((l) => l.vacaciones && l.employee_id && l.vacaciones.dias > 0)
+      .map((l) => ({
+        employee_id: l.employee_id as string,
+        aniversario: l.vacaciones!.aniversario,
+        anio_servicio: l.vacaciones!.anios,
+        dias: l.vacaciones!.dias,
+        importe: l.vacaciones!.importe,
+        prima: l.vacaciones!.prima,
+        total: l.vacaciones!.total,
+        payroll_run_id: run.id,
+        week_start: body.week_start ?? null,
+      }))
+      .filter((r) => !!r.aniversario)
+
+    if (vacacionesRows.length > 0) {
+      const { error: vacErr } = await admin
+        .from("employee_vacaciones_pagadas")
+        .upsert(vacacionesRows, {
+          onConflict: "employee_id,aniversario",
+          ignoreDuplicates: true,
+        })
+
+      // La corrida ya quedó guardada: un fallo aquí no la tira, pero sí se
+      // avisa, porque sin este registro se le podrían volver a pagar.
+      if (vacErr) {
+        console.error("employee_vacaciones_pagadas:", vacErr)
+        return NextResponse.json({
+          ok: true,
+          id: run.id,
+          warning:
+            "La corrida se guardó, pero no se pudo registrar el cobro de vacaciones: " +
+            vacErr.message,
+        })
+      }
     }
 
     return NextResponse.json({ ok: true, id: run.id })
