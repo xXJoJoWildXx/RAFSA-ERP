@@ -29,6 +29,8 @@ type EmployeeDocumentRow = {
   file_name: string | null
   mime_type: string | null
   file_size: number | null
+  /** Fecha de caducidad. NULL = no caduca. Hoy sólo la usa la constancia fiscal. */
+  expires_on: string | null
   created_at?: string
   updated_at?: string
 }
@@ -88,6 +90,7 @@ export async function GET(req: NextRequest) {
         file_name,
         mime_type,
         file_size,
+        expires_on,
         created_at,
         updated_at
       `,

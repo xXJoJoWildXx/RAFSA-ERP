@@ -38,6 +38,7 @@ import {
   Phone,
   Calendar,
   Clock,
+  RefreshCw,
   ArrowLeft,
   Edit,
   AlertTriangle,
@@ -69,6 +70,13 @@ import type { DateRange } from "react-day-picker"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { formatTenure, tenurePaused } from "@/lib/employeeTenure"
+import {
+  VIGENCIAS,
+  vencimientoSugerido,
+  estadoVigencia,
+  formatVencimiento,
+  hoyISO,
+} from "@/lib/documentExpiry"
 import {
   cargarPeriodos,
   fueRecontratado,
@@ -281,6 +289,8 @@ type EmployeeDocumentRow = {
   file_name: string | null
   mime_type: string | null
   file_size: number | null
+  /** Fecha de caducidad. NULL = no caduca. Hoy sólo la constancia fiscal. */
+  expires_on: string | null
   created_at?: string
   updated_at?: string
 }
@@ -304,6 +314,8 @@ type WorkDocumentRow = {
   file_name: string | null
   mime_type: string | null
   file_size: number | null
+  /** Fecha de caducidad. NULL = no caduca. */
+  expires_on: string | null
   created_at?: string
   updated_at?: string
 }
@@ -334,6 +346,295 @@ type EmployeeBankingApiResponse = {
  * quién lo tiene. Cuando el choque es por un valor único muestra el valor
  * repetido y al empleado que ya lo usa, con acceso directo a su perfil.
  */
+/**
+ * Campo de vigencia de un documento.
+ *
+ * El botón de la izquierda rellena la fecha de un clic con la duración del
+ * documento (DC3 1 año, reportes médicos 3 meses, constancia fiscal 1 año),
+ * pero el campo queda libre: se puede escribir cualquier otra fecha o
+ * vaciarlo para guardar el documento sin vencimiento.
+ */
+function CampoVigencia({
+  clave,
+  valor,
+  onChange,
+  idInput,
+}: {
+  clave: "dc3" | "medical_reports" | "tax_certificate"
+  valor: string
+  onChange: (v: string) => void
+  idInput: string
+}) {
+  const sugerida = vencimientoSugerido(clave)
+  const yaSugerida = valor === sugerida
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={idInput} className="text-slate-300">
+        Vigencia{" "}
+        <span className="text-xs font-normal text-slate-500">(opcional)</span>
+      </Label>
+
+      <div className="flex items-center gap-2">
+        <Input
+          id={idInput}
+          type="date"
+          min={hoyISO()}
+          value={valor}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            onChange(e.target.value)
+          }
+          className="bg-slate-900/60 border-slate-700 text-slate-100"
+        />
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onChange(sugerida)}
+          disabled={yaSugerida}
+          title={`Poner la vigencia estándar: ${VIGENCIAS[clave].etiqueta} a partir de hoy`}
+          className={`
+            cursor-pointer whitespace-nowrap disabled:opacity-100
+            ${
+              yaSugerida
+                ? "border-[#0174bd]/50 bg-[#0174bd]/20 text-[#4da8e8]"
+                : "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500"
+            }
+          `}
+        >
+          {VIGENCIAS[clave].etiqueta}
+        </Button>
+
+        {valor && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange("")}
+            title="Guardar sin fecha de vencimiento"
+            className="
+              cursor-pointer px-2 bg-transparent text-slate-400
+              hover:bg-red-500/15 hover:text-red-300
+            "
+          >
+            <X className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+
+      <p className="text-[11px] leading-snug text-slate-500">
+        {valor
+          ? `Vence el ${formatVencimiento(valor)}. Puedes cambiar la fecha libremente.`
+          : "Sin fecha, el documento no caduca."}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * Botón de vigencia de un documento, para poner junto a "Ver" / "Abrir".
+ *
+ * Tiene tres caras según el estado del documento:
+ *   · sin fecha → reloj,  "Vigencia"
+ *   · con fecha → lápiz,  la fecha a la vista
+ *   · vencido   → ciclo,  "Renovar", en rojo
+ *
+ * Al pulsarlo abre un popover con el campo de fecha, el botón rápido de la
+ * duración estándar del documento y la opción de dejarlo sin vencimiento.
+ * El estado del botón sale de la fecha YA GUARDADA, no de la del campo: hasta
+ * que no se guarda, un documento vencido sigue pidiendo renovación.
+ */
+function BotonVigencia({
+  clave,
+  expiresOn,
+  onGuardar,
+  disabled,
+}: {
+  clave: "dc3" | "medical_reports" | "tax_certificate"
+  expiresOn: string | null
+  onGuardar: (nueva: string | null) => Promise<void>
+  disabled?: boolean
+}) {
+  const [abierto, setAbierto] = useState(false)
+  const [valor, setValor] = useState("")
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const estado = estadoVigencia(expiresOn)
+  const vencido = estado.estado === "vencido"
+
+  const abrir = (v: boolean) => {
+    if (v) {
+      // Si venció, se arranca con una vigencia nueva: renovar es el caso,
+      // no releer la fecha muerta.
+      setValor(expiresOn && !vencido ? expiresOn : vencimientoSugerido(clave))
+      setError(null)
+    }
+    setAbierto(v)
+  }
+
+  const guardar = async (nueva: string | null) => {
+    setGuardando(true)
+    setError(null)
+    try {
+      await onGuardar(nueva)
+      setAbierto(false)
+    } catch (e: any) {
+      console.error(e)
+      setError(e?.message || "No se pudo guardar la vigencia.")
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  /* El fondo va explícito en cada cara: la variante `outline` de shadcn trae
+     bg-background, que en este tema es BLANCO, y sin pisarlo el botón sale
+     blanco con letras grises. */
+  const cara = vencido
+    ? {
+        Icono: RefreshCw,
+        texto: "Renovar",
+        titulo: `Venció el ${formatVencimiento(expiresOn)}. Captura la nueva vigencia.`,
+        clase:
+          "border-red-500/40 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200 hover:border-red-500/60",
+      }
+    : expiresOn
+      ? {
+          Icono: Edit,
+          texto: formatVencimiento(expiresOn),
+          titulo:
+            estado.estado === "por_vencer"
+              ? `${estado.etiqueta}. Pulsa para cambiar la fecha.`
+              : "Cambiar la fecha de vencimiento.",
+          clase:
+            estado.estado === "por_vencer"
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 hover:text-amber-200 hover:border-amber-500/60"
+              : "border-emerald-500/30 bg-emerald-500/12 text-emerald-300 hover:bg-emerald-500/22 hover:text-emerald-200 hover:border-emerald-500/50",
+        }
+      : {
+          Icono: Clock,
+          texto: "Vigencia",
+          titulo: "Este documento no tiene fecha de vencimiento registrada.",
+          clase:
+            "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500",
+        }
+
+  const sugerida = vencimientoSugerido(clave)
+
+  return (
+    <Popover open={abierto} onOpenChange={abrir}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          title={cara.titulo}
+          className={`cursor-pointer whitespace-nowrap transition-all duration-150 ${cara.clase}`}
+        >
+          <cara.Icono className="w-4 h-4 mr-1.5" />
+          {cara.texto}
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="end"
+        className="w-72 bg-slate-800 border-slate-700 text-slate-100 p-4 space-y-3"
+      >
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-slate-200">
+            {vencido ? "Renovar documento" : "Fecha de vencimiento"}
+          </p>
+          <p className="text-[11px] leading-snug text-slate-500">
+            {vencido
+              ? `Venció el ${formatVencimiento(expiresOn)}.`
+              : `La vigencia estándar es de ${VIGENCIAS[clave].etiqueta}, pero puedes poner la que necesites.`}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            min={hoyISO()}
+            value={valor}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setValor(e.target.value)
+              setError(null)
+            }}
+            className="bg-slate-900/60 border-slate-700 text-slate-100"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setValor(sugerida)}
+            disabled={valor === sugerida || guardando}
+            title={`Poner ${VIGENCIAS[clave].etiqueta} a partir de hoy`}
+            className={`
+              cursor-pointer whitespace-nowrap disabled:opacity-100
+              ${
+                valor === sugerida
+                  ? "border-[#0174bd]/50 bg-[#0174bd]/20 text-[#4da8e8]"
+                  : "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500"
+              }
+            `}
+          >
+            {VIGENCIAS[clave].etiqueta}
+          </Button>
+        </div>
+
+        {error && (
+          <p className="text-[11px] leading-snug text-red-400">{error}</p>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => guardar(null)}
+            disabled={guardando || !expiresOn}
+            title="Dejar el documento sin fecha de vencimiento"
+            className="
+              cursor-pointer px-2 bg-transparent text-slate-400
+              hover:bg-red-500/15 hover:text-red-300
+              disabled:bg-transparent disabled:text-slate-600
+            "
+          >
+            Quitar
+          </Button>
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setAbierto(false)}
+              disabled={guardando}
+              className="
+                cursor-pointer bg-transparent text-slate-400
+                hover:bg-slate-700/70 hover:text-slate-100
+              "
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => guardar(valor || null)}
+              disabled={guardando || !valor}
+              className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+            >
+              {guardando ? "Guardando..." : "Guardar"}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function AvisoDeError({
   error,
   basePath,
@@ -794,6 +1095,8 @@ async function saveWorkDocumentMetadata(args: {
   fileName: string
   mimeType: string | null
   fileSize: number | null
+  /** Vigencia capturada en el popup. null = el documento no caduca. */
+  expiresOn: string | null
 }) {
   const res = await fetch("/api/employee-work-documents", {
     method: "POST",
@@ -959,6 +1262,10 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const [dc3SignedUrls, setDc3SignedUrls] = useState<Record<string, string>>({})
   const [dc3Loading, setDc3Loading] = useState(false)
   const [dc3Error, setDc3Error] = useState<string | null>(null)
+  /* Vigencia que se aplicará a los archivos que se suban en este popup.
+     Arranca con la sugerencia del documento (DC3 = 1 año) y el usuario la
+     puede cambiar o borrar antes de guardar. */
+  const [dc3Expira, setDc3Expira] = useState<string>("")
   const [dc3DialogOpen, setDc3DialogOpen] = useState(false)
   const [dc3Saving, setDc3Saving] = useState(false)
   const [dc3Files, setDc3Files] = useState<File[]>([])
@@ -967,6 +1274,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const [medicalSignedUrls, setMedicalSignedUrls] = useState<Record<string, string>>({})
   const [medicalLoading, setMedicalLoading] = useState(false)
   const [medicalError, setMedicalError] = useState<string | null>(null)
+  const [medicalExpira, setMedicalExpira] = useState<string>("")
   const [medicalDialogOpen, setMedicalDialogOpen] = useState(false)
   const [medicalSaving, setMedicalSaving] = useState(false)
   const [medicalFiles, setMedicalFiles] = useState<File[]>([])
@@ -2040,6 +2348,44 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     }
   }
 
+  /** Guarda la vigencia de un documento del expediente (hoy sólo la
+   *  constancia fiscal). La tabla se escribe directo, como el resto de
+   *  employee_documents en esta pantalla. */
+  const guardarVigenciaDoc = async (
+    docType: EmployeeDocType,
+    nueva: string | null,
+  ) => {
+    if (!id) return
+    const { error } = await supabase
+      .from("employee_documents")
+      .update({ expires_on: nueva })
+      .eq("employee_id", id)
+      .eq("doc_type", docType)
+
+    if (error) throw new Error(error.message)
+    await fetchDocuments()
+  }
+
+  /** Guarda la vigencia de un documento de obra (DC3 o reportes médicos).
+   *  Pasa por la API porque esa tabla no se escribe desde el cliente. */
+  const guardarVigenciaWorkDoc = async (
+    folderType: WorkFolderType,
+    documentId: string,
+    nueva: string | null,
+  ) => {
+    const res = await fetch("/api/employee-work-documents", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentId, expiresOn: nueva }),
+    })
+
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      throw new Error(json?.error || "No se pudo guardar la vigencia.")
+    }
+    await fetchWorkDocuments(folderType)
+  }
+
   const handleChangeDocFile = (docType: EmployeeDocType, file: File | null) => {
     setDocFiles((prev) => ({ ...prev, [docType]: file }))
   }
@@ -2067,6 +2413,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
       file_name: uploaded.file_name,
       mime_type: uploaded.mime_type,
       file_size: uploaded.file_size,
+      /* Sólo la constancia fiscal caduca hoy. Un documento recién subido
+         arranca con la vigencia estándar de 1 año; desde el botón de
+         vigencia del renglón se ajusta o se quita. */
+      expires_on:
+        docType === "tax_certificate"
+          ? vencimientoSugerido("tax_certificate")
+          : null,
     }
 
     const { error: upsertErr } = await supabase
@@ -2168,6 +2521,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const uploadWorkFile = async (
     folderType: WorkFolderType,
     file: File,
+    expiresOn: string | null,
   ) => {
     if (!id) return
 
@@ -2197,6 +2551,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
       fileName: file.name,
       mimeType: file.type || null,
       fileSize: file.size ?? null,
+      expiresOn,
     })
   }
 
@@ -2226,8 +2581,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     setSavingByFolder(true)
 
     try {
+      // Todos los archivos del popup comparten la vigencia capturada: se
+      // suben juntos porque son del mismo trámite.
+      const expiresOn =
+        (folderType === "dc3" ? dc3Expira : medicalExpira) || null
+
       for (const file of selectedFiles) {
-        await uploadWorkFile(folderType, file)
+        await uploadWorkFile(folderType, file, expiresOn)
       }
 
       await fetchWorkDocuments(folderType)
@@ -3977,7 +4337,10 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                   <div className="flex flex-row items-center justify-between p-6 pb-4">
                     <h3 className="text-lg font-semibold text-slate-100">Documentos del empleado</h3>
 
-                    <Dialog open={docsDialogOpen} onOpenChange={setDocsDialogOpen}>
+                    <Dialog
+                      open={docsDialogOpen}
+                      onOpenChange={setDocsDialogOpen}
+                    >
                       <DialogTrigger asChild>
                         <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/85 text-white border-0 transition-all duration-150">
                           <Edit className="w-4 h-4 mr-2" />
@@ -4028,9 +4391,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                         </div>
 
                                         {existing ? (
-                                          <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
-                                            Listo
-                                          </Badge>
+                                          /* Si el documento caduca, la pill
+                                             dice su estado en vez de un
+                                             "Listo" que podría estar vencido. */
+                                          existing.expires_on ? (
+                                            <Badge
+                                              className={`text-[11px] font-medium ${
+                                                estadoVigencia(existing.expires_on).clase
+                                              }`}
+                                              title={`Vence el ${formatVencimiento(existing.expires_on)}`}
+                                            >
+                                              {estadoVigencia(existing.expires_on).etiqueta}
+                                            </Badge>
+                                          ) : (
+                                            <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                                              Listo
+                                            </Badge>
+                                          )
                                         ) : (
                                           <Badge className="bg-slate-500/15 text-slate-400 border border-slate-500/25">
                                             Pendiente
@@ -4061,6 +4438,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                           </p>
                                         )}
                                       </div>
+
 
                                       <div className="flex items-center justify-end gap-2">
                                         <Button
@@ -4262,6 +4640,17 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                               </div>
 
                               <div className="flex items-center gap-2">
+                                {/* Sólo la constancia fiscal caduca. */}
+                                {docType === "tax_certificate" && doc && (
+                                  <BotonVigencia
+                                    clave="tax_certificate"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaDoc("tax_certificate", nueva)
+                                    }
+                                  />
+                                )}
+
                                 <Button
                                   type="button"
                                   variant="outline"
@@ -4297,7 +4686,15 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                         <h3 className="text-lg font-semibold text-slate-100">Carpeta DC3</h3>
                       </div>
 
-                      <Dialog open={dc3DialogOpen} onOpenChange={setDc3DialogOpen}>
+                      <Dialog
+                        open={dc3DialogOpen}
+                        onOpenChange={(abierto: boolean) => {
+                          // Al abrir se precarga la sugerencia (1 año); el
+                          // usuario la cambia o la borra si no aplica.
+                          if (abierto) setDc3Expira(vencimientoSugerido("dc3"))
+                          setDc3DialogOpen(abierto)
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
@@ -4330,6 +4727,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 />
                               </div>
                             </div>
+
+                            <CampoVigencia
+                              clave="dc3"
+                              valor={dc3Expira}
+                              onChange={setDc3Expira}
+                              idInput="dc3-expira"
+                            />
 
                             {dc3Files.length > 0 ? (
                               <div className="space-y-2">
@@ -4427,6 +4831,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 </div>
 
                                 <div className="flex items-center gap-1.5">
+                                  <BotonVigencia
+                                    clave="dc3"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaWorkDoc("dc3", doc.id, nueva)
+                                    }
+                                  />
+
                                   <Button
                                     type="button"
                                     variant="outline"
@@ -4489,7 +4901,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                         <h3 className="text-lg font-semibold text-slate-100">Carpeta de Reportes Médicos</h3>
                       </div>
 
-                      <Dialog open={medicalDialogOpen} onOpenChange={setMedicalDialogOpen}>
+                      <Dialog
+                        open={medicalDialogOpen}
+                        onOpenChange={(abierto: boolean) => {
+                          if (abierto)
+                            setMedicalExpira(vencimientoSugerido("medical_reports"))
+                          setMedicalDialogOpen(abierto)
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
@@ -4522,6 +4941,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 />
                               </div>
                             </div>
+
+                            <CampoVigencia
+                              clave="medical_reports"
+                              valor={medicalExpira}
+                              onChange={setMedicalExpira}
+                              idInput="medical-expira"
+                            />
 
                             {medicalFiles.length > 0 ? (
                               <div className="space-y-2">
@@ -4619,6 +5045,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 </div>
 
                                 <div className="flex items-center gap-1.5">
+                                  <BotonVigencia
+                                    clave="medical_reports"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaWorkDoc("medical_reports", doc.id, nueva)
+                                    }
+                                  />
+
                                   <Button
                                     type="button"
                                     variant="outline"
