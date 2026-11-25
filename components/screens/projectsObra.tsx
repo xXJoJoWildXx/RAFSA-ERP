@@ -168,7 +168,10 @@ type ObraAssignmentRow = {
   employee_id: string
   role_on_site: string | null
   assigned_to: string | null
-  employees: { full_name: string } | { full_name: string }[] | null
+  employees:
+    | { full_name: string; status?: string | null }
+    | { full_name: string; status?: string | null }[]
+    | null
 }
 
 // ---------- Documentos (conectado a obra_documents + storage) ----------
@@ -1208,9 +1211,16 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
   // Aplica las stats de equipo desde un array ya cargado
   function applyTeamStats(assignments: ObraAssignmentRow[], today: string) {
-    const activeAssignments = assignments.filter(
-      (a) => !a.assigned_to || a.assigned_to >= today
-    )
+    /* Un empleado dado de baja deja de ser parte del equipo al instante. El
+       trigger de la base cierra su asignación con la fecha de HOY, y la
+       condición de fechas por sí sola la seguiría tomando por vigente
+       durante el resto del día. */
+    const activeAssignments = assignments.filter((a) => {
+      const emp = Array.isArray(a.employees) ? a.employees[0] : a.employees
+      const estatus = (emp?.status ?? "active").toLowerCase()
+      if (estatus !== "active") return false
+      return !a.assigned_to || a.assigned_to >= today
+    })
     setTeamSize(activeAssignments.length)
 
     const directorAssignment = activeAssignments.find(
@@ -1487,7 +1497,7 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   async function fetchTeamStats(obraId: string) {
     const { data, error } = await supabase
       .from("obra_assignments")
-      .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
+      .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name, status)")
       .eq("obra_id", obraId)
     if (error) { console.error("fetchTeamStats error:", error); return }
     const today = toLocalDateStr(new Date())
@@ -1775,7 +1785,7 @@ export function ObraDetailScreen({ allowed }: { allowed: UserRoleScreen[] }) {
             .limit(1),
           supabase
             .from("obra_assignments")
-            .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name)")
+            .select("id, obra_id, employee_id, role_on_site, assigned_to, employees(full_name, status)")
             .eq("obra_id", obraId),
           supabase
             .from("obra_billing_items")

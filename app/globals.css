@@ -223,3 +223,119 @@ input:disabled,
 [data-disabled] {
   cursor: not-allowed;
 }
+
+/* ───────────────────────────────────────────────────────────
+   Botones de descarga: PDF y Excel
+
+   Van en CSS plano y no como utilidades de Tailwind a propósito.
+   Tailwind v4 emite sus utilidades dentro de @layer, y las reglas SIN
+   capa le ganan a cualquier regla con capa sin importar el orden. Con
+   `bg-[#9b1c1c]` el fondo se perdía contra el `bg-primary` de la
+   variante del botón y los dos salían transparentes.
+
+   Los colores son los que la gente ya asocia a cada formato: el rojo
+   tinto de Acrobat y el verde de Excel.
+   ─────────────────────────────────────────────────────────── */
+.rafsa-btn-pdf,
+.rafsa-btn-excel {
+  color: #fff;
+  border: 0;
+  transition:
+    background-color 160ms ease,
+    transform 120ms ease,
+    box-shadow 160ms ease;
+}
+
+.rafsa-btn-pdf {
+  background-color: #9b1c1c;
+}
+.rafsa-btn-pdf:hover:not(:disabled) {
+  background-color: #7f1515;
+  box-shadow: 0 2px 10px -2px rgb(155 28 28 / 0.55);
+}
+
+.rafsa-btn-excel {
+  background-color: #157347;
+}
+.rafsa-btn-excel:hover:not(:disabled) {
+  background-color: #115c39;
+  box-shadow: 0 2px 10px -2px rgb(21 115 71 / 0.55);
+}
+
+.rafsa-btn-pdf:active:not(:disabled),
+.rafsa-btn-excel:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.rafsa-btn-pdf:disabled,
+.rafsa-btn-excel:disabled {
+  opacity: 0.55;
+}
+
+/* ───────────────────────────────────────────────────────────
+   Desdoble del botón de descarga
+
+   Un botón se convierte en tres y al revés. La animación va en los dos
+   sentidos: al abrir, cada botón entra escalonado desde la derecha; al
+   cerrar, el grupo se repliega hacia donde estaba el botón original.
+   ─────────────────────────────────────────────────────────── */
+@keyframes rafsa-desdoble-entra {
+  from {
+    opacity: 0;
+    transform: translateX(14px) scale(0.88);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+}
+
+@keyframes rafsa-desdoble-sale {
+  from {
+    opacity: 1;
+    transform: translateX(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(14px) scale(0.88);
+  }
+}
+
+@keyframes rafsa-plegado-entra {
+  from {
+    opacity: 0;
+    transform: scale(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.rafsa-desdoble > * {
+  animation: rafsa-desdoble-entra 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+/* Escalonado: los botones aparecen uno tras otro, no de golpe. */
+.rafsa-desdoble > *:nth-child(1) { animation-delay: 0ms; }
+.rafsa-desdoble > *:nth-child(2) { animation-delay: 55ms; }
+.rafsa-desdoble > *:nth-child(3) { animation-delay: 110ms; }
+
+.rafsa-desdoble-cerrando > * {
+  animation: rafsa-desdoble-sale 150ms ease-in both;
+}
+.rafsa-desdoble-cerrando > *:nth-child(1) { animation-delay: 60ms; }
+.rafsa-desdoble-cerrando > *:nth-child(2) { animation-delay: 30ms; }
+.rafsa-desdoble-cerrando > *:nth-child(3) { animation-delay: 0ms; }
+
+.rafsa-plegado {
+  animation: rafsa-plegado-entra 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Quien pide menos movimiento no lo recibe. */
+@media (prefers-reduced-motion: reduce) {
+  .rafsa-desdoble > *,
+  .rafsa-desdoble-cerrando > *,
+  .rafsa-plegado {
+    animation: none;
+  }
+}

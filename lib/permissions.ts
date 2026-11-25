@@ -65,6 +65,9 @@ export type Capability =
   | "suppliers.view"
   | "activities.view"
   | "documents.view"
+  /** El tablero financiero de la empresa: resultado, márgenes y egresos
+   *  consolidados. Es información de dirección, no de operación. */
+  | "finanzas.view"
 
 /**
  * Lo que NO puede cada rol. Se declara por excepción y no por lista blanca
@@ -78,6 +81,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   // artículos lo mantiene almacén.
   user: [
     "nomina.administracion.view",
+    "finanzas.view",
     "obras.delete",
     "empresas.delete",
     "inventory.products.create",
@@ -94,6 +98,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   almacen: [
     "nomina.administracion.view",
     "nomina.aguinaldo.apply",
+    "finanzas.view",
     // Surte las órdenes; el gasto por obra es información de oficina
     "inventory.orders.report",
     "obras.delete",
@@ -113,6 +118,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   worker: [
     "nomina.administracion.view",
     "nomina.aguinaldo.apply",
+    "finanzas.view",
     "obras.delete",
     "empresas.delete",
     "payments.delete.anyMonth",

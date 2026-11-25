@@ -11,6 +11,7 @@ import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
 import { Button } from "@/components/ui/button"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 import { useBasePath } from "@/lib/appScope"
 
 type Proveedor = {
@@ -106,6 +107,12 @@ export function ProveedorDetailScreen({ allowed }: { allowed: UserRoleScreen[] }
   }, [id])
 
   useEffect(() => { void cargar() }, [cargar])
+
+  /* Varias personas trabajan Proveedores a la vez. Esto vuelve a
+     consultar en cuanto alguien más registra un pago, procesa una
+     factura o manda material, sin esperar a que se recargue. */
+  useRealtimeRefresco(`proveedor-detalle-${id}`, TABLAS_PROVEEDORES.detalle, cargar,
+    Boolean(id))
 
   const totales = useMemo(() => ({
     comprado: facturas.reduce((s, f) => s + Number(f.total ?? 0), 0),

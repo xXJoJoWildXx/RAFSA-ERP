@@ -2,7 +2,7 @@
 // Reporte de dispersión de nómina en Excel (.xlsx), mismo contenido que el PDF.
 //  - Hoja "Resumen por obra": agrupado por obra, con subtotales y total general.
 //  - Hoja "Detalle": tabla plana (una fila por empleado) con autofiltro y totales.
-// Columnas: Código · Empleado · Cuenta bancaria · Sueldo total · A depositar (fiscal) · Efectivo.
+// Columnas: Código · Empleado · Banco · Cuenta · Sueldo total · A depositar (fiscal) · Efectivo.
 
 import type { ReconResult, ReconLine, ReconStatus } from "./types"
 
@@ -27,8 +27,14 @@ function fmtDateDisplay(dateStr: string | null): string {
   return d.toLocaleDateString("es-MX", { day: "numeric", month: "short", year: "numeric" })
 }
 
-function accountOf(l: ReconLine): string {
-  return [l.bank_name, l.account_number || l.interbank_clabe].filter(Boolean).join(" ") || "—"
+/** Banco y cuenta van en columnas aparte, para poder filtrar por banco y
+ *  copiar la cuenta sola al capturar la dispersión. */
+function bancoDe(l: ReconLine): string {
+  return l.bank_name || "—"
+}
+
+function cuentaDe(l: ReconLine): string {
+  return l.account_number || l.interbank_clabe || "—"
 }
 
 export async function generatePayrollReportXlsx(result: ReconResult): Promise<void> {
@@ -60,14 +66,15 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
   ws.columns = [
     { width: 12 }, // Código
     { width: 36 }, // Empleado
-    { width: 30 }, // Cuenta
+    { width: 20 }, // Banco
+    { width: 26 }, // Cuenta
     { width: 16 }, // Sueldo total
     { width: 16 }, // A depositar
     { width: 16 }, // Efectivo
   ]
 
   // Título
-  ws.mergeCells("A1:F1")
+  ws.mergeCells("A1:G1")
   const title = ws.getCell("A1")
   title.value = esAguinaldo ? "RAFSA · Dispersión de aguinaldo" : "RAFSA · Dispersión de nómina"
   title.font = { bold: true, size: 15, color: { argb: "FFFFFFFF" } }
@@ -75,23 +82,23 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
   title.alignment = { vertical: "middle", horizontal: "left", indent: 1 }
   ws.getRow(1).height = 24
 
-  ws.mergeCells("A2:F2")
+  ws.mergeCells("A2:G2")
   ws.getCell("A2").value = `${esAguinaldo ? "Periodo" : "Semana"}: ${fmtDateDisplay(result.week_start)} – ${fmtDateDisplay(result.week_end)}`
   ws.getCell("A2").font = { size: 10, color: { argb: "FF475569" } }
 
   let r = 3
   if (result.period_label) {
-    ws.mergeCells(`A${r}:F${r}`)
+    ws.mergeCells(`A${r}:G${r}`)
     ws.getCell(`A${r}`).value = `Documento fiscal: ${result.period_label}`
     ws.getCell(`A${r}`).font = { size: 9, color: { argb: "FF64748B" } }
     r++
   }
-  ws.mergeCells(`A${r}:F${r}`)
+  ws.mergeCells(`A${r}:G${r}`)
   ws.getCell(`A${r}`).value = `Generado: ${new Date().toLocaleDateString("es-MX")}`
   ws.getCell(`A${r}`).font = { size: 9, color: { argb: "FF64748B" } }
   r += 2 // fila en blanco
 
-  const HEADERS = ["Código", "Empleado", "Cuenta bancaria", "Sueldo total", "A depositar", "Efectivo"]
+  const HEADERS = ["Código", "Empleado", "Banco", "Cuenta", "Sueldo total", "A depositar", "Efectivo"]
 
   const money = (v: number | null) => (v == null ? null : Number(v))
 
@@ -100,7 +107,7 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
     const sub = deptSet.length ? `Reporte: ${deptSet.join(", ")}` : ""
 
     // Encabezado de grupo (obra)
-    ws.mergeCells(`A${r}:F${r}`)
+    ws.mergeCells(`A${r}:G${r}`)
     const gCell = ws.getCell(`A${r}`)
     gCell.value = sub ? `${groupName}    ·    ${sub}` : groupName
     gCell.font = { bold: true, size: 11, color: { argb: "FFFFFFFF" } }
@@ -116,7 +123,7 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
       c.value = h
       c.font = { bold: true, size: 9, color: { argb: "FF475569" } }
       c.fill = { type: "pattern", pattern: "solid", fgColor: { argb: HEAD_BG } }
-      c.alignment = { horizontal: i >= 3 ? "right" : "left" }
+      c.alignment = { horizontal: i >= 4 ? "right" : "left" }
       c.border = thinBorder
     })
     r++
@@ -134,26 +141,27 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
       const row = ws.getRow(r)
       row.getCell(1).value = l.codigo || "—"
       row.getCell(2).value = l.employee_name_erp || l.employee_name_raw || "—"
-      row.getCell(3).value = accountOf(l)
+      row.getCell(3).value = bancoDe(l)
+      row.getCell(4).value = cuentaDe(l)
       // Sueldo total
-      const realCell = row.getCell(4)
+      const realCell = row.getCell(5)
       if (l.real_total != null) { realCell.value = money(l.real_total); realCell.numFmt = MONEY_FMT }
       else { realCell.value = "pend." }
       realCell.alignment = { horizontal: "right" }
       // A depositar (fiscal)
-      const fiscalCell = row.getCell(5)
+      const fiscalCell = row.getCell(6)
       fiscalCell.value = money(l.fiscal_neto) ?? 0
       fiscalCell.numFmt = MONEY_FMT
       fiscalCell.alignment = { horizontal: "right" }
       // Efectivo
-      const efCell = row.getCell(6)
+      const efCell = row.getCell(7)
       if (l.real_total != null) { efCell.value = money(l.efectivo); efCell.numFmt = MONEY_FMT }
       else { efCell.value = "—" }
       efCell.font = { bold: true }
       efCell.alignment = { horizontal: "right" }
 
       if (idx % 2 === 1) {
-        for (let c = 1; c <= 6; c++) {
+        for (let c = 1; c <= 7; c++) {
           row.getCell(c).fill = { type: "pattern", pattern: "solid", fgColor: { argb: ZEBRA } }
         }
       }
@@ -167,16 +175,16 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
 
     // Subtotal del grupo
     const subRow = ws.getRow(r)
-    subRow.getCell(3).value = "Subtotal"
-    subRow.getCell(3).alignment = { horizontal: "right" }
-    const subCells: [number, number][] = [[4, gReal], [5, gFiscal], [6, gEfectivo]]
+    subRow.getCell(4).value = "Subtotal"
+    subRow.getCell(4).alignment = { horizontal: "right" }
+    const subCells: [number, number][] = [[5, gReal], [6, gFiscal], [7, gEfectivo]]
     for (const [c, v] of subCells) {
       const cell = subRow.getCell(c)
       cell.value = Number(v)
       cell.numFmt = MONEY_FMT
       cell.alignment = { horizontal: "right" }
     }
-    for (let c = 1; c <= 6; c++) {
+    for (let c = 1; c <= 7; c++) {
       subRow.getCell(c).font = { bold: true, size: 10 }
       subRow.getCell(c).border = { top: { style: "thin", color: { argb: BORDER } } }
     }
@@ -185,14 +193,14 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
 
   // Total general
   const totalRow = ws.getRow(r)
-  ws.mergeCells(`A${r}:C${r}`)
+  ws.mergeCells(`A${r}:D${r}`)
   const tLabel = ws.getCell(`A${r}`)
   tLabel.value = "TOTAL GENERAL"
   tLabel.alignment = { horizontal: "left", indent: 1, vertical: "middle" }
   const totals: [number, number][] = [
-    [4, result.totals.real],
-    [5, result.totals.fiscal],
-    [6, result.totals.efectivo],
+    [5, result.totals.real],
+    [6, result.totals.fiscal],
+    [7, result.totals.efectivo],
   ]
   for (const [c, v] of totals) {
     const cell = totalRow.getCell(c)
@@ -200,7 +208,7 @@ export async function generatePayrollReportXlsx(result: ReconResult): Promise<vo
     cell.numFmt = MONEY_FMT
     cell.alignment = { horizontal: "right" }
   }
-  for (let c = 1; c <= 6; c++) {
+  for (let c = 1; c <= 7; c++) {
     const cell = totalRow.getCell(c)
     cell.font = { bold: true, size: 11, color: { argb: "FFFFFFFF" } }
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: DARK } }

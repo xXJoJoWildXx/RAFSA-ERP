@@ -17,10 +17,10 @@ import { es } from "date-fns/locale"
 import { supabase } from "@/lib/supabaseClient"
 import { useAuth } from "@/lib/auth-context"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
-import { Button } from "@/components/ui/button"
+import { BotonesDescarga } from "@/components/botonesDescarga"
 import { Calendar } from "@/components/ui/calendar"
 import { CALENDAR_DARK_CLASS, CALENDAR_DARK_CLASSNAMES } from "@/lib/calendarTheme"
-import { CalendarDays, ChevronDown, FileSpreadsheet, FileText, Loader2, PackageSearch } from "lucide-react"
+import { CalendarDays, ChevronDown, FileText, Loader2, PackageSearch } from "lucide-react"
 import {
   construirReporte,
   money,
@@ -66,7 +66,6 @@ export function InventoryOrdersReportModal({ open, onClose, notify }: Props) {
   const [cargando, setCargando] = useState(false)
   const [reporte, setReporte] = useState<ReporteOrdenes | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [generando, setGenerando] = useState<"pdf" | "xlsx" | null>(null)
 
   // Qué atajo está puesto, y si el calendario está desplegado. El calendario
   // sólo aparece cuando se pide: ocupa media pantalla y, abierto de entrada,
@@ -255,7 +254,6 @@ export function InventoryOrdersReportModal({ open, onClose, notify }: Props) {
   // ── Descargas ─────────────────────────────────────────────────────────────
   const descargar = async (formato: "pdf" | "xlsx") => {
     if (!reporte) return
-    setGenerando(formato)
     try {
       if (formato === "pdf") await generateInventoryOrdersReportPdf(reporte)
       else await generateInventoryOrdersReportExcel(reporte)
@@ -265,8 +263,6 @@ export function InventoryOrdersReportModal({ open, onClose, notify }: Props) {
       )
     } catch (e: any) {
       notify?.(e?.message || "No se pudo generar el archivo.", "error", "Reporte")
-    } finally {
-      setGenerando(null)
     }
   }
 
@@ -470,35 +466,15 @@ export function InventoryOrdersReportModal({ open, onClose, notify }: Props) {
           >
             Cancelar
           </button>
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!reporte || vacio || cargando || generando !== null}
-              onClick={() => descargar("xlsx")}
-              className="cursor-pointer border-slate-600 bg-slate-700/50 text-slate-200 hover:bg-slate-700 hover:text-white disabled:opacity-50"
-            >
-              {generando === "xlsx" ? (
-                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
-              ) : (
-                <FileSpreadsheet className="w-4 h-4 mr-1.5" />
-              )}
-              Excel
-            </Button>
-            <Button
-              size="sm"
-              disabled={!reporte || vacio || cargando || generando !== null}
-              onClick={() => descargar("pdf")}
-              className="cursor-pointer bg-[#0174bd] hover:bg-[#015d97] text-white disabled:opacity-50"
-            >
-              {generando === "pdf" ? (
-                <Loader2 className="w-4 h-4 mr-1.5 animate-spin" />
-              ) : (
-                <FileText className="w-4 h-4 mr-1.5" />
-              )}
-              Descargar PDF
-            </Button>
-          </div>
+          <BotonesDescarga
+            size="sm"
+            tono="azul"
+            etiqueta="Descargar"
+            disabled={!reporte || vacio || cargando}
+            onDescargar={descargar}
+            tituloPdf="Descargar el reporte en PDF"
+            tituloExcel="Descargar el reporte en Excel"
+          />
         </div>
       </DialogContent>
     </Dialog>

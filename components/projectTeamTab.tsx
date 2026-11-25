@@ -87,6 +87,10 @@ function toDateStr(d: Date) {
 }
 
 function isActiveAssignment(a: TeamMember) {
+  /* Un empleado dado de baja ya no es parte del equipo, aunque su asignación
+     se haya cerrado hoy mismo: el trigger de la base la cierra con la fecha
+     del día, y sin esta condición seguiría contando como activo hasta mañana. */
+  if ((a.employee_status || "").toLowerCase() !== "active") return false
   if (!a.assigned_to) return true
   return a.assigned_to >= todayISO()
 }
@@ -579,6 +583,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase()
     return members.filter((m) => {
+      /* "Miembros" es quién está HOY en la obra. Las asignaciones terminadas
+         (y las de gente dada de baja, que el trigger cierra sola) salen de la
+         lista en vez de quedarse marcadas como histórico: si no, la obra
+         acumula para siempre a todo el que pasó por ella. */
+      if (!isActiveAssignment(m)) return false
+
       const matchSearch =
         !q ||
         m.full_name.toLowerCase().includes(q) ||
@@ -1045,7 +1055,12 @@ export function ProjectTeamTab({ obraId, obraInfo, allowManage = true, onTeamCha
           </div>
 
           <div className="text-sm text-slate-500">
-            Total: <span className="font-semibold text-slate-300">{members.length}</span>
+            {/* Cuenta a los que están en la obra, no a todo el que pasó por
+                ella: debe cuadrar con los renglones de la tabla. */}
+            Total:{" "}
+            <span className="font-semibold text-slate-300">
+              {members.filter(isActiveAssignment).length}
+            </span>
           </div>
         </div>
       </div>

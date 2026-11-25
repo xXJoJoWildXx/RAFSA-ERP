@@ -6,6 +6,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 import {
   ProveedorAsignarRentaModal, type RentaParaAsignar,
 } from "@/components/proveedorAsignarRentaModal"
@@ -74,6 +75,10 @@ export function ProveedorRentasTab() {
 
   useEffect(() => { void cargar() }, [cargar])
 
+  /* Varias personas trabajan Proveedores a la vez: una renta devuelta o
+     una factura recién procesada aparece aquí al momento. */
+  useRealtimeRefresco("proveedores-rentas", TABLAS_PROVEEDORES.rentas, cargar)
+
   // "En piso" = la máquina sigue con nosotros: no se ha devuelto ni cancelado,
   // sin importar si el periodo ya venció.
   const enPiso = (r: Renta) => r.status === "activa" || r.status === "vencida"
@@ -121,9 +126,9 @@ export function ProveedorRentasTab() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold text-slate-100">Rentas de maquinaria</h2>
+        <h2 className="text-lg font-semibold text-slate-100">Rentas de servicios</h2>
         <p className="text-xs text-slate-500 mt-0.5">
-          Se abren solas al procesar una factura de renta. En piso:{" "}
+          Se abren solas al procesar una factura de renta o servicio. En piso:{" "}
           <span className="text-slate-300 font-medium tabular-nums">{money(costoEnPiso)}</span> facturados
         </p>
       </div>

@@ -7,6 +7,7 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 import { ProveedorFacturaUpload } from "@/components/proveedorFacturaUpload"
 import { ProveedorPagosModal, type FacturaParaPago } from "@/components/proveedorPagosModal"
 import { useAuth } from "@/lib/auth-context"
@@ -108,6 +109,11 @@ export function ProveedorFacturasTab() {
   }, [])
 
   useEffect(() => { void cargar() }, [cargar])
+
+  /* Varias personas trabajan Proveedores a la vez. Esto vuelve a
+     consultar en cuanto alguien más registra un pago, procesa una
+     factura o manda material, sin esperar a que se recargue. */
+  useRealtimeRefresco("proveedores-facturas", TABLAS_PROVEEDORES.facturas, cargar)
 
   const conteos = useMemo(() => ({
     por_revisar: facturas.filter(f => f.status === "por_revisar").length,

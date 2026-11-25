@@ -5,6 +5,7 @@ import {
   AlertTriangle, Boxes, Loader2, PackageX, Search, TrendingDown, TrendingUp,
 } from "lucide-react"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 
 type Producto = {
   id: string
@@ -56,6 +57,11 @@ export function ProveedorCatalogoTab() {
   }, [])
 
   useEffect(() => { void cargar() }, [cargar])
+
+  /* Varias personas trabajan Proveedores a la vez. Esto vuelve a
+     consultar en cuanto alguien más registra un pago, procesa una
+     factura o manda material, sin esperar a que se recargue. */
+  useRealtimeRefresco("proveedores-catalogo", TABLAS_PROVEEDORES.catalogo, cargar)
 
   const conteos = useMemo(() => ({
     todos:     productos.length,

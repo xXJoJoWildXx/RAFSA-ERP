@@ -38,6 +38,7 @@ import {
   Phone,
   Calendar,
   Clock,
+  RefreshCw,
   ArrowLeft,
   Edit,
   AlertTriangle,
@@ -69,6 +70,19 @@ import type { DateRange } from "react-day-picker"
 import { supabase } from "@/lib/supabaseClient"
 import { logActivity } from "@/lib/activityLog"
 import { formatTenure, tenurePaused } from "@/lib/employeeTenure"
+import {
+  VIGENCIAS,
+  vencimientoSugerido,
+  estadoVigencia,
+  formatVencimiento,
+  hoyISO,
+} from "@/lib/documentExpiry"
+import {
+  cargarPeriodos,
+  fueRecontratado,
+  formatPeriodo,
+  type EmploymentPeriod,
+} from "@/lib/employmentPeriods"
 import { upcomingOccurrences, mexicoTodayISO } from "@/lib/foraneo/bajada"
 
 // -------------------- Tipos reales de la DB --------------------
@@ -275,6 +289,8 @@ type EmployeeDocumentRow = {
   file_name: string | null
   mime_type: string | null
   file_size: number | null
+  /** Fecha de caducidad. NULL = no caduca. Hoy sólo la constancia fiscal. */
+  expires_on: string | null
   created_at?: string
   updated_at?: string
 }
@@ -298,6 +314,8 @@ type WorkDocumentRow = {
   file_name: string | null
   mime_type: string | null
   file_size: number | null
+  /** Fecha de caducidad. NULL = no caduca. */
+  expires_on: string | null
   created_at?: string
   updated_at?: string
 }
@@ -328,6 +346,295 @@ type EmployeeBankingApiResponse = {
  * quién lo tiene. Cuando el choque es por un valor único muestra el valor
  * repetido y al empleado que ya lo usa, con acceso directo a su perfil.
  */
+/**
+ * Campo de vigencia de un documento.
+ *
+ * El botón de la izquierda rellena la fecha de un clic con la duración del
+ * documento (DC3 1 año, reportes médicos 3 meses, constancia fiscal 1 año),
+ * pero el campo queda libre: se puede escribir cualquier otra fecha o
+ * vaciarlo para guardar el documento sin vencimiento.
+ */
+function CampoVigencia({
+  clave,
+  valor,
+  onChange,
+  idInput,
+}: {
+  clave: "dc3" | "medical_reports" | "tax_certificate"
+  valor: string
+  onChange: (v: string) => void
+  idInput: string
+}) {
+  const sugerida = vencimientoSugerido(clave)
+  const yaSugerida = valor === sugerida
+
+  return (
+    <div className="space-y-2">
+      <Label htmlFor={idInput} className="text-slate-300">
+        Vigencia{" "}
+        <span className="text-xs font-normal text-slate-500">(opcional)</span>
+      </Label>
+
+      <div className="flex items-center gap-2">
+        <Input
+          id={idInput}
+          type="date"
+          min={hoyISO()}
+          value={valor}
+          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+            onChange(e.target.value)
+          }
+          className="bg-slate-900/60 border-slate-700 text-slate-100"
+        />
+
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => onChange(sugerida)}
+          disabled={yaSugerida}
+          title={`Poner la vigencia estándar: ${VIGENCIAS[clave].etiqueta} a partir de hoy`}
+          className={`
+            cursor-pointer whitespace-nowrap disabled:opacity-100
+            ${
+              yaSugerida
+                ? "border-[#0174bd]/50 bg-[#0174bd]/20 text-[#4da8e8]"
+                : "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500"
+            }
+          `}
+        >
+          {VIGENCIAS[clave].etiqueta}
+        </Button>
+
+        {valor && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => onChange("")}
+            title="Guardar sin fecha de vencimiento"
+            className="
+              cursor-pointer px-2 bg-transparent text-slate-400
+              hover:bg-red-500/15 hover:text-red-300
+            "
+          >
+            <X className="w-4 h-4" />
+          </Button>
+        )}
+      </div>
+
+      <p className="text-[11px] leading-snug text-slate-500">
+        {valor
+          ? `Vence el ${formatVencimiento(valor)}. Puedes cambiar la fecha libremente.`
+          : "Sin fecha, el documento no caduca."}
+      </p>
+    </div>
+  )
+}
+
+/**
+ * Botón de vigencia de un documento, para poner junto a "Ver" / "Abrir".
+ *
+ * Tiene tres caras según el estado del documento:
+ *   · sin fecha → reloj,  "Vigencia"
+ *   · con fecha → lápiz,  la fecha a la vista
+ *   · vencido   → ciclo,  "Renovar", en rojo
+ *
+ * Al pulsarlo abre un popover con el campo de fecha, el botón rápido de la
+ * duración estándar del documento y la opción de dejarlo sin vencimiento.
+ * El estado del botón sale de la fecha YA GUARDADA, no de la del campo: hasta
+ * que no se guarda, un documento vencido sigue pidiendo renovación.
+ */
+function BotonVigencia({
+  clave,
+  expiresOn,
+  onGuardar,
+  disabled,
+}: {
+  clave: "dc3" | "medical_reports" | "tax_certificate"
+  expiresOn: string | null
+  onGuardar: (nueva: string | null) => Promise<void>
+  disabled?: boolean
+}) {
+  const [abierto, setAbierto] = useState(false)
+  const [valor, setValor] = useState("")
+  const [guardando, setGuardando] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const estado = estadoVigencia(expiresOn)
+  const vencido = estado.estado === "vencido"
+
+  const abrir = (v: boolean) => {
+    if (v) {
+      // Si venció, se arranca con una vigencia nueva: renovar es el caso,
+      // no releer la fecha muerta.
+      setValor(expiresOn && !vencido ? expiresOn : vencimientoSugerido(clave))
+      setError(null)
+    }
+    setAbierto(v)
+  }
+
+  const guardar = async (nueva: string | null) => {
+    setGuardando(true)
+    setError(null)
+    try {
+      await onGuardar(nueva)
+      setAbierto(false)
+    } catch (e: any) {
+      console.error(e)
+      setError(e?.message || "No se pudo guardar la vigencia.")
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  /* El fondo va explícito en cada cara: la variante `outline` de shadcn trae
+     bg-background, que en este tema es BLANCO, y sin pisarlo el botón sale
+     blanco con letras grises. */
+  const cara = vencido
+    ? {
+        Icono: RefreshCw,
+        texto: "Renovar",
+        titulo: `Venció el ${formatVencimiento(expiresOn)}. Captura la nueva vigencia.`,
+        clase:
+          "border-red-500/40 bg-red-500/15 text-red-300 hover:bg-red-500/25 hover:text-red-200 hover:border-red-500/60",
+      }
+    : expiresOn
+      ? {
+          Icono: Edit,
+          texto: formatVencimiento(expiresOn),
+          titulo:
+            estado.estado === "por_vencer"
+              ? `${estado.etiqueta}. Pulsa para cambiar la fecha.`
+              : "Cambiar la fecha de vencimiento.",
+          clase:
+            estado.estado === "por_vencer"
+              ? "border-amber-500/40 bg-amber-500/15 text-amber-300 hover:bg-amber-500/25 hover:text-amber-200 hover:border-amber-500/60"
+              : "border-emerald-500/30 bg-emerald-500/12 text-emerald-300 hover:bg-emerald-500/22 hover:text-emerald-200 hover:border-emerald-500/50",
+        }
+      : {
+          Icono: Clock,
+          texto: "Vigencia",
+          titulo: "Este documento no tiene fecha de vencimiento registrada.",
+          clase:
+            "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500",
+        }
+
+  const sugerida = vencimientoSugerido(clave)
+
+  return (
+    <Popover open={abierto} onOpenChange={abrir}>
+      <PopoverTrigger asChild>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={disabled}
+          title={cara.titulo}
+          className={`cursor-pointer whitespace-nowrap transition-all duration-150 ${cara.clase}`}
+        >
+          <cara.Icono className="w-4 h-4 mr-1.5" />
+          {cara.texto}
+        </Button>
+      </PopoverTrigger>
+
+      <PopoverContent
+        align="end"
+        className="w-72 bg-slate-800 border-slate-700 text-slate-100 p-4 space-y-3"
+      >
+        <div className="space-y-1">
+          <p className="text-sm font-medium text-slate-200">
+            {vencido ? "Renovar documento" : "Fecha de vencimiento"}
+          </p>
+          <p className="text-[11px] leading-snug text-slate-500">
+            {vencido
+              ? `Venció el ${formatVencimiento(expiresOn)}.`
+              : `La vigencia estándar es de ${VIGENCIAS[clave].etiqueta}, pero puedes poner la que necesites.`}
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Input
+            type="date"
+            min={hoyISO()}
+            value={valor}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+              setValor(e.target.value)
+              setError(null)
+            }}
+            className="bg-slate-900/60 border-slate-700 text-slate-100"
+          />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setValor(sugerida)}
+            disabled={valor === sugerida || guardando}
+            title={`Poner ${VIGENCIAS[clave].etiqueta} a partir de hoy`}
+            className={`
+              cursor-pointer whitespace-nowrap disabled:opacity-100
+              ${
+                valor === sugerida
+                  ? "border-[#0174bd]/50 bg-[#0174bd]/20 text-[#4da8e8]"
+                  : "border-slate-600 bg-slate-800/80 text-slate-300 hover:bg-slate-700 hover:text-slate-100 hover:border-slate-500"
+              }
+            `}
+          >
+            {VIGENCIAS[clave].etiqueta}
+          </Button>
+        </div>
+
+        {error && (
+          <p className="text-[11px] leading-snug text-red-400">{error}</p>
+        )}
+
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => guardar(null)}
+            disabled={guardando || !expiresOn}
+            title="Dejar el documento sin fecha de vencimiento"
+            className="
+              cursor-pointer px-2 bg-transparent text-slate-400
+              hover:bg-red-500/15 hover:text-red-300
+              disabled:bg-transparent disabled:text-slate-600
+            "
+          >
+            Quitar
+          </Button>
+
+          <div className="flex items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setAbierto(false)}
+              disabled={guardando}
+              className="
+                cursor-pointer bg-transparent text-slate-400
+                hover:bg-slate-700/70 hover:text-slate-100
+              "
+            >
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => guardar(valor || null)}
+              disabled={guardando || !valor}
+              className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/90 text-white"
+            >
+              {guardando ? "Guardando..." : "Guardar"}
+            </Button>
+          </div>
+        </div>
+      </PopoverContent>
+    </Popover>
+  )
+}
+
 function AvisoDeError({
   error,
   basePath,
@@ -788,6 +1095,8 @@ async function saveWorkDocumentMetadata(args: {
   fileName: string
   mimeType: string | null
   fileSize: number | null
+  /** Vigencia capturada en el popup. null = el documento no caduca. */
+  expiresOn: string | null
 }) {
   const res = await fetch("/api/employee-work-documents", {
     method: "POST",
@@ -953,6 +1262,10 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const [dc3SignedUrls, setDc3SignedUrls] = useState<Record<string, string>>({})
   const [dc3Loading, setDc3Loading] = useState(false)
   const [dc3Error, setDc3Error] = useState<string | null>(null)
+  /* Vigencia que se aplicará a los archivos que se suban en este popup.
+     Arranca con la sugerencia del documento (DC3 = 1 año) y el usuario la
+     puede cambiar o borrar antes de guardar. */
+  const [dc3Expira, setDc3Expira] = useState<string>("")
   const [dc3DialogOpen, setDc3DialogOpen] = useState(false)
   const [dc3Saving, setDc3Saving] = useState(false)
   const [dc3Files, setDc3Files] = useState<File[]>([])
@@ -961,11 +1274,29 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const [medicalSignedUrls, setMedicalSignedUrls] = useState<Record<string, string>>({})
   const [medicalLoading, setMedicalLoading] = useState(false)
   const [medicalError, setMedicalError] = useState<string | null>(null)
+  const [medicalExpira, setMedicalExpira] = useState<string>("")
   const [medicalDialogOpen, setMedicalDialogOpen] = useState(false)
   const [medicalSaving, setMedicalSaving] = useState(false)
   const [medicalFiles, setMedicalFiles] = useState<File[]>([])
 
   const [fileViewer, setFileViewer] = useState<{ url: string; name: string; isPdf: boolean } | null>(null)
+
+  /* ── Periodos de contratación ──
+     Tramos en los que el empleado ha estado contratado. Si hay más de uno
+     fue recontratado, y el perfil cambia de "Fecha de contratación" a
+     "Rangos de contratación". Los mantiene el trigger en la base. */
+  const [periodos, setPeriodos] = useState<EmploymentPeriod[]>([])
+  const recontratado = fueRecontratado(periodos)
+
+  /* ── Reactivación ──
+     El switch de la pill abre este popup, que pide la fecha de la nueva
+     contratación. La fecha de baja no se pregunta: la guardó el trigger el
+     día en que se marcó inactivo al trabajador. */
+  const esInactivo = (employee?.statusRaw || "").toLowerCase() === "inactive"
+  const [reactivarOpen, setReactivarOpen] = useState(false)
+  const [reactivarFecha, setReactivarFecha] = useState("")
+  const [reactivarError, setReactivarError] = useState<string | null>(null)
+  const [reactivando, setReactivando] = useState(false)
 
   const [editOpen, setEditOpen] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -1204,12 +1535,19 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
 
         setEmployee(mapped)
 
+        cargarPeriodos(mapped.id).then(setPeriodos)
+
         setBankingForm({
           bank_name: mapped.bank_name ?? "",
           account_number: mapped.account_number ?? "",
           interbank_clabe: mapped.interbank_clabe ?? "",
         })
 
+        /* Sólo las asignaciones VIGENTES. Antes traía todas, abiertas y
+           cerradas, así que el perfil de un trabajador dado de baja seguía
+           mostrando la obra de la que ya salió. Una fecha futura sí se
+           incluye: es una salida programada y la persona sigue ahí. */
+        const hoyAsignaciones = mexicoTodayISO()
         const { data: assignData, error: assignError } = await supabase
           .from("obra_assignments")
           .select(
@@ -1224,13 +1562,19 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
           `,
           )
           .eq("employee_id", id)
+          .or(`assigned_to.is.null,assigned_to.gt.${hoyAsignaciones}`)
 
         if (assignError) {
           console.error("Error fetching obra_assignments:", assignError)
         } else {
           const rows = (assignData || []) as ObraAssignmentWithObra[]
 
-          const mappedProjects: AssignedObra[] = rows
+          /* Un trabajador dado de baja no está en ninguna obra, pase lo que
+             pase con la fecha de cierre de su asignación. */
+            const estaDeBaja =
+              (mapped.statusRaw || "").toLowerCase() !== "active"
+
+          const mappedProjects: AssignedObra[] = (estaDeBaja ? [] : rows)
             .map((row) => {
               const raw = row.obras
               let obra: ObraRow | null = null
@@ -1668,6 +2012,100 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     }
   }
 
+  /** Abre el popup de recontratación con la fecha de hoy ya puesta, que es
+   *  el caso normal: se reactiva a alguien el día que vuelve. */
+  const abrirReactivar = () => {
+    setReactivarFecha(mexicoTodayISO())
+    setReactivarError(null)
+    setReactivarOpen(true)
+  }
+
+  /**
+   * Reactiva al empleado con una fecha de contratación nueva.
+   *
+   * La fecha se escribe en dos campos a propósito:
+   *   · hire_date        → es la que muestra la card del directorio
+   *   · tenure_started_on → arranca el periodo nuevo, sin borrar lo acumulado
+   *
+   * El trigger de la base cierra el tramo anterior y abre el nuevo solo.
+   */
+  const handleReactivar = async () => {
+    if (!employee || !id) return
+
+    if (!reactivarFecha) {
+      setReactivarError("Captura la fecha de la nueva contratación.")
+      return
+    }
+    if (reactivarFecha > mexicoTodayISO()) {
+      setReactivarError("La fecha de contratación no puede ser futura.")
+      return
+    }
+    // No puede arrancar antes de que terminara el tramo anterior.
+    const ultimoCierre = periodos
+      .map((p) => p.ended_on)
+      .filter((f): f is string => !!f)
+      .sort()
+      .pop()
+    if (ultimoCierre && reactivarFecha < ultimoCierre) {
+      setReactivarError(
+        `La fecha no puede ser anterior a la baja previa (${formatDate(ultimoCierre)}).`,
+      )
+      return
+    }
+
+    setReactivarError(null)
+    setReactivando(true)
+    try {
+      const { data, error } = await supabase
+        .from("employees")
+        .update({
+          status: "active",
+          hire_date: reactivarFecha,
+          tenure_started_on: reactivarFecha,
+        })
+        .eq("id", id)
+        .select("*")
+        .single()
+
+      if (error) {
+        console.error("Error reactivando empleado:", {
+          message: error.message,
+          details: (error as any).details,
+          hint: (error as any).hint,
+          code: (error as any).code,
+        })
+        setReactivarError(error.message || "No se pudo reactivar al empleado.")
+        return
+      }
+
+      await logActivity({
+        event_type: "employee.status_changed",
+        entity_type: "employee",
+        entity_id: id,
+        entity_label: `${employee.name}: Inactivo → Activo`,
+        metadata: {
+          employee_name: employee.name,
+          from_status: "inactive",
+          to_status: "active",
+          rehire_date: reactivarFecha,
+        },
+      })
+
+      setEmployee((prev) => {
+        const next = mapRowToDetail(data as EmployeeRow)
+        next.roles = prev?.roles || []
+        return next
+      })
+      setPeriodos(await cargarPeriodos(id))
+      setReactivarOpen(false)
+    } catch (e) {
+      console.error(e)
+      setReactivarError("Ocurrió un error inesperado al reactivar al empleado.")
+    } finally {
+      setReactivando(false)
+    }
+  }
+
   /** Devuelve true si guardó. El popup sólo se cierra cuando es true: antes
    *  se cerraba siempre y el usuario perdía lo que había escrito. */
   const handleSave = async (): Promise<boolean> => {
@@ -1771,6 +2209,8 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             to_status: estatusNuevo,
           },
         })
+        // El trigger abrió o cerró un tramo: hay que releerlos.
+        setPeriodos(await cargarPeriodos(id))
       }
 
       setEmployee((prev) => {
@@ -1919,6 +2359,44 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     }
   }
 
+  /** Guarda la vigencia de un documento del expediente (hoy sólo la
+   *  constancia fiscal). La tabla se escribe directo, como el resto de
+   *  employee_documents en esta pantalla. */
+  const guardarVigenciaDoc = async (
+    docType: EmployeeDocType,
+    nueva: string | null,
+  ) => {
+    if (!id) return
+    const { error } = await supabase
+      .from("employee_documents")
+      .update({ expires_on: nueva })
+      .eq("employee_id", id)
+      .eq("doc_type", docType)
+
+    if (error) throw new Error(error.message)
+    await fetchDocuments()
+  }
+
+  /** Guarda la vigencia de un documento de obra (DC3 o reportes médicos).
+   *  Pasa por la API porque esa tabla no se escribe desde el cliente. */
+  const guardarVigenciaWorkDoc = async (
+    folderType: WorkFolderType,
+    documentId: string,
+    nueva: string | null,
+  ) => {
+    const res = await fetch("/api/employee-work-documents", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentId, expiresOn: nueva }),
+    })
+
+    const json = await res.json().catch(() => null)
+    if (!res.ok) {
+      throw new Error(json?.error || "No se pudo guardar la vigencia.")
+    }
+    await fetchWorkDocuments(folderType)
+  }
+
   const handleChangeDocFile = (docType: EmployeeDocType, file: File | null) => {
     setDocFiles((prev) => ({ ...prev, [docType]: file }))
   }
@@ -1946,6 +2424,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
       file_name: uploaded.file_name,
       mime_type: uploaded.mime_type,
       file_size: uploaded.file_size,
+      /* Sólo la constancia fiscal caduca hoy. Un documento recién subido
+         arranca con la vigencia estándar de 1 año; desde el botón de
+         vigencia del renglón se ajusta o se quita. */
+      expires_on:
+        docType === "tax_certificate"
+          ? vencimientoSugerido("tax_certificate")
+          : null,
     }
 
     const { error: upsertErr } = await supabase
@@ -2047,6 +2532,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
   const uploadWorkFile = async (
     folderType: WorkFolderType,
     file: File,
+    expiresOn: string | null,
   ) => {
     if (!id) return
 
@@ -2076,6 +2562,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
       fileName: file.name,
       mimeType: file.type || null,
       fileSize: file.size ?? null,
+      expiresOn,
     })
   }
 
@@ -2105,8 +2592,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
     setSavingByFolder(true)
 
     try {
+      // Todos los archivos del popup comparten la vigencia capturada: se
+      // suben juntos porque son del mismo trámite.
+      const expiresOn =
+        (folderType === "dc3" ? dc3Expira : medicalExpira) || null
+
       for (const file of selectedFiles) {
-        await uploadWorkFile(folderType, file)
+        await uploadWorkFile(folderType, file, expiresOn)
       }
 
       await fetchWorkDocuments(folderType)
@@ -2353,10 +2845,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                             <SelectValue placeholder="Selecciona un estatus" />
                           </SelectTrigger>
                           <SelectContent className={selectContentCls}>
-                            <SelectItem value="active">Activo</SelectItem>
+                            {/* Reactivar desde aquí se saltaría la captura de
+                                la fecha de recontratación, así que se cierra
+                                la puerta y se manda al switch de la pill. */}
+                            <SelectItem value="active" disabled={esInactivo}>
+                              Activo
+                            </SelectItem>
                             <SelectItem value="inactive">Inactivo</SelectItem>
                           </SelectContent>
                         </Select>
+
+                        {esInactivo && (
+                          <p className="text-[11px] leading-snug text-slate-500">
+                            Para reactivarlo usa el switch junto a la pill
+                            &ldquo;Inactivo&rdquo;: ahí se captura la fecha de la
+                            nueva contratación.
+                          </p>
+                        )}
 
                         {/* Aviso solo si el empleado tiene cuenta de acceso */}
                         {employee.user_id && (
@@ -2445,6 +2950,18 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                       className={inputCls}
                       value={deleteConfirmText}
                       onChange={(e) => setDeleteConfirmText(e.target.value)}
+                      // Con la palabra ya escrita, Enter vale lo mismo que el
+                      // clic: no hay que soltar el teclado para confirmar.
+                      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+                        if (
+                          e.key === "Enter" &&
+                          !deleting &&
+                          deleteConfirmText.trim().toUpperCase() === "ELIMINAR"
+                        ) {
+                          e.preventDefault()
+                          handleDeleteEmployee()
+                        }
+                      }}
                       placeholder='Escribe "ELIMINAR"'
                       autoComplete="off"
                     />
@@ -2478,6 +2995,101 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
             </Dialog>
           </div>
         </div>
+
+        {/* ── Recontratación ──
+            Lo abre el switch de la pill de estatus. Sólo pide la fecha de
+            entrada: la de salida ya quedó guardada el día que se marcó
+            inactivo al trabajador. */}
+        <Dialog
+          open={reactivarOpen}
+          onOpenChange={(abierto: boolean) => {
+            if (!reactivando) setReactivarOpen(abierto)
+          }}
+        >
+          <DialogContent className="sm:max-w-md bg-slate-800 border-slate-700 text-slate-100">
+            <DialogHeader>
+              <DialogTitle className="text-slate-100 flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                Reactivar a {employee?.name}
+              </DialogTitle>
+              <DialogDescription className="text-slate-400">
+                Captura la fecha en que vuelve a entrar. A partir de ella se
+                reanuda el conteo de su antigüedad, y es la que verás en su
+                card del directorio.
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="space-y-4 py-2">
+              <div className="space-y-2">
+                <Label htmlFor="reactivar_fecha" className={labelCls}>
+                  Fecha de nueva contratación
+                </Label>
+                <Input
+                  id="reactivar_fecha"
+                  type="date"
+                  max={mexicoTodayISO()}
+                  value={reactivarFecha}
+                  onChange={(e) => {
+                    setReactivarFecha(e.target.value)
+                    setReactivarError(null)
+                  }}
+                  className="bg-slate-900/60 border-slate-700 text-slate-100"
+                />
+              </div>
+
+              {/* Lo que ya trabajó no se pierde: se le dice, porque es la
+                  duda natural al reactivar a alguien. */}
+              {periodos.length > 0 && (
+                <div className="rounded-lg border border-slate-700/60 bg-slate-900/40 p-3 text-xs text-slate-400">
+                  <p className="font-medium text-slate-300 mb-1.5">
+                    Historial en la empresa
+                  </p>
+                  <ul className="space-y-0.5">
+                    {periodos.map((p) => (
+                      <li key={p.id}>{formatPeriodo(p)}</li>
+                    ))}
+                  </ul>
+                  <p className="mt-2 text-slate-500">
+                    Su antigüedad acumulada ({employee?.tenure}) se conserva:
+                    el tiempo nuevo se suma al anterior.
+                  </p>
+                </div>
+              )}
+
+              {reactivarError && (
+                <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <span>{reactivarError}</span>
+                </div>
+              )}
+            </div>
+
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setReactivarOpen(false)}
+                disabled={reactivando}
+                className="border-slate-600 text-slate-300 hover:bg-slate-700/60"
+              >
+                Cancelar
+              </Button>
+              <Button
+                onClick={handleReactivar}
+                disabled={reactivando || !reactivarFecha}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white"
+              >
+                {reactivando ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Reactivando...
+                  </>
+                ) : (
+                  "Reactivar empleado"
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         <Dialog open={rolesDialogOpen} onOpenChange={setRolesDialogOpen}>
           <DialogContent className="max-w-2xl bg-slate-800 border-slate-700 text-slate-100">
@@ -2778,9 +3390,48 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                   <h3 className="font-semibold text-slate-100 text-xl">
                     {employee.name}
                   </h3>
-                  <Badge className={getStatusColor(employee.statusUi)}>
-                    {employee.statusUi}
-                  </Badge>
+                  {/* Pill de estatus. Cuando el empleado está inactivo trae
+                      un switch para reactivarlo de un clic: abre el popup que
+                      pide la fecha de la nueva contratación. Si está activo
+                      la pill es sólo informativa y la baja se sigue haciendo
+                      desde "Editar perfil", como antes. */}
+                  <div className="flex justify-center">
+                    <Badge
+                      className={`${getStatusColor(employee.statusUi)} ${
+                        employee.statusUi === "Inactivo" ? "gap-2 pr-1.5" : ""
+                      }`}
+                    >
+                      {employee.statusUi}
+
+                      {employee.statusUi === "Inactivo" && (
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={false}
+                          aria-label="Reactivar empleado"
+                          title="Reactivar empleado: se te pedirá la fecha de la nueva contratación"
+                          onClick={abrirReactivar}
+                          className="
+                            group relative inline-flex h-4 w-7 flex-shrink-0 cursor-pointer
+                            items-center rounded-full border border-slate-500/40
+                            bg-slate-600/60 transition-colors duration-200
+                            hover:border-emerald-500/50 hover:bg-emerald-500/30
+                            focus-visible:outline-none focus-visible:ring-2
+                            focus-visible:ring-emerald-500/60 focus-visible:ring-offset-1
+                            focus-visible:ring-offset-slate-900
+                          "
+                        >
+                          <span
+                            className="
+                              pointer-events-none inline-block h-3 w-3 translate-x-0.5
+                              rounded-full bg-slate-300 shadow transition-all duration-200
+                              group-hover:translate-x-3.5 group-hover:bg-emerald-300
+                            "
+                          />
+                        </button>
+                      )}
+                    </Badge>
+                  </div>
 
                   {/* Estado de la cuenta de acceso al ERP. Solo aplica a
                       empleados con cuenta vinculada (p. ej. directores de obra).
@@ -2872,17 +3523,54 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-3 text-sm">
-                    <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
-                    <span className="text-slate-400">
-                      Fecha de contratación: {formatDate(employee.joinDate)}
-                    </span>
-                  </div>
+                  {/* Un empleado recontratado tiene más de un tramo, así que
+                      una sola fecha de contratación miente. En ese caso se
+                      listan todos los rangos; en el caso normal se deja la
+                      línea de siempre. */}
+                  {recontratado ? (
+                    <div className="flex items-start gap-3 text-sm">
+                      <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0 mt-0.5" />
+                      <div className="text-slate-400">
+                        <span>Rangos de contratación:</span>
+                        <ul className="mt-1 space-y-0.5">
+                          {periodos.map((p) => (
+                            <li key={p.id} className="flex items-center gap-1.5">
+                              <span
+                                className={
+                                  p.ended_on
+                                    ? "text-slate-300"
+                                    : "text-emerald-400 font-medium"
+                                }
+                              >
+                                {formatPeriodo(p)}
+                              </span>
+                              {p.reconstruido && (
+                                <span
+                                  className="text-[10px] text-slate-500"
+                                  title="Tramo deducido de la antigüedad acumulada antes de que se registraran los periodos. Fechas aproximadas."
+                                >
+                                  aprox.
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-3 text-sm">
+                      <Calendar className="w-4 h-4 text-slate-500 flex-shrink-0" />
+                      <span className="text-slate-400">
+                        Fecha de contratación: {formatDate(employee.joinDate)}
+                      </span>
+                    </div>
+                  )}
 
                   <div className="flex items-center gap-3 text-sm">
                     <Clock className="w-4 h-4 text-slate-500 flex-shrink-0" />
                     <span className="text-slate-400">
-                      Tiempo contratado: {employee.tenure}
+                      {recontratado ? "Tiempo total contratado" : "Tiempo contratado"}:{" "}
+                      {employee.tenure}
                       {employee.tenurePaused && (
                         <span
                           className="ml-1.5 text-amber-400/90"
@@ -3660,7 +4348,10 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                   <div className="flex flex-row items-center justify-between p-6 pb-4">
                     <h3 className="text-lg font-semibold text-slate-100">Documentos del empleado</h3>
 
-                    <Dialog open={docsDialogOpen} onOpenChange={setDocsDialogOpen}>
+                    <Dialog
+                      open={docsDialogOpen}
+                      onOpenChange={setDocsDialogOpen}
+                    >
                       <DialogTrigger asChild>
                         <Button className="cursor-pointer bg-[#0174bd] hover:bg-[#0174bd]/85 text-white border-0 transition-all duration-150">
                           <Edit className="w-4 h-4 mr-2" />
@@ -3711,9 +4402,23 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                         </div>
 
                                         {existing ? (
-                                          <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
-                                            Listo
-                                          </Badge>
+                                          /* Si el documento caduca, la pill
+                                             dice su estado en vez de un
+                                             "Listo" que podría estar vencido. */
+                                          existing.expires_on ? (
+                                            <Badge
+                                              className={`text-[11px] font-medium ${
+                                                estadoVigencia(existing.expires_on).clase
+                                              }`}
+                                              title={`Vence el ${formatVencimiento(existing.expires_on)}`}
+                                            >
+                                              {estadoVigencia(existing.expires_on).etiqueta}
+                                            </Badge>
+                                          ) : (
+                                            <Badge className="bg-emerald-500/15 text-emerald-400 border border-emerald-500/25">
+                                              Listo
+                                            </Badge>
+                                          )
                                         ) : (
                                           <Badge className="bg-slate-500/15 text-slate-400 border border-slate-500/25">
                                             Pendiente
@@ -3744,6 +4449,7 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                           </p>
                                         )}
                                       </div>
+
 
                                       <div className="flex items-center justify-end gap-2">
                                         <Button
@@ -3945,6 +4651,17 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                               </div>
 
                               <div className="flex items-center gap-2">
+                                {/* Sólo la constancia fiscal caduca. */}
+                                {docType === "tax_certificate" && doc && (
+                                  <BotonVigencia
+                                    clave="tax_certificate"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaDoc("tax_certificate", nueva)
+                                    }
+                                  />
+                                )}
+
                                 <Button
                                   type="button"
                                   variant="outline"
@@ -3980,7 +4697,15 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                         <h3 className="text-lg font-semibold text-slate-100">Carpeta DC3</h3>
                       </div>
 
-                      <Dialog open={dc3DialogOpen} onOpenChange={setDc3DialogOpen}>
+                      <Dialog
+                        open={dc3DialogOpen}
+                        onOpenChange={(abierto: boolean) => {
+                          // Al abrir se precarga la sugerencia (1 año); el
+                          // usuario la cambia o la borra si no aplica.
+                          if (abierto) setDc3Expira(vencimientoSugerido("dc3"))
+                          setDc3DialogOpen(abierto)
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
@@ -4013,6 +4738,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 />
                               </div>
                             </div>
+
+                            <CampoVigencia
+                              clave="dc3"
+                              valor={dc3Expira}
+                              onChange={setDc3Expira}
+                              idInput="dc3-expira"
+                            />
 
                             {dc3Files.length > 0 ? (
                               <div className="space-y-2">
@@ -4110,6 +4842,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 </div>
 
                                 <div className="flex items-center gap-1.5">
+                                  <BotonVigencia
+                                    clave="dc3"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaWorkDoc("dc3", doc.id, nueva)
+                                    }
+                                  />
+
                                   <Button
                                     type="button"
                                     variant="outline"
@@ -4172,7 +4912,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                         <h3 className="text-lg font-semibold text-slate-100">Carpeta de Reportes Médicos</h3>
                       </div>
 
-                      <Dialog open={medicalDialogOpen} onOpenChange={setMedicalDialogOpen}>
+                      <Dialog
+                        open={medicalDialogOpen}
+                        onOpenChange={(abierto: boolean) => {
+                          if (abierto)
+                            setMedicalExpira(vencimientoSugerido("medical_reports"))
+                          setMedicalDialogOpen(abierto)
+                        }}
+                      >
                         <DialogTrigger asChild>
                           <Button variant="outline" className={`cursor-pointer ${btnOutlineCls}`}>
                             <Plus className="w-4 h-4 mr-2" />
@@ -4205,6 +4952,13 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 />
                               </div>
                             </div>
+
+                            <CampoVigencia
+                              clave="medical_reports"
+                              valor={medicalExpira}
+                              onChange={setMedicalExpira}
+                              idInput="medical-expira"
+                            />
 
                             {medicalFiles.length > 0 ? (
                               <div className="space-y-2">
@@ -4302,6 +5056,14 @@ export function EmployeeDetailScreen({ allowed }: { allowed: UserRoleScreen[] })
                                 </div>
 
                                 <div className="flex items-center gap-1.5">
+                                  <BotonVigencia
+                                    clave="medical_reports"
+                                    expiresOn={doc.expires_on ?? null}
+                                    onGuardar={(nueva) =>
+                                      guardarVigenciaWorkDoc("medical_reports", doc.id, nueva)
+                                    }
+                                  />
+
                                   <Button
                                     type="button"
                                     variant="outline"

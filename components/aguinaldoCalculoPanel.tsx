@@ -6,9 +6,13 @@ import {
   Loader2, Save, TriangleAlert,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { BotonesDescarga } from "@/components/botonesDescarga"
 import { supabase } from "@/lib/supabaseClient"
 import { useAuth } from "@/lib/auth-context"
 import { can } from "@/lib/permissions"
+import type { CorridaAguinaldo } from "@/lib/aguinaldoReporte"
+import { generateAguinaldoReportePdf } from "@/lib/aguinaldoReportePdf"
+import { generateAguinaldoReporteExcel } from "@/lib/aguinaldoReporteExcel"
 
 type Fila = {
   employee_id: string
@@ -49,6 +53,7 @@ export function AguinaldoCalculoPanel() {
   const [error, setError] = useState<string | null>(null)
   const [aviso, setAviso] = useState<string | null>(null)
   const [abierto, setAbierto] = useState(false)
+
 
   const calcular = useCallback(async () => {
     setCalculando(true); setError(null); setAviso(null)
@@ -101,6 +106,21 @@ export function AguinaldoCalculoPanel() {
       porAplicar:   limpias.filter(f => Math.abs(Number(f.diferencia ?? 0)) > 0.005).length,
     }
   }, [filas])
+
+  const descargar = useCallback(async (formato: "pdf" | "xlsx") => {
+    if (!filas || !resumen) return
+    setError(null)
+    const corrida: CorridaAguinaldo = {
+      anio,
+      corte: corte || `${anio}-12-31`,
+      filas,
+      resumen,
+      generadoPor: user?.display_name || user?.email || "Sistema",
+    }
+    if (formato === "pdf") generateAguinaldoReportePdf(corrida)
+    else await generateAguinaldoReporteExcel(corrida)
+  }, [filas, resumen, anio, corte, user])
+
 
   return (
     <div className="rounded-2xl border border-slate-700/60 bg-slate-800 overflow-hidden">
@@ -187,27 +207,39 @@ export function AguinaldoCalculoPanel() {
                 sub={resumen.revisar > 0 ? "no se les aplica" : "ninguno"} />
             </div>
 
-            {puedeAplicar ? (
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <p className="text-[11px] text-slate-500">
-                  {resumen.porAplicar === 0
+            <div className="flex items-center justify-between gap-3 flex-wrap">
+              <p className="text-[11px] text-slate-500">
+                {!puedeAplicar
+                  ? "Tu rol no permite escribir estos montos en los expedientes."
+                  : resumen.porAplicar === 0
                     ? "El expediente de todos ya coincide con el cálculo."
                     : `${resumen.porAplicar} empleado(s) cambiarían de monto al aplicar.`}
-                </p>
-                <Button onClick={() => void aplicar()}
-                  disabled={aplicando || resumen.porAplicar === 0}
-                  style={{ background: aplicando || resumen.porAplicar === 0 ? undefined : "#0174bd" }}
-                  className="text-white disabled:opacity-40">
-                  {aplicando
-                    ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" />Aplicando…</>)
-                    : (<><Save className="w-4 h-4 mr-2" />Aplicar al expediente</>)}
-                </Button>
-              </div>
-            ) : (
-              <p className="text-[11px] text-slate-500">
-                Tu rol no permite escribir estos montos en los expedientes.
               </p>
-            )}
+
+              <div className="flex items-center gap-2">
+                {/* Descargar la corrida. Un solo botón que se desdobla en los
+                    dos formatos al pulsarlo, para no tener tres botones
+                    compitiendo con la acción principal. */}
+                <BotonesDescarga
+                  onDescargar={descargar}
+                  etiqueta="Descargar corrida"
+                  tituloPdf="Descargar la corrida en PDF"
+                  tituloExcel="Descargar la corrida en Excel"
+                  onError={setError}
+                />
+
+                {puedeAplicar && (
+                  <Button onClick={() => void aplicar()}
+                    disabled={aplicando || resumen.porAplicar === 0}
+                    style={{ background: aplicando || resumen.porAplicar === 0 ? undefined : "#0174bd" }}
+                    className="text-white disabled:opacity-40">
+                    {aplicando
+                      ? (<><Loader2 className="w-4 h-4 mr-2 animate-spin" />Aplicando…</>)
+                      : (<><Save className="w-4 h-4 mr-2" />Aplicar al expediente</>)}
+                  </Button>
+                )}
+              </div>
+            </div>
 
             <button
               onClick={() => setAbierto(!abierto)}

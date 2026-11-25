@@ -11,6 +11,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog"
 import { supabase } from "@/lib/supabaseClient"
+import { useRealtimeRefresco, TABLAS_PROVEEDORES } from "@/lib/useRealtimeRefresco"
 import { useBasePath } from "@/lib/appScope"
 
 type Proveedor = {
@@ -97,6 +98,11 @@ export function ProveedorDirectorioTab() {
   }, [])
 
   useEffect(() => { void cargar() }, [cargar])
+
+  /* Varias personas trabajan Proveedores a la vez. Esto vuelve a
+     consultar en cuanto alguien más registra un pago, procesa una
+     factura o manda material, sin esperar a que se recargue. */
+  useRealtimeRefresco("proveedores-directorio", TABLAS_PROVEEDORES.directorio, cargar)
 
   const visibles = useMemo(() => {
     const q = busca.trim().toLowerCase()
