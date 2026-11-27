@@ -6,7 +6,7 @@ export const runtime = "nodejs"
 // ───────────────────────────────────────────────────────────────────────────
 //  Sync de nómina semanal por obra (real, NO fiscal).
 //
-//  Mantiene al día un resumen financiero por semana (Jueves → Miércoles) desde
+//  Mantiene al día un resumen financiero por semana (Lunes → Domingo) desde
 //  que inició la obra hasta la semana en curso. Calcula SIEMPRE desde
 //  obra_attendance con la MISMA fórmula que nominasTab, y hace upsert en
 //  obra_nominas / obra_nomina_details SOLO de las semanas que cambiaron.
@@ -40,15 +40,17 @@ function addDays(iso: string, n: number): string {
   return d.toISOString().split("T")[0]
 }
 
-/** Jueves (yyyy-mm-dd) del periodo Jue→Mié que contiene a `iso`. */
-function thursdayOf(iso: string): string {
+/** Lunes (yyyy-mm-dd) del periodo Lun→Dom que contiene a `iso`. */
+/** Lunes de la semana a la que pertenece una fecha. */
+function mondayOf(iso: string): string {
   const d = new Date(iso + "T00:00:00Z")
-  let diff = d.getUTCDay() - 4 // Jueves = 4
-  if (diff < 0) diff += 7
+  const dow = d.getUTCDay() // 0=Dom..6=Sab
+  // El domingo cierra la semana que empezó el lunes anterior.
+  const diff = dow === 0 ? 6 : dow - 1
   return addDays(iso, -diff)
 }
 
-/** Las 6 fechas laborales (Jue–Sáb + Lun–Mié, sin domingo) desde el week_start. */
+/** Las 6 fechas laborales (Lun–Sáb, sin domingo) desde el week_start. */
 function getWorkDates(weekStart: string): string[] {
   const out: string[] = []
   for (let i = 0; i < 7; i++) {
@@ -139,13 +141,13 @@ export async function POST(req: NextRequest) {
     }
 
     const todayISO = mexicoTodayISO()
-    const currentThu = thursdayOf(todayISO)
+    const currentMon = mondayOf(todayISO)
 
     const startDate: string =
       (obra.start_date_actual as string | null) ||
       (obra.start_date_planned as string | null) ||
       ((obra.created_at as string) || todayISO).split("T")[0]
-    let firstThu = thursdayOf(startDate)
+    let firstMon = mondayOf(startDate)
 
     // 2. Encabezados ya almacenados (para hacer diff y refrescar los existentes)
     const { data: existingRaw } = await supabase
@@ -158,22 +160,22 @@ export async function POST(req: NextRequest) {
 
     // Arranca el enumerado en la más antigua entre: inicio de obra y lo ya guardado
     for (const h of existing) {
-      if (h.week_start < firstThu) firstThu = thursdayOf(h.week_start)
+      if (h.week_start < firstMon) firstMon = mondayOf(h.week_start)
     }
 
-    // 3. Lista de semanas (jueves) desde firstThu hasta la semana en curso
+    // 3. Lista de semanas (lunes) desde firstMon hasta la semana en curso
     const weekStarts: string[] = []
-    if (firstThu <= currentThu) {
-      let w = firstThu
+    if (firstMon <= currentMon) {
+      let w = firstMon
       let guard = 0
-      while (w <= currentThu && guard < MAX_WEEKS) {
+      while (w <= currentMon && guard < MAX_WEEKS) {
         weekStarts.push(w)
         w = addDays(w, 7)
         guard++
       }
     }
     // Garantiza la semana en curso aunque la obra "inicie" en el futuro
-    if (!weekStarts.includes(currentThu)) weekStarts.push(currentThu)
+    if (!weekStarts.includes(currentMon)) weekStarts.push(currentMon)
 
     const rangeStart = weekStarts[0]
     const rangeEnd = addDays(weekStarts[weekStarts.length - 1], 6)
@@ -300,7 +302,7 @@ export async function POST(req: NextRequest) {
     let written = 0
     for (const r of results) {
       const prev = existingByWeek.get(r.week_start)
-      const isCurrent = r.week_start === currentThu
+      const isCurrent = r.week_start === currentMon
 
       // No crear filas vacías para semanas viejas sin actividad (evita ruido);
       // sí se crea la semana en curso y se actualiza cualquier fila ya existente.
@@ -368,13 +370,13 @@ export async function POST(req: NextRequest) {
       .order("week_start", { ascending: false })
     const nominas = (freshRaw ?? []).map((n: any) => ({
       ...n,
-      is_current: n.week_start === currentThu,
+      is_current: n.week_start === currentMon,
     }))
 
     return NextResponse.json({
       ok: true,
       obra_name: obra.name,
-      current_week_start: currentThu,
+      current_week_start: currentMon,
       weeks_written: written,
       nominas,
     })

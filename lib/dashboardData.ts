@@ -234,6 +234,7 @@ export async function cargarResumen(role: string | null | undefined): Promise<Re
     nominaRes,
     aguinaldoRes,
     actividadRes,
+    estSinCorteRes,
   ] = await Promise.all([
     // ── Proveedores ──
     verProveedores
@@ -315,6 +316,16 @@ export async function cargarResumen(role: string | null | undefined): Promise<Re
       .select("id, event_type, entity_type, entity_label, actor_email, created_at")
       .order("created_at", { ascending: false })
       .limit(8),
+    /* Estimaciones sin fecha de corte. No entran en ningún periodo de
+       Finanzas porque ese filtro va sobre date_end: son trabajo medido que
+       queda invisible hasta que alguien captura la fecha. */
+    verObras
+      ? supabase
+          .from("obra_estimaciones")
+          .select("id, number, amount, obra_id, status, created_at, obras(name, empresa_id)")
+          .is("date_end", null)
+      : salta,
+
   ])
 
   const pendientes: Pendiente[] = []
@@ -467,6 +478,52 @@ export async function cargarResumen(role: string | null | undefined): Promise<Re
   const facObra = (facturasObra.data as FacObra[] | null) || []
   const porCobrar = round2(facObra.reduce((s, f) => s + (Number(f.amount || 0) - Number(f.amount_paid || 0)), 0))
   // 30 días es el plazo que se maneja con los clientes: pasado eso, se persigue.
+  // ── Estimaciones sin fecha de corte ─────────────────────────────────────────
+  // Valen dinero y no aparecen en ningún periodo de Finanzas. Es un pendiente
+  // que no se nota, porque no falla nada: el monto simplemente no está.
+  type EstSinCorte = {
+    id: string
+    number: number | null
+    amount: number | null
+    obra_id: string | null
+    status: string | null
+    created_at: string | null
+    obras: { name: string; empresa_id: string | null } | { name: string; empresa_id: string | null }[] | null
+  }
+  const estSinCorte = (estSinCorteRes.data as EstSinCorte[] | null) || []
+  if (estSinCorte.length > 0) {
+    const monto = round2(estSinCorte.reduce((s2, e) => s2 + Number(e.amount || 0), 0))
+    pendientes.push({
+      key: "estimaciones_sin_corte",
+      titulo: `${estSinCorte.length} ${plural(estSinCorte.length, "estimación sin fecha de corte", "estimaciones sin fecha de corte")}`,
+      detalle: "Sin esa fecha no entran en ningún periodo de Finanzas: el monto queda fuera de los reportes.",
+      conteo: estSinCorte.length,
+      monto,
+      urgencia: "media",
+      icono: "estimacion",
+      ruta: "/projects",
+      // Cada una lleva a su obra, que es donde se captura la fecha.
+      detalles: estSinCorte
+        .slice()
+        .sort((a, b) => Number(b.amount || 0) - Number(a.amount || 0))
+        .map((e) => {
+          const o = Array.isArray(e.obras) ? e.obras[0] : e.obras
+          const partes = [
+            e.number ? `Estimación ${e.number}` : "Sin número",
+            e.status === "completed" ? "completada" : "pendiente",
+            e.created_at ? `creada ${fechaConAnio(e.created_at)}` : null,
+          ].filter(Boolean)
+          return {
+            id: e.id,
+            titulo: o?.name ?? "Obra sin asignar",
+            subtitulo: partes.join(" · "),
+            monto: round2(Number(e.amount || 0)),
+            ruta: o && o.empresa_id && e.obra_id ? `/projects/${o.empresa_id}/${e.obra_id}` : "/projects",
+          }
+        }),
+    })
+  }
+
   const cobranzaVencida = facObra.filter((f) => f.date && diasDesde(f.date) > 30)
   if (cobranzaVencida.length > 0) {
     const monto = round2(cobranzaVencida.reduce((s, f) => s + (Number(f.amount || 0) - Number(f.amount_paid || 0)), 0))

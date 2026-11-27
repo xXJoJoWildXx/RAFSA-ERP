@@ -103,6 +103,9 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
 
   const { user: usuarioActual } = useAuth()
   const verAdministracion = can(usuarioActual?.role, "nomina.administracion.view")
+  /* Una corrida guardada es el registro de lo que se pagó esa semana: se
+     consulta meses después y no se repone. Borrarla es de admin. */
+  const puedeBorrarCorrida = can(usuarioActual?.role, "nomina.corridas.delete")
   const numPestanas = verAdministracion ? 3 : 2
   const indicePestana = tab === "asistencia" ? 1 : tab === "administracion" ? 2 : 0
 
@@ -345,9 +348,22 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   }
 
   async function deleteRun(runId: string) {
+    if (!puedeBorrarCorrida) return
     if (!confirm("¿Eliminar esta corrida guardada? No afecta las nóminas ni los empleados.")) return
-    const res = await fetch(`/api/payroll/${runId}`, { method: "DELETE" })
-    if (res.ok) await refreshHistory()
+
+    // La ruta exige sesión de admin: sin el token responde 401.
+    const { data: sessionData } = await supabase.auth.getSession()
+    const token = sessionData?.session?.access_token
+    const res = await fetch(`/api/payroll/${runId}`, {
+      method: "DELETE",
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    })
+    if (res.ok) {
+      await refreshHistory()
+      return
+    }
+    const json = await res.json().catch(() => ({} as any))
+    alert(json?.error || "No se pudo eliminar la corrida.")
   }
 
   async function downloadRunReport(runId: string, format: "pdf" | "xlsx" = "pdf") {
@@ -539,7 +555,7 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
               {/* La semana sólo aplica a la nómina: el aguinaldo es anual */}
               {!esAguinaldo && (
                 <div className="flex flex-col gap-1.5">
-                  <label className="text-xs font-medium text-slate-400">Semana (Jue – Mié)</label>
+                  <label className="text-xs font-medium text-slate-400">Semana (Lun – Dom)</label>
                   <Select value={week} onValueChange={setWeek}>
                     <SelectTrigger className={`w-full lg:w-72 cursor-pointer ${inputCls}`}>
                       <SelectValue placeholder="Selecciona la semana" />
@@ -877,10 +893,12 @@ export function NominaScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                                 <BadgeCheck className="w-4 h-4" />
                               </Button>
                             )}
-                            <Button size="sm" variant="ghost" onClick={() => deleteRun(r.id)}
-                              className="h-7 cursor-pointer text-slate-400 hover:text-red-400" title="Eliminar">
-                              <Trash2 className="w-4 h-4" />
-                            </Button>
+                            {puedeBorrarCorrida && (
+                              <Button size="sm" variant="ghost" onClick={() => deleteRun(r.id)}
+                                className="h-7 cursor-pointer text-slate-400 hover:text-red-400" title="Eliminar">
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>

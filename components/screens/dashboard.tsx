@@ -470,6 +470,7 @@ export function DashboardScreen({ allowed }: { allowed: UserRoleScreen[] }) {
           </section>
 
         </div>
+
       </AdminLayout>
     </RoleGuard>
   )

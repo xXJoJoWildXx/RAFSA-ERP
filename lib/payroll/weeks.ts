@@ -1,26 +1,32 @@
 // lib/payroll/weeks.ts
-// Helpers de periodo semanal (Jueves → Miércoles), idénticos a los de nominasTab,
-// para que week_start empate EXACTAMENTE con lo guardado en obra_nominas.
+// Helpers de periodo semanal (Lunes → Domingo).
+//
+// La semana laboral corre de lunes a domingo, con el domingo de descanso: los
+// seis días que se pagan son lunes a sábado. Antes el periodo iba de jueves a
+// miércoles; se regresó a la semana natural.
+//
+// week_start es SIEMPRE el lunes del periodo, y es la llave con la que se
+// guardan las nóminas (obra_nominas.week_start, payroll_runs.week_start).
 
-/** Jueves del periodo con un offset (0 = periodo actual, -1 = anterior, ...). */
-export function getThursdayOfPeriod(offset = 0): Date {
+/** Lunes del periodo con un offset (0 = periodo actual, -1 = anterior, ...). */
+export function getMondayOfPeriod(offset = 0): Date {
   const now = new Date()
   const day = now.getDay() // 0=Dom..6=Sab
-  let diff = day - 4 // Jueves = 4
-  if (diff < 0) diff += 7
-  const thursday = new Date(now)
-  thursday.setDate(now.getDate() - diff + offset * 7)
-  thursday.setHours(0, 0, 0, 0)
-  return thursday
+  // Domingo cierra la semana que empezó el lunes anterior, no abre una nueva.
+  let diff = day === 0 ? 6 : day - 1
+  const monday = new Date(now)
+  monday.setDate(now.getDate() - diff + offset * 7)
+  monday.setHours(0, 0, 0, 0)
+  return monday
 }
 
-export function getWednesdayFromThursday(thursday: Date): Date {
-  const wed = new Date(thursday)
-  wed.setDate(thursday.getDate() + 6)
-  return wed
+export function getSundayFromMonday(monday: Date): Date {
+  const sun = new Date(monday)
+  sun.setDate(monday.getDate() + 6)
+  return sun
 }
 
-/** yyyy-mm-dd — misma conversión que nominasTab (toISOString). */
+/** yyyy-mm-dd */
 export function fmtDate(d: Date): string {
   return d.toISOString().split("T")[0]
 }
@@ -31,8 +37,8 @@ export function fmtDateDisplay(dateStr: string): string {
 }
 
 /**
- * Las 6 fechas laborales (Jue–Sáb + Lun–Mié, se salta el domingo) a partir del
- * week_start (jueves, 'yyyy-mm-dd'). Cálculo en UTC para que no dependa de la
+ * Las 6 fechas laborales (Lun–Sáb, se salta el domingo) a partir del
+ * week_start (lunes, 'yyyy-mm-dd'). Cálculo en UTC para que no dependa de la
  * zona horaria del servidor y empate con las fechas de obra_attendance.
  */
 export function getWorkDatesFromWeekStart(weekStart: string): string[] {
@@ -48,14 +54,14 @@ export function getWorkDatesFromWeekStart(weekStart: string): string[] {
 
 export type WeekPeriod = { weekStart: string; weekEnd: string; label: string }
 
-/** Lista de los periodos recientes (jue→mié), del más nuevo al más viejo. */
+/** Lista de los periodos recientes (lun→dom), del más nuevo al más viejo. */
 export function listRecentPeriods(count = 8): WeekPeriod[] {
   const periods: WeekPeriod[] = []
   for (let i = 0; i > -count; i--) {
-    const thursday = getThursdayOfPeriod(i)
-    const wednesday = getWednesdayFromThursday(thursday)
-    const weekStart = fmtDate(thursday)
-    const weekEnd = fmtDate(wednesday)
+    const monday = getMondayOfPeriod(i)
+    const sunday = getSundayFromMonday(monday)
+    const weekStart = fmtDate(monday)
+    const weekEnd = fmtDate(sunday)
     periods.push({
       weekStart,
       weekEnd,

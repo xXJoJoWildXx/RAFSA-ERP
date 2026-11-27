@@ -360,6 +360,15 @@ export async function generateFinanzasReportePdf(rep: ReporteFinanzas): Promise<
       [{ texto: "   Cobrado (dinero que entró)" }, { texto: String(r.ingresos.cobros), color: MUTED }, { texto: moneyExacto(r.ingresos.cobrado), bold: true }],
       [{ texto: "   Facturado al cliente" }, { texto: String(r.ingresos.facturas), color: MUTED }, { texto: moneyExacto(r.ingresos.facturado) }],
       [{ texto: "   Estimaciones con corte en el periodo" }, { texto: String(r.ingresos.estimaciones), color: MUTED }, { texto: moneyExacto(r.ingresos.estimado) }],
+      [
+        // Trabajo ya medido que todavía no se le pasa al cliente.
+        { texto: "      Estimado sin facturar" },
+        { texto: String(r.ingresos.estimacionesSinFacturar), color: MUTED },
+        {
+          texto: moneyExacto(r.ingresos.estimadoSinFacturar),
+          color: r.ingresos.estimadoSinFacturar > 0 ? AMBAR : MUTED,
+        },
+      ],
       [{ texto: "EGRESOS", bold: true, color: AMBAR }, { texto: "" }, { texto: "" }],
       [
         { texto: `   Nómina de obra (${r.egresos.nominaSemanas} ${r.egresos.nominaSemanas === 1 ? "semana" : "semanas"})` },
@@ -389,6 +398,91 @@ export async function generateFinanzasReportePdf(rep: ReporteFinanzas): Promise<
       ],
     },
   )
+
+  // ── Cuánto de la nómina fue fiscal y cuánto efectivo ──
+  // Sólo totales: el desglose por trabajador vive en el Excel.
+  {
+    const f = rep.fiscal
+    const nominaObras = rep.obras.reduce((s2, o) => s2 + o.nominaCapturada, 0)
+    // El fiscal de obras y el de oficina van en renglones distintos para que
+    // la resta se lea: capturado - depositado = efectivo. Mezclarlos daba un
+    // "fiscal" que no restaba contra nada.
+    const fiscalEnObras = rep.obras.reduce((s2, o) => s2 + o.nominaFiscal, 0)
+    seccion("Nómina: fiscal contra efectivo")
+
+    tabla(
+      [
+        { titulo: "Concepto", ancho: 112, al: "izq" as const },
+        { titulo: "Semanas", ancho: 26, al: "der" as const },
+        { titulo: "Monto", ancho: 44, al: "der" as const },
+      ],
+      [
+        [
+          { texto: "Nómina capturada en obras", bold: true },
+          { texto: String(rep.semanas), color: MUTED },
+          { texto: moneyExacto(nominaObras), bold: true },
+        ],
+        [
+          { texto: "   Depositado en banco (documento de la contadora)" },
+          { texto: String(f.semanasConRegistro.length), color: MUTED },
+          { texto: moneyExacto(fiscalEnObras) },
+        ],
+        [
+          { texto: "   Entregado en efectivo (la diferencia)" },
+          { texto: "", color: MUTED },
+          { texto: moneyExacto(f.efectivo), color: VERDE },
+        ],
+        ...(Math.abs(f.sinObra) > 0.5
+          ? [
+              [
+                { texto: "Depósito fiscal de personal sin obra asignada (oficina)" },
+                { texto: "", color: MUTED },
+                { texto: moneyExacto(f.sinObra), color: MUTED },
+              ],
+            ]
+          : []),
+      ],
+      {
+        totales: [
+          { texto: "DEPÓSITO FISCAL TOTAL DEL PERIODO" },
+          { texto: "" },
+          { texto: moneyExacto(f.total) },
+        ],
+      },
+    )
+
+    // Una semana sin corrida guardada no significa que no se haya pagado:
+    // significa que nadie subió el documento, y el total fiscal de arriba
+    // sólo cubre parte del periodo. Decirlo evita leerlo como completo.
+    if (f.semanasSinRegistro.length > 0) {
+      const n = f.semanasSinRegistro.length
+      const texto =
+        `${n} de las ${f.semanasConRegistro.length + n} semanas del periodo no tienen corrida de nómina guardada, ` +
+        `así que de ${n === 1 ? "esa semana" : "esas semanas"} no hay sueldo fiscal registrado y el total de arriba ` +
+        `no cubre el periodo completo. Semanas sin registro: ${f.semanasSinRegistro.join(", ")}.`
+      const lineas = doc.splitTextToSize(texto, CW - 10) as string[]
+      const alto = lineas.length * 3.8 + 5
+      asegurar(alto + 2)
+      doc.setFillColor(255, 251, 235)
+      doc.setDrawColor(252, 211, 77)
+      doc.roundedRect(ML, y, CW, alto, 1.5, 1.5, "FD")
+      doc.setFontSize(8)
+      doc.setTextColor(...AMBAR)
+      doc.text(lineas, ML + 4, y + 4.5)
+      doc.setTextColor(...INK)
+      y += alto + 3
+    } else if (f.semanasConRegistro.length > 0) {
+      doc.setFontSize(7.5)
+      doc.setTextColor(...MUTED)
+      doc.text(
+        "Todas las semanas del periodo tienen corrida de nómina guardada.",
+        ML,
+        y + 3,
+      )
+      doc.setTextColor(...INK)
+      y += 7
+    }
+  }
 
   // ── Avisos de cobertura ──
   if (r.avisos.length > 0) {

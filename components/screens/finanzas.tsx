@@ -23,6 +23,7 @@ import { AdminLayout } from "@/components/admin-layout"
 import { RoleGuard } from "@/lib/role-guard"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { BotonesDescarga } from "@/components/botonesDescarga"
 import {
   cargarFinanzas,
   mesesDisponibles,
@@ -38,7 +39,7 @@ import { generateFinanzasReportePdf } from "@/lib/finanzasReportePdf"
 import { generateFinanzasReporteExcel } from "@/lib/finanzasReporteExcel"
 import {
   AlertTriangle, ArrowDownRight, ArrowUpRight, Banknote, Building2, ChevronDown,
-  ClipboardList, FileSpreadsheet, FileText, HandCoins, Loader2, Minus, RefreshCw,
+  ClipboardList, HandCoins, Loader2, Minus, RefreshCw,
   TrendingUp, Users, Wallet,
 } from "lucide-react"
 
@@ -57,7 +58,6 @@ export function FinanzasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
   const [datos, setDatos] = useState<ResumenFinanzas | null>(null)
   const [cargando, setCargando] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [generando, setGenerando] = useState<"pdf" | "xlsx" | null>(null)
 
   const cargar = useCallback(async () => {
     setCargando(true)
@@ -84,17 +84,10 @@ export function FinanzasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
    */
   const descargar = async (formato: "pdf" | "xlsx") => {
     if (!datos) return
-    setGenerando(formato)
     setError(null)
-    try {
-      const detalle = await cargarReporteFinanzas(datos, user?.display_name || user?.email || "Sistema")
-      if (formato === "pdf") await generateFinanzasReportePdf(detalle)
-      else await generateFinanzasReporteExcel(detalle)
-    } catch (e: any) {
-      setError(e?.message || e?.details || "No se pudo generar el reporte.")
-    } finally {
-      setGenerando(null)
-    }
+    const detalle = await cargarReporteFinanzas(datos, user?.display_name || user?.email || "Sistema")
+    if (formato === "pdf") await generateFinanzasReportePdf(detalle)
+    else await generateFinanzasReporteExcel(detalle)
   }
 
   const esquemaMes = periodo.tipo === "mes"
@@ -117,36 +110,26 @@ export function FinanzasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              {/* Mismo botón desdoblable del resto de la app. Actualizar queda
+                  pegado a la derecha, que es donde ya lo busca la gente. */}
+              <BotonesDescarga
+                size="sm"
+                etiqueta="Descargar Reporte"
+                disabled={!datos || cargando}
+                onDescargar={descargar}
+                onError={setError}
+                tituloPdf="Descargar el reporte completo en PDF"
+                tituloExcel="Descargar el periodo completo en Excel"
+              />
               <Button
                 size="sm"
                 variant="outline"
                 onClick={cargar}
-                disabled={cargando || generando !== null}
+                disabled={cargando}
                 className="cursor-pointer border-slate-600 bg-slate-800/60 text-slate-300 hover:bg-slate-700 hover:text-white"
               >
                 {cargando ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1.5" />}
                 Actualizar
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => descargar("xlsx")}
-                disabled={!datos || cargando || generando !== null}
-                title="Descargar el periodo completo en Excel"
-                className="cursor-pointer border-slate-600 bg-slate-800/60 text-slate-300 hover:bg-slate-700 hover:text-white disabled:opacity-50"
-              >
-                {generando === "xlsx" ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <FileSpreadsheet className="w-4 h-4 mr-1.5" />}
-                Excel
-              </Button>
-              <Button
-                size="sm"
-                onClick={() => descargar("pdf")}
-                disabled={!datos || cargando || generando !== null}
-                title="Descargar el reporte completo en PDF"
-                className="cursor-pointer bg-[#0174bd] hover:bg-[#015d97] text-white disabled:opacity-50"
-              >
-                {generando === "pdf" ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <FileText className="w-4 h-4 mr-1.5" />}
-                Reporte PDF
               </Button>
             </div>
           </div>
@@ -297,6 +280,13 @@ export function FinanzasScreen({ allowed }: { allowed: UserRoleScreen[] }) {
                       detalle={`${datos.ingresos.estimaciones} ${datos.ingresos.estimaciones === 1 ? "estimación" : "estimaciones"}`}
                       monto={datos.ingresos.estimado}
                       color="#94a3b8"
+                    />
+                    {/* Trabajo ya medido que todavía no se le pasa al cliente. */}
+                    <Renglon
+                      etiqueta="Estimado sin facturar"
+                      detalle={`${datos.ingresos.estimacionesSinFacturar} de ${datos.ingresos.estimaciones}`}
+                      monto={datos.ingresos.estimadoSinFacturar}
+                      color={datos.ingresos.estimadoSinFacturar > 0 ? "#b45309" : "#94a3b8"}
                     />
                   </CardContent>
                 </Card>

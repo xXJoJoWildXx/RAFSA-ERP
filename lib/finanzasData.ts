@@ -108,6 +108,10 @@ export type Ingresos = {
   /** Estimaciones con corte en el periodo */
   estimado: number
   estimaciones: number
+  /** De esas estimaciones, las que todavía no tienen factura ligada. Es
+   *  trabajo ya medido que falta pasarle al cliente. */
+  estimadoSinFacturar: number
+  estimacionesSinFacturar: number
 }
 
 export type Egresos = {
@@ -269,10 +273,29 @@ async function cargarMovimientos(desde: Date, hasta: Date) {
     supabase.from("proveedores_facturas").select("total, fecha, status").gte("fecha", d).lte("fecha", h),
   ])
 
+  /* Qué estimaciones del periodo ya tienen factura. La consulta va SIN
+     filtro de fecha a propósito: una estimación con corte en noviembre se
+     puede facturar en diciembre, y seguiría estando facturada. */
+  const estimacionesPeriodo =
+    (estimacionesRes.data as { id: string; amount: number | null }[] | null) ?? []
+  const facturadasRes = estimacionesPeriodo.length
+    ? await supabase
+        .from("obra_facturas")
+        .select("estimacion_id")
+        .in("estimacion_id", estimacionesPeriodo.map((e) => e.id))
+    : { data: [] as { estimacion_id: string | null }[] }
+
+  const estimacionesFacturadas = new Set(
+    ((facturadasRes.data as { estimacion_id: string | null }[] | null) ?? [])
+      .map((f) => f.estimacion_id)
+      .filter((x): x is string => !!x),
+  )
+
   return {
     cobros: (cobrosRes.data as CobroRow[] | null) ?? [],
     facturas: (facturasRes.data as FacturaRow[] | null) ?? [],
-    estimaciones: (estimacionesRes.data as { id: string; amount: number | null }[] | null) ?? [],
+    estimaciones: estimacionesPeriodo,
+    estimacionesFacturadas,
     nominas: (nominasRes.data as NominaRow[] | null) ?? [],
     ordenes: (ordenesRes.data as OrdenRow[] | null) ?? [],
     proveedores:
@@ -292,6 +315,14 @@ function sumarIngresos(m: Movimientos): Ingresos {
     facturas: m.facturas.length,
     estimado: round2(m.estimaciones.reduce((s, e) => s + Number(e.amount || 0), 0)),
     estimaciones: m.estimaciones.length,
+    estimadoSinFacturar: round2(
+      m.estimaciones
+        .filter((e) => !m.estimacionesFacturadas.has(e.id))
+        .reduce((s, e) => s + Number(e.amount || 0), 0),
+    ),
+    estimacionesSinFacturar: m.estimaciones.filter(
+      (e) => !m.estimacionesFacturadas.has(e.id),
+    ).length,
   }
 }
 
@@ -324,7 +355,7 @@ export async function cargarFinanzas(periodo: Periodo): Promise<ResumenFinanzas>
   const finSerie = new Date(periodo.hasta.getFullYear(), periodo.hasta.getMonth() + 1, 0)
   const inicioSerie = new Date(finSerie.getFullYear(), finSerie.getMonth() - 11, 1)
 
-  const [actual, previo, serieMov, obrasRes, plantillaRes] = await Promise.all([
+  const [actual, previo, serieMov, obrasRes, plantillaRes, sinCorteRes] = await Promise.all([
     cargarMovimientos(periodo.desde, periodo.hasta),
     cargarMovimientos(comparado.desde, comparado.hasta),
     cargarMovimientos(inicioSerie, finSerie),
@@ -333,6 +364,14 @@ export async function cargarFinanzas(periodo: Periodo): Promise<ResumenFinanzas>
     // cuesta la plantilla: sin esa vara, 5 mil pesos de nómina en un mes
     // pasan por buenos.
     supabase.from("employees").select("real_salary").eq("status", "active"),
+    /* Estimaciones sin fecha de corte. No entran en NINGÚN periodo, porque
+       el filtro de Finanzas es sobre date_end: son trabajo medido que queda
+       invisible hasta que alguien les captura la fecha. Por eso se consultan
+       sin rango, y el aviso se da aunque no toquen el periodo en pantalla. */
+    supabase
+      .from("obra_estimaciones")
+      .select("id, amount, obra_id, obras(name)")
+      .is("date_end", null),
   ])
 
   const ingresos = sumarIngresos(actual)
@@ -440,6 +479,21 @@ export async function cargarFinanzas(periodo: Periodo): Promise<ResumenFinanzas>
     avisos.push({
       nivel: "medio",
       texto: "No hay facturas de proveedor en el periodo. Si hubo compras, el egreso no está reflejado.",
+    })
+  }
+
+  // Estimaciones huérfanas: existen, valen dinero y no aparecen en ningún
+  // periodo. Es el aviso que más fácil pasa inadvertido, porque no se nota
+  // por omisión: simplemente no están.
+  const sinCorte = (sinCorteRes.data as { amount: number | null }[] | null) ?? []
+  if (sinCorte.length > 0) {
+    const montoSinCorte = round2(sinCorte.reduce((s2, e) => s2 + Number(e.amount || 0), 0))
+    avisos.push({
+      nivel: montoSinCorte > 0 ? "alto" : "medio",
+      texto:
+        `${sinCorte.length} ${sinCorte.length === 1 ? "estimación no tiene" : "estimaciones no tienen"} ` +
+        `fecha de corte capturada (${money(montoSinCorte)}). Sin esa fecha no entran en ningún periodo, ` +
+        `así que ${sinCorte.length === 1 ? "no aparece" : "no aparecen"} en este ni en ningún otro reporte.`,
     })
   }
 
