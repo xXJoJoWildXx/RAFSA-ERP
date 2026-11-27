@@ -8,7 +8,8 @@
  *   • Obras        → una fila por obra, con filtros
  *   • Inventario   → una fila por orden entregada
  *   • Proveedores  → una fila por egreso de proveedor
- *   • Nómina       → una fila por trabajador, capturado contra supuesto
+ *   • Nómina       → una fila por trabajador, con el desglose del pago,
+ *                    el sueldo fiscal de las corridas guardadas y la diferencia
  *
  * ExcelJS se importa dinámicamente para no pesar en el bundle principal.
  */
@@ -178,6 +179,8 @@ function hojaResumen(wb: any, rep: ReporteFinanzas) {
   det("Cobrado (dinero que entró)", r0.ingresos.cobrado, r0.ingresos.cobros, { bold: true, color: C.green })
   det("Facturado al cliente", r0.ingresos.facturado, r0.ingresos.facturas)
   det("Estimaciones con corte en el periodo", r0.ingresos.estimado, r0.ingresos.estimaciones)
+  // Trabajo ya medido que todavía no se le pasa al cliente.
+  det("      Estimado sin facturar", r0.ingresos.estimadoSinFacturar, r0.ingresos.estimacionesSinFacturar)
   det("Nómina de obra", r0.egresos.nomina, r0.egresos.nominaSemanas, { bold: true, color: C.orange })
   det("Sueldos", r0.egresos.nominaSalarios, undefined, { indent: 1, color: C.muted })
   det("Bonificaciones", r0.egresos.nominaBonos, undefined, { indent: 1, color: C.muted })
@@ -401,51 +404,122 @@ function hojaProveedores(wb: any, rep: ReporteFinanzas) {
   }
 }
 
+/** Monto como texto, para las notas al pie donde no cabe una celda con formato. */
+function moneyTxt(n: number): string {
+  return (Number(n) || 0).toLocaleString("es-MX", {
+    style: "currency", currency: "MXN", minimumFractionDigits: 2, maximumFractionDigits: 2,
+  })
+}
+
 /* ─── Nómina ─── */
 
 function hojaNomina(wb: any, rep: ReporteFinanzas) {
   const ws = wb.addWorksheet("Nómina", { views: [{ showGridLines: false }] })
-  ws.columns = [{ width: 38 }, { width: 34 }, { width: 22 }, { width: 10 }, { width: 10 }, { width: 16 }, { width: 16 }, { width: 16 }]
-  const LAST = 8
-  let r = titulo(ws, rep, "NÓMINA POR OBRA: CAPTURADO CONTRA SUPUESTO", LAST)
+  ws.columns = [
+    { width: 32 }, // Obra
+    { width: 32 }, // Trabajador
+    { width: 20 }, // Puesto
+    { width: 9 },  // Semanas
+    { width: 8 },  // Días
+    { width: 14 }, // Sueldo real
+    { width: 12 }, // Viáticos
+    { width: 12 }, // Hora extra
+    { width: 14 }, // Bonificaciones
+    { width: 14 }, // Total pagado
+    { width: 14 }, // Sueldo fiscal
+    { width: 16 }, // Diferencia de sueldos
+    { width: 14 }, // Supuesto
+  ]
+  const LAST = 13
+  let r = titulo(ws, rep, "NÓMINA POR OBRA: DESGLOSE, FISCAL Y EFECTIVO", LAST)
 
   ws.mergeCells(r, 1, r, LAST)
   const nota = ws.getCell(r, 1)
   nota.value =
-    `"Supuesto" es el sueldo semanal de cada trabajador por las ${rep.semanas} ${rep.semanas === 1 ? "semana" : "semanas"} del periodo. ` +
-    "La diferencia es lo que falta por capturar en nómina."
+    '"Sueldo fiscal" es el depósito que reporta el documento de la contadora en las corridas guardadas del periodo. ' +
+    '"Diferencia de sueldos" es lo pagado menos ese depósito: lo que se entregó en efectivo. ' +
+    `"Supuesto" es el sueldo semanal por las ${rep.semanas} ${rep.semanas === 1 ? "semana" : "semanas"} del periodo.`
   nota.font = { size: 9, color: { argb: C.muted } }
-  r += 2
+  r++
 
-  encabezado(ws, r, ["OBRA", "TRABAJADOR", "PUESTO EN OBRA", "SEMANAS", "DÍAS", "CAPTURADO", "SUPUESTO", "DIFERENCIA"],
-    ["left", "left", "left", "center", "center", "right", "right", "right"])
+  // Las semanas sin corrida guardada se avisan aquí: sin esto el total
+  // fiscal parecería completo cuando sólo cubre parte del periodo.
+  if (rep.fiscal.semanasSinRegistro.length > 0) {
+    ws.mergeCells(r, 1, r, LAST)
+    const av = ws.getCell(r, 1)
+    const n = rep.fiscal.semanasSinRegistro.length
+    av.value =
+      `Atención: ${n} ${n === 1 ? "semana del periodo no tiene" : "semanas del periodo no tienen"} ` +
+      `corrida de nómina guardada, así que de ${n === 1 ? "esa semana" : "esas semanas"} no hay sueldo fiscal registrado. ` +
+      `Semanas sin registro: ${rep.fiscal.semanasSinRegistro.join(", ")}.`
+    av.font = { size: 9, bold: true, color: { argb: C.orange } }
+    av.alignment = { wrapText: true, vertical: "middle" }
+    ws.getRow(r).height = 28
+    r++
+  }
+  r++
+
+  encabezado(
+    ws, r,
+    ["OBRA", "TRABAJADOR", "PUESTO EN OBRA", "SEMANAS", "DÍAS",
+     "SUELDO REAL", "VIÁTICOS", "HORA EXTRA", "BONIFICACIONES",
+     "TOTAL PAGADO", "SUELDO FISCAL", "DIFERENCIA DE SUELDOS", "SUPUESTO"],
+    ["left", "left", "left", "center", "center",
+     "right", "right", "right", "right", "right", "right", "right", "right"],
+  )
   const filaHeader = r
   r++
 
-  let capt = 0
-  let sup = 0
+  let tSueldo = 0, tViat = 0, tExtra = 0, tBonos = 0
+  let capt = 0, tFiscal = 0, tDif = 0, sup = 0
+  /* Lo capturado a gente cuya semana no tiene corrida guardada. Sin este
+     dato, el total de "diferencia" parece mal sumado: no cuadra contra
+     pagado menos fiscal porque esas filas no aportan diferencia. */
+  let captSinDato = 0
   let alt = false
+
   for (const o of rep.obras) {
     for (const n of o.nomina) {
+      // Sin corrida guardada que lo cubra no se pone 0: un cero diría que
+      // no cobró nada fiscal, y lo cierto es que no se sabe.
+      const sinDato = n.fiscal == null
       const valores: [any, string | undefined][] = [
         [o.nombre, undefined], [n.nombre, undefined], [n.rol ?? "", undefined],
         [n.semanas, NUM], [n.diasTrabajados, NUM],
-        [n.capturado, MONEY], [n.supuesto, MONEY], [n.diferencia, MONEY],
+        [n.sueldo, MONEY], [n.viaticos, MONEY], [n.horaExtra, MONEY], [n.bonificaciones, MONEY],
+        [n.capturado, MONEY],
+        [sinDato ? "sin registro" : n.fiscal, sinDato ? undefined : MONEY],
+        [sinDato ? "sin registro" : n.efectivo, sinDato ? undefined : MONEY],
+        [n.supuesto, MONEY],
       ]
       valores.forEach(([valor, fmt], j) => {
         const cell = ws.getCell(r, j + 1)
         cell.value = valor
         if (fmt) cell.numFmt = fmt
+        const esFiscal = j === 10 || j === 11
         cell.font = {
           size: 10,
-          bold: j === 1 || j === 7,
-          color: { argb: j === 7 ? (n.diferencia > 0.5 ? C.red : C.green) : j === 3 && n.semanas === 0 ? C.red : C.ink },
+          bold: j === 1 || j === 9,
+          italic: sinDato && esFiscal,
+          color: {
+            argb: sinDato && esFiscal ? C.muted
+              : j === 11 ? C.green
+              : j === 3 && n.semanas === 0 ? C.red
+              : C.ink,
+          },
         }
         cell.alignment = { horizontal: j <= 2 ? "left" : j <= 4 ? "center" : "right" }
         if (alt) fill(cell, C.rowAlt)
         borde(cell)
       })
+      tSueldo += n.sueldo
+      tViat += n.viaticos
+      tExtra += n.horaExtra
+      tBonos += n.bonificaciones
       capt += n.capturado
+      tFiscal += n.fiscal ?? 0
+      tDif += n.efectivo ?? 0
+      if (sinDato) captSinDato += n.capturado
       sup += n.supuesto
       alt = !alt
       r++
@@ -453,11 +527,17 @@ function hojaNomina(wb: any, rep: ReporteFinanzas) {
   }
 
   if (r > filaHeader + 1) {
+    const red2 = (v: number) => Math.round(v * 100) / 100
     const totales: [number, any, string | undefined][] = [
       [1, "TOTALES", undefined],
-      [6, Math.round(capt * 100) / 100, MONEY],
-      [7, Math.round(sup * 100) / 100, MONEY],
-      [8, Math.round((sup - capt) * 100) / 100, MONEY],
+      [6, red2(tSueldo), MONEY],
+      [7, red2(tViat), MONEY],
+      [8, red2(tExtra), MONEY],
+      [9, red2(tBonos), MONEY],
+      [10, red2(capt), MONEY],
+      [11, red2(tFiscal), MONEY],
+      [12, red2(tDif), MONEY],
+      [13, red2(sup), MONEY],
     ]
     for (let col = 1; col <= LAST; col++) {
       const cell = ws.getCell(r, col)
@@ -471,6 +551,35 @@ function hojaNomina(wb: any, rep: ReporteFinanzas) {
     }
     ws.autoFilter = { from: { row: filaHeader, column: 1 }, to: { row: r - 1, column: LAST } }
     ws.views = [{ showGridLines: false, state: "frozen", ySplit: filaHeader }]
+    r += 2
+
+    if (captSinDato > 0.5) {
+      ws.mergeCells(r, 1, r, LAST)
+      const c = ws.getCell(r, 1)
+      c.value =
+        `Nota sobre los totales: ${moneyTxt(captSinDato)} de lo pagado corresponde a trabajadores cuyas semanas ` +
+        "no tienen corrida guardada, así que no aportan a la columna de diferencia. Por eso el total de " +
+        `diferencia (${moneyTxt(tDif)}) no es el total pagado menos el fiscal; es la suma sólo de los ` +
+        "trabajadores con depósito registrado."
+      c.font = { size: 9, italic: true, color: { argb: C.orange } }
+      c.alignment = { wrapText: true, vertical: "middle" }
+      ws.getRow(r).height = 26
+      r += 2
+    }
+
+    // El fiscal de oficina no cuelga de ninguna obra, así que no aparece en
+    // la tabla; se dice aparte para que el total cuadre con las corridas.
+    if (Math.abs(rep.fiscal.sinObra) > 0.5) {
+      ws.mergeCells(r, 1, r, LAST)
+      const c = ws.getCell(r, 1)
+      c.value =
+        `Además, ${moneyTxt(rep.fiscal.sinObra)} de depósito fiscal corresponde a personal que no estuvo ` +
+        "asignado a ninguna obra en esas semanas (oficina). El total fiscal de las corridas del periodo es " +
+        `${moneyTxt(rep.fiscal.total)}.`
+      c.font = { size: 9, italic: true, color: { argb: C.muted } }
+      c.alignment = { wrapText: true, vertical: "middle" }
+      ws.getRow(r).height = 26
+    }
   } else {
     ws.mergeCells(r, 1, r, LAST)
     const cell = ws.getCell(r, 1)

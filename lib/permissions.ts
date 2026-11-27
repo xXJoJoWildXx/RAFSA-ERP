@@ -54,6 +54,9 @@ export type Capability =
   /** Escribir el aguinaldo calculado en los expedientes. La base también
    *  lo exige: aguinaldo_aplicar() rechaza a quien no sea admin. */
   | "nomina.aguinaldo.apply"
+  /** Borrar una corrida guardada. Es el registro de lo que se pagó esa
+   *  semana: se consulta meses después y no se repone. */
+  | "nomina.corridas.delete"
   // ── Documentos de obra ──
   /** Eliminar un documento de la obra (contrato, cotización, etc.).
    *  Es de oficina: el director de obra no borra el contrato. */
@@ -93,11 +96,15 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
     // Captura facturas, pero corregir un error borrando es de admin
     "suppliers.invoices.delete",
     "suppliers.shipments.delete",
+    // Las corridas guardadas son el registro de lo pagado: se consultan
+    // meses después y no se reponen. Borrarlas es de admin.
+    "nomina.corridas.delete",
   ],
 
   almacen: [
     "nomina.administracion.view",
     "nomina.aguinaldo.apply",
+    "nomina.corridas.delete",
     "finanzas.view",
     // Surte las órdenes; el gasto por obra es información de oficina
     "inventory.orders.report",
@@ -118,6 +125,7 @@ const DENEGADAS: Record<AppRole, Capability[]> = {
   worker: [
     "nomina.administracion.view",
     "nomina.aguinaldo.apply",
+    "nomina.corridas.delete",
     "finanzas.view",
     "obras.delete",
     "empresas.delete",

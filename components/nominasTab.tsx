@@ -94,7 +94,7 @@ function fmtCurrency(n: number): string {
   return new Intl.NumberFormat("es-MX", { style: "currency", currency: "MXN" }).format(Number(n) || 0)
 }
 
-/** Los 7 días calendario (Jue–Mié, incluye domingo) a partir del week_start. */
+/** Los 7 días calendario (Lun–Dom, incluye domingo) a partir del week_start. */
 function allDatesFromWeekStart(weekStart: string): string[] {
   const out: string[] = []
   for (let i = 0; i < 7; i++) {
@@ -258,7 +258,7 @@ export function NominasTab({ obraId }: { obraId: string }) {
               <div>
                 <CardTitle className="text-slate-100">Nómina semanal</CardTitle>
                 <p className="text-xs text-slate-500 mt-0.5">
-                  Resumen real por semana (Jue – Mié) desde el inicio de la obra. Se mantiene al día
+                  Resumen real por semana (Lun – Dom) desde el inicio de la obra. Se mantiene al día
                   automáticamente con las asistencias capturadas; no incluye nómina fiscal.
                 </p>
               </div>
@@ -557,7 +557,7 @@ function generatePDF(params: {
   doc.text(`Obra: ${obraName}`, 10, y)
   doc.setFontSize(9)
   doc.setTextColor(...mutedText)
-  doc.text(`Periodo: ${fmtDateDisplay(weekStart)} – ${fmtDateDisplay(weekEnd)} (Jue – Mié)`, 10, y + 6)
+  doc.text(`Periodo: ${fmtDateDisplay(weekStart)} – ${fmtDateDisplay(weekEnd)} (Lun – Dom)`, 10, y + 6)
   y += 14
 
   // Table columns

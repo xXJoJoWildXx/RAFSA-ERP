@@ -75,6 +75,12 @@ export function BotonesDescarga({
 
   const icono = size === "sm" ? "w-4 h-4 mr-1.5" : "w-4 h-4 mr-2"
 
+  /* La X tiene que medir lo mismo de alto que sus vecinos. Con size="sm" los
+     botones son h-8 y un "icon" normal es size-9: ese píxel de más estiraba
+     la fila y empujaba hacia arriba lo que estuviera al lado al desdoblar. */
+  const tamanoX =
+    size === "sm" ? "icon-sm" : size === "lg" ? "icon-lg" : "icon"
+
   if (!abierta) {
     return (
       <Button
@@ -147,7 +153,7 @@ export function BotonesDescarga({
       <Button
         type="button"
         variant="ghost"
-        size="icon"
+        size={tamanoX as "icon" | "icon-sm" | "icon-lg"}
         onClick={cerrar}
         disabled={descargando !== null}
         title="Cerrar"

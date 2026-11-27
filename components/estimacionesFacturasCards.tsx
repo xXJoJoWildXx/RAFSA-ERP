@@ -24,7 +24,10 @@ import {
   ClipboardList,
   Receipt,
   X,
+  CalendarRange,
 } from "lucide-react"
+
+import { CapturarPeriodoModal } from "@/components/capturarPeriodoModal"
 
 /* ─── Types ─── */
 
@@ -129,6 +132,8 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
   const [estDialogOpen, setEstDialogOpen] = useState(false)
   const [editingEst, setEditingEst] = useState<Estimacion | null>(null)
   const [estForm, setEstForm] = useState({ description: "", amount: "", date_start: "", date_end: "" })
+  /** Estimación a la que se le está capturando el periodo desde la tabla. */
+  const [periodoTarget, setPeriodoTarget] = useState<Estimacion | null>(null)
   const [estFile, setEstFile] = useState<File | null>(null)
   const [savingEst, setSavingEst] = useState(false)
   const [estFormTouched, setEstFormTouched] = useState(false)
@@ -1004,9 +1009,31 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
                           </div>
                         </TableCell>
                         <TableCell className="text-sm text-slate-400 align-top whitespace-nowrap">
-                          {est.date_start && est.date_end
-                            ? `${est.date_start} — ${est.date_end}`
-                            : est.date_start || est.date_end || "—"}
+                          {est.date_start || est.date_end ? (
+                            est.date_start && est.date_end
+                              ? `${est.date_start} — ${est.date_end}`
+                              : est.date_start || est.date_end
+                          ) : (
+                            /* Sin periodo la estimación no cae en ningún mes y
+                               queda fuera de los reportes de Finanzas; la pill
+                               deja capturarlo aquí mismo. Si ya tiene periodo
+                               no se ofrece nada: se edita desde la estimación. */
+                            <button
+                              type="button"
+                              onClick={() => setPeriodoTarget(est)}
+                              title="Capturar el periodo de esta estimación"
+                              className="
+                                inline-flex items-center gap-1 rounded-full border border-[#0174bd]/45
+                                bg-[#0174bd]/15 px-2.5 py-1 text-[11px] font-medium text-[#4da8e8]
+                                cursor-pointer transition-colors
+                                hover:bg-[#0174bd]/30 hover:border-[#0174bd]/70 hover:text-[#7cc3f0]
+                                focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0174bd]/60
+                              "
+                            >
+                              <CalendarRange className="w-3 h-3" />
+                              Agregar periodo
+                            </button>
+                          )}
                         </TableCell>
                         <TableCell>
                           {isCompleted ? (
@@ -1677,6 +1704,23 @@ export function EstimacionesFacturasCards({ obraId, currency = "MXN", onPaymentR
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Captura rápida del periodo desde la columna "Periodo". */}
+      <CapturarPeriodoModal
+        open={periodoTarget !== null}
+        onOpenChange={(v: boolean) => { if (!v) setPeriodoTarget(null) }}
+        estimacionId={periodoTarget?.id ?? null}
+        obra={
+          periodoTarget
+            ? periodoTarget.is_anticipo
+              ? "Anticipo"
+              : `Estimación ${periodoTarget.number}`
+            : ""
+        }
+        descripcion={periodoTarget?.description ?? ""}
+        monto={periodoTarget ? Number(periodoTarget.amount) : null}
+        onGuardado={() => { setPeriodoTarget(null); fetchData() }}
+      />
     </>
   )
 }

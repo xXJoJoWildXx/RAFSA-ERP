@@ -197,7 +197,7 @@ export function AdminOvertimeCard({
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-5 py-4">
           {titulo}
           <div className="flex flex-col gap-1.5 sm:items-end">
-            <label className="text-xs font-medium text-slate-400">Semana (Jue – Mié)</label>
+            <label className="text-xs font-medium text-slate-400">Semana (Lun – Dom)</label>
             <Select value={panelWeek} onValueChange={setPanelWeek}>
               <SelectTrigger className="w-full sm:w-72 cursor-pointer bg-slate-900 border-slate-700 text-slate-200 focus:border-[#0174bd]/60">
                 <SelectValue placeholder="Selecciona la semana" />
